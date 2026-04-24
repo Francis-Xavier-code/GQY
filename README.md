@@ -1,2 +1,3 @@
 # Miyu
-Miyu是Shorin的Ai助手。
+
+Miyu是一个Ai助手。
