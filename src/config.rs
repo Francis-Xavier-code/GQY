@@ -489,7 +489,7 @@ impl Default for WebPluginConfig {
 impl Default for WebImagesPluginConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_true(),
             max_results: default_web_images_max_results(),
             max_download_mb: default_web_images_max_download_mb(),
             safe_search: default_true(),

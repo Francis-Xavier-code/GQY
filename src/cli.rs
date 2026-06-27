@@ -563,6 +563,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 t("initialized Miyu at", "Miyu 已初始化于"),
                 paths.config_dir.display()
             );
+            maybe_prompt_shell_init(&paths)?;
             Ok(())
         }
         Some(Command::Paths) => {
@@ -588,6 +589,62 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         }
     }
+}
+
+fn maybe_prompt_shell_init(paths: &MiyuPaths) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Ok(());
+    }
+    let shell_name = current_shell_name();
+    let prompt = match shell_name.as_deref() {
+        Some("fish") => t(
+            "Install fish shell hook now? [Y/n] ",
+            "现在安装 fish shell hook 吗？[Y/n] ",
+        ),
+        Some("bash") => t(
+            "Install bash shell hook now? [Y/n] ",
+            "现在安装 bash shell hook 吗？[Y/n] ",
+        ),
+        Some("zsh") => t(
+            "Install zsh shell hook now? [Y/n] ",
+            "现在安装 zsh shell hook 吗？[Y/n] ",
+        ),
+        _ => t(
+            "Install shell hook now? [Y/n] ",
+            "现在安装 shell hook 吗？[Y/n] ",
+        ),
+    };
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim().to_ascii_lowercase();
+    if matches!(answer.as_str(), "n" | "no" | "否" | "不") {
+        return Ok(());
+    }
+    match shell_name.as_deref() {
+        Some("fish") => shell::fish::install(paths),
+        Some("bash") => shell::bash::install(paths),
+        Some("zsh") => shell::zsh::install(paths),
+        _ => {
+            println!(
+                "{}",
+                t(
+                    "Unsupported or unknown shell. Run one of: miyu fish-init, miyu bash-init, miyu zsh-init",
+                    "不支持或无法识别当前 shell。请手动运行：miyu fish-init、miyu bash-init 或 miyu zsh-init"
+                )
+            );
+            Ok(())
+        }
+    }
+}
+
+fn current_shell_name() -> Option<String> {
+    let shell = std::env::var("SHELL").ok()?;
+    PathBuf::from(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
 }
 
 fn run_providers(paths: &MiyuPaths, args: ProvidersArgs) -> Result<()> {
