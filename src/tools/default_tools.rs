@@ -14,7 +14,7 @@ pub fn register(registry: &mut ToolRegistry, allow_command_execution: bool) {
     register_readonly(registry);
     registry.register(ToolSpec::new(
         "run_command",
-        t("Run a shell command in the workspace. Disabled unless skills.allow_command_execution is true.", "在工作区运行 shell 命令。除非 skills.allow_command_execution 为 true，否则禁用。"),
+        t("Run a shell command in the workspace when skills.allow_command_execution is enabled.", "当 skills.allow_command_execution 启用时，在工作区运行 shell 命令。"),
         json!({"type":"object","properties":{"command":{"type":"string","description": t("Command to run.", "要运行的命令。")},"timeout_seconds":{"type":"integer","description": t("Optional timeout in seconds.", "可选超时时间，单位秒。")}},"required":["command"],"additionalProperties":false}),
         move |args| async move { run_command(args, allow_command_execution).await },
     ));

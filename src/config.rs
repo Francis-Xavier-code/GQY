@@ -613,7 +613,7 @@ impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
             enabled: default_true(),
-            allow_command_execution: false,
+            allow_command_execution: default_true(),
         }
     }
 }
