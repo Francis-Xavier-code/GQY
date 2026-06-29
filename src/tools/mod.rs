@@ -41,8 +41,12 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     weather::register(&mut registry);
     exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     xuanxue::register(&mut registry);
-    archlinux::register(&mut registry);
-    man::register(&mut registry);
+    if config.plugins.archlinux.enabled {
+        archlinux::register(&mut registry);
+    }
+    if config.plugins.man.enabled {
+        man::register(&mut registry);
+    }
     moegirl::register(&mut registry);
     hash_codec::register(&mut registry);
     calculator::register(&mut registry);
@@ -88,8 +92,12 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     let mut registry = ToolRegistry::new();
     default_tools::register_readonly(&mut registry);
     web::register_fetch(&mut registry);
-    archlinux::register(&mut registry);
-    man::register(&mut registry);
+    if config.plugins.archlinux.enabled {
+        archlinux::register(&mut registry);
+    }
+    if config.plugins.man.enabled {
+        man::register(&mut registry);
+    }
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());
     }

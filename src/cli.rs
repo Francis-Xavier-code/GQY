@@ -1372,7 +1372,8 @@ fn load_repl_input_history(state: &StateStore) -> Result<Vec<String>> {
         .load_conversation()?
         .into_iter()
         .filter(|entry| entry.role == "user" && !entry.content.trim().is_empty())
-        .map(|entry| entry.content)
+        .map(|entry| strip_terminal_control_sequences(&entry.content))
+        .filter(|content| !content.trim().is_empty())
         .collect())
 }
 
@@ -1431,7 +1432,7 @@ fn read_repl_input(
     history: &[String],
 ) -> Result<Option<(AgentMode, String)>> {
     let mut stdout = io::stdout();
-    let mut input = prefill.unwrap_or_default();
+    let mut input = strip_terminal_control_sequences(&prefill.unwrap_or_default());
     let mut cursor = input.chars().count();
     let mut history_index = history.len();
     let (cursor_col, _) = cursor::position()?;
@@ -1454,6 +1455,7 @@ fn read_repl_input(
     loop {
         match event::read()? {
             Event::Paste(text) => {
+                let text = strip_terminal_control_sequences(&text);
                 insert_str_at_cursor(&mut input, &mut cursor, &text);
                 render_repl_input(
                     &mut stdout,
@@ -1579,6 +1581,7 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Enter => {
+                    input = strip_terminal_control_sequences(&input);
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
@@ -1623,7 +1626,9 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                    insert_char_at_cursor(&mut input, &mut cursor, ch);
+                    if !is_disallowed_control_char(ch) {
+                        insert_char_at_cursor(&mut input, &mut cursor, ch);
+                    }
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1828,7 +1833,9 @@ fn terminal_cols() -> usize {
 }
 
 fn repl_input_lines(input: &str) -> Vec<String> {
-    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = strip_terminal_control_sequences(input)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let mut lines = normalized
         .split('\n')
         .map(ToString::to_string)
@@ -1837,6 +1844,35 @@ fn repl_input_lines(input: &str) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+fn strip_terminal_control_sequences(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            } else {
+                chars.next();
+            }
+            continue;
+        }
+        if is_disallowed_control_char(ch) {
+            continue;
+        }
+        output.push(ch);
+    }
+    output
+}
+
+fn is_disallowed_control_char(ch: char) -> bool {
+    ch.is_control() && !matches!(ch, '\n' | '\t')
 }
 
 fn visible_width(value: &str) -> usize {
@@ -1956,6 +1992,18 @@ mod repl_input_tests {
     }
 
     #[test]
+    fn strips_terminal_control_sequences_from_repl_text() {
+        assert_eq!(
+            strip_terminal_control_sequences("\x1b[E表情包\x1b[0m\x07 ok"),
+            "表情包 ok"
+        );
+        assert_eq!(
+            strip_terminal_control_sequences("line1\nline2\tend"),
+            "line1\nline2\tend"
+        );
+    }
+
+    #[test]
     fn repl_history_loads_user_messages_from_state() {
         let temp = tempfile::tempdir().unwrap();
         let paths = MiyuPaths {
@@ -1974,7 +2022,7 @@ mod repl_input_tests {
         let state = StateStore::new(&paths).unwrap();
         state.append_message("user", "first").unwrap();
         state.append_assistant_message("reply", None).unwrap();
-        state.append_message("user", "second").unwrap();
+        state.append_message("user", "\x1b[Esecond").unwrap();
 
         assert_eq!(
             load_repl_input_history(&state).unwrap(),

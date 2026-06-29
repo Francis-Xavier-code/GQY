@@ -561,10 +561,11 @@ fn readable_tool_name(name: &str) -> &str {
         "list_memory" | "list_memories" => "列出记忆",
         "aur_search_packages" => "搜索 AUR",
         "aur_get_package_info" => "查看 AUR 包",
+        "aur_check_status" => "查询 AUR 状态",
         "pacman_search" => "搜索软件包",
         "archwiki_query" => "查询 ArchWiki",
-        "man_search" => "搜索手册",
-        "man_read" => "读取手册",
+        "online_man_search" | "man_search" => "搜索在线手册",
+        "online_man_get_page" | "man_read" => "读取在线手册",
         "moegirl_query" => "查询萌娘百科",
         "calculate" | "calculator" => "计算",
         "calculate_hash" => "计算哈希",
@@ -1939,6 +1940,9 @@ mod tests {
         );
         assert_eq!(readable_tool_name("search_evicted_context"), "搜索旧上下文");
         assert_eq!(readable_tool_name("recall_past_events"), "回忆往事");
+        assert_eq!(readable_tool_name("aur_check_status"), "查询 AUR 状态");
+        assert_eq!(readable_tool_name("online_man_search"), "搜索在线手册");
+        assert_eq!(readable_tool_name("online_man_get_page"), "读取在线手册");
         assert_eq!(readable_tool_name("install_aur_package"), "安装 AUR 包");
         assert_eq!(
             readable_tool_name("search_knowledge_base_by_name"),

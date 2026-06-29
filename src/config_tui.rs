@@ -170,7 +170,7 @@ fn plugin_row(state: &str, name: &str, description: &str, width: usize) -> Strin
     fixed + &truncate(description, remaining)
 }
 
-fn plugin_names() -> [(&'static str, &'static str, &'static str); 11] {
+fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
     [
         ("web", "网络搜索", "搜索 API 与脚本 fallback"),
         ("deep_research", "深度研究", "长任务研究并输出 Markdown"),
@@ -180,6 +180,8 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 11] {
         ("print_image", "打印图片", "终端图片打印尺寸"),
         ("memes", "表情包", "人格表情库与发送尺寸"),
         ("knowledge_base", "知识库", "本地文件检索与语义索引"),
+        ("archlinux", "Arch Linux", "AUR 状态与 ArchWiki 查询"),
+        ("man", "在线手册", "在线 man 手册搜索与读取"),
         ("memory", "记忆", "长期记忆与联想"),
         ("package_advisor", "AUR 审查", "PKGBUILD/AUR 安全审查"),
         (
@@ -200,9 +202,11 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
         5 => config.plugins.print_image.enabled,
         6 => config.plugins.memes.enabled,
         7 => config.plugins.knowledge_base.enabled,
-        8 => config.plugins.memory.enabled,
-        9 => config.plugins.package_advisor.enabled,
-        10 => config.plugins.linux_game_compatibility.enabled,
+        8 => config.plugins.archlinux.enabled,
+        9 => config.plugins.man.enabled,
+        10 => config.plugins.memory.enabled,
+        11 => config.plugins.package_advisor.enabled,
+        12 => config.plugins.linux_game_compatibility.enabled,
         _ => false,
     }
 }
@@ -218,9 +222,11 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
         5 => config.plugins.print_image.enabled = value,
         6 => config.plugins.memes.enabled = value,
         7 => config.plugins.knowledge_base.enabled = value,
-        8 => config.plugins.memory.enabled = value,
-        9 => config.plugins.package_advisor.enabled = value,
-        10 => config.plugins.linux_game_compatibility.enabled = value,
+        8 => config.plugins.archlinux.enabled = value,
+        9 => config.plugins.man.enabled = value,
+        10 => config.plugins.memory.enabled = value,
+        11 => config.plugins.package_advisor.enabled = value,
+        12 => config.plugins.linux_game_compatibility.enabled = value,
         _ => {}
     }
 }
@@ -486,7 +492,9 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
         ],
-        8 => vec![
+        8 => vec![Field::boolean("启用", config.plugins.archlinux.enabled)],
+        9 => vec![Field::boolean("启用", config.plugins.man.enabled)],
+        10 => vec![
             Field::boolean("启用", config.plugins.memory.enabled),
             Field::boolean(
                 "上下文弹出缓存",
@@ -521,11 +529,11 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                 config.plugins.memory.forgetting_review_boost.to_string(),
             ),
         ],
-        9 => vec![Field::boolean(
+        11 => vec![Field::boolean(
             "启用",
             config.plugins.package_advisor.enabled,
         )],
-        10 => vec![Field::boolean(
+        12 => vec![Field::boolean(
             "启用",
             config.plugins.linux_game_compatibility.enabled,
         )],
@@ -639,6 +647,12 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[15].value.trim().parse()?;
         }
         8 => {
+            config.plugins.archlinux.enabled = parse_bool_field(&fields[0].value)?;
+        }
+        9 => {
+            config.plugins.man.enabled = parse_bool_field(&fields[0].value)?;
+        }
+        10 => {
             config.plugins.memory.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memory.evicted_context_enabled = parse_bool_field(&fields[1].value)?;
             config.plugins.memory.association_enabled = parse_bool_field(&fields[2].value)?;
@@ -657,10 +671,10 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
             config.plugins.memory.forgetting_review_boost =
                 fields[11].value.trim().parse::<f64>()?;
         }
-        9 => {
+        11 => {
             config.plugins.package_advisor.enabled = parse_bool_field(&fields[0].value)?;
         }
-        10 => {
+        12 => {
             config.plugins.linux_game_compatibility.enabled = parse_bool_field(&fields[0].value)?;
         }
         _ => {
