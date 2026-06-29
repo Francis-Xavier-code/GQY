@@ -24,6 +24,8 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
+const REPL_MAX_VISIBLE_INPUT_ROWS: u16 = 12;
+
 #[derive(Debug, Parser)]
 #[command(name = "miyu", version, about = "Miyu CLI AI Agent")]
 pub struct Cli {
@@ -1657,7 +1659,9 @@ fn render_repl_input(
     let lines = repl_input_lines(input);
     let prompt_prefix = format!("{} > ", colored_mode_label(mode));
     let plain_prefix = format!("[{}] > ", mode.label());
-    let current_rows = repl_render_rows(&plain_prefix, &lines, !suggestions.is_empty());
+    let display_lines =
+        repl_visible_input_lines(&plain_prefix, &lines, REPL_MAX_VISIBLE_INPUT_ROWS);
+    let current_rows = repl_render_rows(&plain_prefix, &display_lines, !suggestions.is_empty());
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
     for row_offset in 0..rows_to_clear {
@@ -1668,7 +1672,7 @@ fn render_repl_input(
         )?;
     }
     let mut row_offset = 0u16;
-    for (index, line) in lines.iter().enumerate() {
+    for (index, line) in display_lines.iter().enumerate() {
         let row = (*input_row).saturating_add(row_offset);
         queue!(stdout, MoveTo(0, row))?;
         if index == 0 {
@@ -1680,14 +1684,24 @@ fn render_repl_input(
         }
     }
     if !suggestions.is_empty() {
-        let suggestion_row = (*input_row).saturating_add(repl_prompt_rows(&plain_prefix, &lines));
+        let suggestion_row =
+            (*input_row).saturating_add(repl_prompt_rows(&plain_prefix, &display_lines));
         queue!(
             stdout,
             MoveTo(0, suggestion_row),
             Print(format!("\x1b[2m{}\x1b[0m", suggestions.join("  ")))
         )?;
     }
-    let (cursor_col, cursor_row_offset) = repl_cursor_position(&plain_prefix, input, cursor);
+    let (cursor_col, cursor_row_offset) = if display_lines.len() == lines.len() {
+        repl_cursor_position(&plain_prefix, input, cursor)
+    } else {
+        let last_line = display_lines.last().map(String::as_str).unwrap_or_default();
+        let col = (visible_width(last_line) % terminal_cols()) as u16;
+        (
+            col,
+            repl_prompt_rows(&plain_prefix, &display_lines).saturating_sub(1),
+        )
+    };
     queue!(
         stdout,
         MoveTo(cursor_col, (*input_row).saturating_add(cursor_row_offset))
@@ -1695,6 +1709,21 @@ fn render_repl_input(
     stdout.flush()?;
     *rendered_rows = current_rows;
     Ok(())
+}
+
+fn repl_visible_input_lines(prefix: &str, lines: &[String], max_rows: u16) -> Vec<String> {
+    let total_rows = repl_prompt_rows(prefix, lines);
+    if total_rows <= max_rows || lines.len() <= 2 {
+        return lines.to_vec();
+    }
+
+    let omitted_lines = lines.len().saturating_sub(2);
+    let omitted = if is_zh() {
+        format!("... 已隐藏 {omitted_lines} 行粘贴内容 ...")
+    } else {
+        format!("... {omitted_lines} pasted lines hidden ...")
+    };
+    vec![lines[0].clone(), omitted, lines[lines.len() - 1].clone()]
 }
 
 fn ensure_repl_space(stdout: &mut io::Stdout, input_row: &mut u16, needed_rows: u16) -> Result<()> {
@@ -1989,6 +2018,20 @@ mod repl_input_tests {
         insert_str_at_cursor(&mut input, &mut cursor, "中间");
         assert_eq!(input, "前中间后");
         assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn long_paste_visible_lines_are_collapsed() {
+        let lines = (0..20)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>();
+        let visible = repl_visible_input_lines("[YOLO] > ", &lines, 12);
+
+        assert_eq!(visible.len(), 3);
+        assert_eq!(visible[0], "line 0");
+        assert!(visible[1].contains("18") || visible[1].contains("已隐藏 18"));
+        assert_eq!(visible[2], "line 19");
+        assert_eq!(lines.len(), 20);
     }
 
     #[test]
