@@ -1229,7 +1229,8 @@ async fn run_chat_with_options(
     if message.is_empty() {
         return run_repl(paths, mode).await;
     }
-    let config = AppConfig::load(paths)?;
+    AppConfig::init_files(paths)?;
+    let config = AppConfig::load_or_default(paths)?;
     let state = StateStore::new(paths)?;
     state.init_files()?;
     let client = OpenAiCompatibleClient::from_config(&config, paths)?;
@@ -1257,7 +1258,8 @@ async fn run_chat_with_options(
 }
 
 async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
-    let mut config = AppConfig::load(paths)?;
+    AppConfig::init_files(paths)?;
+    let mut config = AppConfig::load_or_default(paths)?;
     let state = StateStore::new(paths)?;
     state.init_files()?;
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
