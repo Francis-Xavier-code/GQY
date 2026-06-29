@@ -1260,7 +1260,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     state.init_files()?;
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
     let mut mode = initial_mode;
-    let mut input_history = Vec::<String>::new();
+    let mut input_history = load_repl_input_history(&state)?;
     let mut prefill = None::<String>;
 
     println!(
@@ -1323,6 +1323,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         }
         if input.eq_ignore_ascii_case("/reset") {
             run_reset(paths)?;
+            input_history.clear();
             continue;
         }
         if input.is_empty() {
@@ -1364,6 +1365,15 @@ fn reload_repl_config(
     *config = AppConfig::load(paths)?;
     *client = OpenAiCompatibleClient::from_config(config, paths)?;
     Ok(())
+}
+
+fn load_repl_input_history(state: &StateStore) -> Result<Vec<String>> {
+    Ok(state
+        .load_conversation()?
+        .into_iter()
+        .filter(|entry| entry.role == "user" && !entry.content.trim().is_empty())
+        .map(|entry| entry.content)
+        .collect())
 }
 
 fn print_repl_help() {
@@ -1422,6 +1432,7 @@ fn read_repl_input(
 ) -> Result<Option<(AgentMode, String)>> {
     let mut stdout = io::stdout();
     let mut input = prefill.unwrap_or_default();
+    let mut cursor = input.chars().count();
     let mut history_index = history.len();
     let (cursor_col, _) = cursor::position()?;
     if cursor_col != 0 {
@@ -1438,17 +1449,19 @@ fn read_repl_input(
         &mut rendered_rows,
         mode,
         &input,
+        cursor,
     )?;
     loop {
         match event::read()? {
             Event::Paste(text) => {
-                input.push_str(&text);
+                insert_str_at_cursor(&mut input, &mut cursor, &text);
                 render_repl_input(
                     &mut stdout,
                     &mut input_row,
                     &mut rendered_rows,
                     mode,
                     &input,
+                    cursor,
                 )?;
             }
             Event::Key(KeyEvent {
@@ -1458,6 +1471,7 @@ fn read_repl_input(
                     if input.starts_with('/') {
                         if let Some(completed) = complete_repl_command(&input) {
                             input = completed.to_string();
+                            cursor = input.chars().count();
                         }
                     } else {
                         mode = if mode == AgentMode::Yolo {
@@ -1472,28 +1486,77 @@ fn read_repl_input(
                         &mut rendered_rows,
                         mode,
                         &input,
+                        cursor,
                     )?;
                 }
                 KeyCode::Esc => {
                     input.clear();
+                    cursor = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
                         &mut rendered_rows,
                         mode,
                         &input,
+                        cursor,
+                    )?;
+                }
+                KeyCode::Left => {
+                    cursor = cursor.saturating_sub(1);
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
+                    )?;
+                }
+                KeyCode::Right => {
+                    cursor = (cursor + 1).min(input.chars().count());
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
+                    )?;
+                }
+                KeyCode::Home => {
+                    cursor = 0;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
+                    )?;
+                }
+                KeyCode::End => {
+                    cursor = input.chars().count();
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
                     )?;
                 }
                 KeyCode::Up => {
                     if !history.is_empty() {
                         history_index = history_index.saturating_sub(1);
                         input = history.get(history_index).cloned().unwrap_or_default();
+                        cursor = input.chars().count();
                         render_repl_input(
                             &mut stdout,
                             &mut input_row,
                             &mut rendered_rows,
                             mode,
                             &input,
+                            cursor,
                         )?;
                     }
                 }
@@ -1505,12 +1568,14 @@ fn read_repl_input(
                         history_index = history.len();
                         input.clear();
                     }
+                    cursor = input.chars().count();
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
                         &mut rendered_rows,
                         mode,
                         &input,
+                        cursor,
                     )?;
                 }
                 KeyCode::Enter => {
@@ -1534,23 +1599,38 @@ fn read_repl_input(
                     return Ok(None);
                 }
                 KeyCode::Backspace => {
-                    input.pop();
+                    if cursor > 0 {
+                        remove_char_before_cursor(&mut input, &mut cursor);
+                    }
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
                         &mut rendered_rows,
                         mode,
                         &input,
+                        cursor,
+                    )?;
+                }
+                KeyCode::Delete => {
+                    remove_char_at_cursor(&mut input, cursor);
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
                     )?;
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                    input.push(ch);
+                    insert_char_at_cursor(&mut input, &mut cursor, ch);
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
                         &mut rendered_rows,
                         mode,
                         &input,
+                        cursor,
                     )?;
                 }
                 _ => {}
@@ -1566,6 +1646,7 @@ fn render_repl_input(
     rendered_rows: &mut u16,
     mode: AgentMode,
     input: &str,
+    cursor: usize,
 ) -> Result<()> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
@@ -1601,7 +1682,7 @@ fn render_repl_input(
             Print(format!("\x1b[2m{}\x1b[0m", suggestions.join("  ")))
         )?;
     }
-    let (cursor_col, cursor_row_offset) = repl_cursor_position(&plain_prefix, &lines);
+    let (cursor_col, cursor_row_offset) = repl_cursor_position(&plain_prefix, input, cursor);
     queue!(
         stdout,
         MoveTo(cursor_col, (*input_row).saturating_add(cursor_row_offset))
@@ -1649,8 +1730,8 @@ fn repl_prompt_rows(prefix: &str, lines: &[String]) -> u16 {
     repl_prompt_rows_for_cols(prefix, lines, terminal_cols())
 }
 
-fn repl_cursor_position(prefix: &str, lines: &[String]) -> (u16, u16) {
-    repl_cursor_position_for_cols(prefix, lines, terminal_cols())
+fn repl_cursor_position(prefix: &str, input: &str, cursor: usize) -> (u16, u16) {
+    repl_cursor_position_for_cols(prefix, input, cursor, terminal_cols())
 }
 
 fn repl_line_rows(prefix: &str, line: &str) -> u16 {
@@ -1672,8 +1753,15 @@ fn repl_prompt_rows_for_cols(prefix: &str, lines: &[String], cols: usize) -> u16
     rows.max(1).min(u16::MAX as usize) as u16
 }
 
-fn repl_cursor_position_for_cols(prefix: &str, lines: &[String], cols: usize) -> (u16, u16) {
+fn repl_cursor_position_for_cols(
+    prefix: &str,
+    input: &str,
+    cursor: usize,
+    cols: usize,
+) -> (u16, u16) {
     let cols = cols.max(1);
+    let before_cursor = take_chars(input, cursor);
+    let lines = repl_input_lines(&before_cursor);
     let last_index = lines.len().saturating_sub(1);
     let mut row_offset = 0usize;
     for (index, line) in lines.iter().enumerate() {
@@ -1691,6 +1779,46 @@ fn repl_cursor_position_for_cols(prefix: &str, lines: &[String], cols: usize) ->
         row_offset += width / cols + 1;
     }
     (visible_width(prefix).min(u16::MAX as usize) as u16, 0)
+}
+
+fn insert_char_at_cursor(value: &mut String, cursor: &mut usize, ch: char) {
+    let byte_index = byte_index_for_char(value, *cursor);
+    value.insert(byte_index, ch);
+    *cursor += 1;
+}
+
+fn insert_str_at_cursor(value: &mut String, cursor: &mut usize, text: &str) {
+    let byte_index = byte_index_for_char(value, *cursor);
+    value.insert_str(byte_index, text);
+    *cursor += text.chars().count();
+}
+
+fn remove_char_before_cursor(value: &mut String, cursor: &mut usize) {
+    let end = byte_index_for_char(value, *cursor);
+    let start = byte_index_for_char(value, cursor.saturating_sub(1));
+    value.replace_range(start..end, "");
+    *cursor -= 1;
+}
+
+fn remove_char_at_cursor(value: &mut String, cursor: usize) {
+    if cursor >= value.chars().count() {
+        return;
+    }
+    let start = byte_index_for_char(value, cursor);
+    let end = byte_index_for_char(value, cursor + 1);
+    value.replace_range(start..end, "");
+}
+
+fn byte_index_for_char(value: &str, char_index: usize) -> usize {
+    value
+        .char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
+}
+
+fn take_chars(value: &str, count: usize) -> String {
+    value.chars().take(count).collect()
 }
 
 fn terminal_cols() -> usize {
@@ -1787,23 +1915,71 @@ mod repl_input_tests {
 
     #[test]
     fn cursor_position_wraps_at_terminal_width() {
+        assert_eq!(repl_cursor_position_for_cols("", "1234567", 7, 10), (7, 0));
         assert_eq!(
-            repl_cursor_position_for_cols("", &["1234567".into()], 10),
-            (7, 0)
-        );
-        assert_eq!(
-            repl_cursor_position_for_cols("", &["1234567890".into()], 10),
+            repl_cursor_position_for_cols("", "1234567890", 10, 10),
             (0, 1)
         );
-        assert_eq!(
-            repl_cursor_position_for_cols("", &["123".into(), "456".into()], 10),
-            (3, 1)
-        );
+        assert_eq!(repl_cursor_position_for_cols("", "123\n456", 7, 10), (3, 1));
+        assert_eq!(repl_cursor_position_for_cols("", "1234567", 3, 10), (3, 0));
     }
 
     #[test]
     fn reset_is_a_repl_command() {
         assert!(repl_commands().contains(&"/reset"));
+    }
+
+    #[test]
+    fn input_helpers_edit_at_cursor() {
+        let mut input = "abcd".to_string();
+        let mut cursor = 2;
+        insert_char_at_cursor(&mut input, &mut cursor, '中');
+        assert_eq!(input, "ab中cd");
+        assert_eq!(cursor, 3);
+
+        remove_char_before_cursor(&mut input, &mut cursor);
+        assert_eq!(input, "abcd");
+        assert_eq!(cursor, 2);
+
+        remove_char_at_cursor(&mut input, cursor);
+        assert_eq!(input, "abd");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn input_helpers_insert_paste_at_cursor() {
+        let mut input = "前后".to_string();
+        let mut cursor = 1;
+        insert_str_at_cursor(&mut input, &mut cursor, "中间");
+        assert_eq!(input, "前中间后");
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn repl_history_loads_user_messages_from_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = MiyuPaths {
+            config_dir: PathBuf::new(),
+            config_file: PathBuf::new(),
+            secrets_file: PathBuf::new(),
+            skills_dir: PathBuf::new(),
+            data_dir: PathBuf::new(),
+            cache_dir: PathBuf::new(),
+            state_dir: temp.path().to_path_buf(),
+            pictures_dir: PathBuf::new(),
+            fish_hook_file: PathBuf::new(),
+            bash_hook_file: PathBuf::new(),
+            zsh_hook_file: PathBuf::new(),
+        };
+        let state = StateStore::new(&paths).unwrap();
+        state.append_message("user", "first").unwrap();
+        state.append_assistant_message("reply", None).unwrap();
+        state.append_message("user", "second").unwrap();
+
+        assert_eq!(
+            load_repl_input_history(&state).unwrap(),
+            vec!["first".to_string(), "second".to_string()]
+        );
     }
 }
 
