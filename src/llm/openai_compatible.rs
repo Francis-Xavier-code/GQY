@@ -1592,7 +1592,6 @@ fn push_buffered_chunk<F>(
 where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
-    let text = clean_plain_text(text);
     if text.is_empty() {
         return Ok(());
     }
@@ -1610,25 +1609,32 @@ fn flush_buffer<F>(
 where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
-    if *emitted >= target.len() {
-        return Ok(());
-    }
-    let remaining = &target[*emitted..];
-    if starts_hidden_prefix(remaining) {
-        return Ok(());
-    }
-    let hidden_start = hidden_start_after(target, *emitted);
-    let mut safe_end = hidden_start.unwrap_or(target.len());
-    if hidden_start.is_none() && !final_flush {
-        safe_end = safe_end.saturating_sub(partial_hidden_suffix_len(&target[*emitted..safe_end]));
-    }
-    if safe_end <= *emitted {
-        return Ok(());
-    }
-    let text = target[*emitted..safe_end].to_string();
-    *emitted = safe_end;
-    if !text.is_empty() {
-        on_chunk(ChatStreamChunk { kind, text })?;
+    while *emitted < target.len() {
+        let remaining = &target[*emitted..];
+        if starts_hidden_prefix(remaining) {
+            if let Some(end) = hidden_end_after(target, *emitted) {
+                *emitted = end;
+                continue;
+            }
+            if final_flush {
+                *emitted = target.len();
+            }
+            return Ok(());
+        }
+        let hidden_start = hidden_start_after(target, *emitted);
+        let mut safe_end = hidden_start.unwrap_or(target.len());
+        if hidden_start.is_none() && !final_flush {
+            safe_end =
+                safe_end.saturating_sub(partial_hidden_suffix_len(&target[*emitted..safe_end]));
+        }
+        if safe_end <= *emitted {
+            return Ok(());
+        }
+        let text = target[*emitted..safe_end].to_string();
+        *emitted = safe_end;
+        if !text.is_empty() {
+            on_chunk(ChatStreamChunk { kind, text })?;
+        }
     }
     Ok(())
 }
@@ -1676,11 +1682,13 @@ const DSML_ANY_PREFIX: &str = "<｜｜DSML";
 const DSML_PREFIX: &str = "<｜｜DSML｜｜tool_calls";
 const DSML_END: &str = "</｜｜DSML｜｜tool_calls>";
 const SYSTEM_REMINDER_PREFIX: &str = "<system-reminder";
+const SYSTEM_REMINDER_UNDERSCORE_PREFIX: &str = "<system_reminder";
 
 fn hidden_start_after(target: &str, offset: usize) -> Option<usize> {
     [
         target[offset..].find(DSML_ANY_PREFIX),
         target[offset..].find(SYSTEM_REMINDER_PREFIX),
+        target[offset..].find(SYSTEM_REMINDER_UNDERSCORE_PREFIX),
     ]
     .into_iter()
     .flatten()
@@ -1691,24 +1699,51 @@ fn hidden_start_after(target: &str, offset: usize) -> Option<usize> {
 fn starts_hidden_prefix(value: &str) -> bool {
     DSML_ANY_PREFIX.starts_with(value)
         || SYSTEM_REMINDER_PREFIX.starts_with(value)
+        || SYSTEM_REMINDER_UNDERSCORE_PREFIX.starts_with(value)
         || value.starts_with(DSML_ANY_PREFIX)
         || value.starts_with(SYSTEM_REMINDER_PREFIX)
+        || value.starts_with(SYSTEM_REMINDER_UNDERSCORE_PREFIX)
 }
 
 fn partial_hidden_suffix_len(value: &str) -> usize {
-    let max_len = value
-        .len()
-        .min(DSML_ANY_PREFIX.len().max(SYSTEM_REMINDER_PREFIX.len()));
+    let max_len = value.len().min(
+        DSML_ANY_PREFIX
+            .len()
+            .max(SYSTEM_REMINDER_PREFIX.len())
+            .max(SYSTEM_REMINDER_UNDERSCORE_PREFIX.len()),
+    );
     for len in (1..=max_len).rev() {
         if !value.is_char_boundary(value.len() - len) {
             continue;
         }
         let suffix = &value[value.len() - len..];
-        if DSML_ANY_PREFIX.starts_with(suffix) || SYSTEM_REMINDER_PREFIX.starts_with(suffix) {
+        if DSML_ANY_PREFIX.starts_with(suffix)
+            || SYSTEM_REMINDER_PREFIX.starts_with(suffix)
+            || SYSTEM_REMINDER_UNDERSCORE_PREFIX.starts_with(suffix)
+        {
             return len;
         }
     }
     0
+}
+
+fn hidden_end_after(target: &str, offset: usize) -> Option<usize> {
+    let remaining = &target[offset..];
+    if remaining.starts_with(DSML_ANY_PREFIX) {
+        return remaining
+            .find(DSML_END)
+            .map(|index| offset + index + DSML_END.len());
+    }
+    for tag in ["system-reminder", "system_reminder"] {
+        let open_prefix = format!("<{tag}");
+        if remaining.starts_with(&open_prefix) {
+            let close = format!("</{tag}>");
+            return remaining
+                .find(&close)
+                .map(|index| offset + index + close.len());
+        }
+    }
+    None
 }
 
 fn extract_dsml_tool_calls(mut content: String) -> (String, Vec<ToolCall>) {
@@ -2033,6 +2068,62 @@ mod tests {
         assert_eq!(chunks[2].kind, ChatStreamKind::Content);
         assert_eq!(chunks[2].text, "答案");
         assert_eq!(reasoning, "思考晚到");
+    }
+
+    #[test]
+    fn stream_filter_skips_split_system_reminder() {
+        let mut content = String::new();
+        let mut emitted = 0usize;
+        let mut chunks = Vec::new();
+        let mut on_chunk = |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        };
+
+        push_buffered_chunk(
+            &mut content,
+            &mut emitted,
+            ChatStreamKind::Content,
+            "hello <system-rem".to_string(),
+            &mut on_chunk,
+        )
+        .unwrap();
+        push_buffered_chunk(
+            &mut content,
+            &mut emitted,
+            ChatStreamKind::Content,
+            "inder>hidden</system-reminder> world".to_string(),
+            &mut on_chunk,
+        )
+        .unwrap();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].text, "hello ");
+        assert_eq!(chunks[1].text, " world");
+    }
+
+    #[test]
+    fn stream_filter_skips_underscore_system_reminder() {
+        let mut content = String::new();
+        let mut emitted = 0usize;
+        let mut chunks = Vec::new();
+        let mut on_chunk = |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        };
+
+        push_buffered_chunk(
+            &mut content,
+            &mut emitted,
+            ChatStreamKind::Content,
+            "a<system_reminder>hidden</system_reminder>b".to_string(),
+            &mut on_chunk,
+        )
+        .unwrap();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].text, "a");
+        assert_eq!(chunks[1].text, "b");
     }
 
     #[test]
