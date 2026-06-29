@@ -26,7 +26,7 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
             let config = config.clone();
             async move { generate_image(args, config).await }
         },
-    ));
+    ).writes());
 }
 
 async fn generate_image(args: Value, config: AppConfig) -> Result<String> {

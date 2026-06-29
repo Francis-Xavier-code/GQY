@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
+const DEFAULT_FETCH_MAX_CHARS: usize = 40_000;
+const MAX_FETCH_CHARS: usize = 200_000;
 
 pub fn register(registry: &mut ToolRegistry, config: WebPluginConfig) {
     register_search_tool(registry, "web_search", config.clone());
@@ -19,7 +21,8 @@ pub fn register_fetch(registry: &mut ToolRegistry) {
             "properties": {
                 "url": { "type": "string", "description": "Fully-qualified http or https URL." },
                 "format": { "type": "string", "enum": ["markdown", "text", "html"], "description": "Output format. Defaults to markdown." },
-                "timeout": { "type": "integer", "description": "Timeout seconds, max 120." }
+                "timeout": { "type": "integer", "description": "Timeout seconds, max 120." },
+                "max_chars": { "type": "integer", "description": "Maximum characters to return. Defaults to 40000, max 200000." }
             },
             "required": ["url"],
             "additionalProperties": false
@@ -389,6 +392,11 @@ async fn web_fetch(args: Value) -> Result<String> {
         .and_then(Value::as_u64)
         .unwrap_or(30)
         .min(120);
+    let max_chars = args
+        .get("max_chars")
+        .and_then(Value::as_u64)
+        .map(|value| value.clamp(1, MAX_FETCH_CHARS as u64) as usize)
+        .unwrap_or(DEFAULT_FETCH_MAX_CHARS);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout))
         .build()?;
@@ -419,12 +427,40 @@ async fn web_fetch(args: Value) -> Result<String> {
         bail!("response too large (exceeds 5MB limit)");
     }
     let content = String::from_utf8_lossy(&bytes).to_string();
-    if content_type.contains("text/html") {
-        return Ok(match format {
+    let output = if content_type.contains("text/html") {
+        match format {
             "html" => content,
             "text" => html2text::from_read(content.as_bytes(), 120),
             _ => html2md::parse_html(&content),
-        });
+        }
+    } else {
+        content
+    };
+    Ok(clip_fetch_output(&output, max_chars))
+}
+
+fn clip_fetch_output(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars {
+        return value.to_string();
     }
-    Ok(content)
+    let clipped = value.chars().take(max_chars).collect::<String>();
+    format!("{clipped}\n\n[content truncated from {total} chars to {max_chars} chars]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clips_fetch_output_with_notice() {
+        let output = clip_fetch_output("abcdef", 3);
+
+        assert_eq!(output, "abc\n\n[content truncated from 6 chars to 3 chars]");
+    }
+
+    #[test]
+    fn keeps_short_fetch_output_unchanged() {
+        assert_eq!(clip_fetch_output("abc", 3), "abc");
+    }
 }

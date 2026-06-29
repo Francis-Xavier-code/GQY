@@ -5,16 +5,43 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 pub type ToolFuture = Pin<Box<dyn Future<Output = Result<String>> + Send>>;
-pub type ToolHandler = Arc<dyn Fn(Value) -> ToolFuture + Send + Sync>;
+pub type ToolHandler = Arc<dyn Fn(Value, ToolProgress) -> ToolFuture + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct ToolProgress {
+    sender: Option<mpsc::UnboundedSender<String>>,
+}
+
+impl ToolProgress {
+    pub fn new(sender: mpsc::UnboundedSender<String>) -> Self {
+        Self {
+            sender: Some(sender),
+        }
+    }
+
+    pub fn report(&self, message: impl Into<String>) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(message.into());
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    pub permission: ToolPermission,
     handler: ToolHandler,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolPermission {
+    ReadOnly,
+    Writes,
 }
 
 impl ToolSpec {
@@ -32,8 +59,33 @@ impl ToolSpec {
             name: name.into(),
             description: description.into(),
             parameters,
-            handler: Arc::new(move |args| Box::pin(handler(args))),
+            permission: ToolPermission::ReadOnly,
+            handler: Arc::new(move |args, _progress| Box::pin(handler(args))),
         }
+    }
+
+    pub fn new_with_progress<F, Fut>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(Value, ToolProgress) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String>> + Send + 'static,
+    {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+            permission: ToolPermission::ReadOnly,
+            handler: Arc::new(move |args, progress| Box::pin(handler(args, progress))),
+        }
+    }
+
+    pub fn writes(mut self) -> Self {
+        self.permission = ToolPermission::Writes;
+        self
     }
 
     pub fn definition(&self) -> ToolDefinition {
@@ -47,8 +99,8 @@ impl ToolSpec {
         }
     }
 
-    async fn call(&self, args: Value) -> Result<String> {
-        (self.handler)(args).await
+    async fn call(&self, args: Value, progress: ToolProgress) -> Result<String> {
+        (self.handler)(args, progress).await
     }
 }
 
@@ -63,7 +115,7 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: ToolSpec) {
-        self.tools.entry(tool.name.clone()).or_insert(tool);
+        self.tools.insert(tool.name.clone(), tool);
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
@@ -78,6 +130,13 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn permission(&self, name: &str) -> Result<ToolPermission> {
+        let Some(tool) = self.tools.get(name) else {
+            bail!("unknown tool: {name}");
+        };
+        Ok(tool.permission)
+    }
+
     pub async fn call(&self, name: &str, arguments: &str) -> Result<String> {
         let Some(tool) = self.tools.get(name) else {
             bail!("unknown tool: {name}");
@@ -87,7 +146,24 @@ impl ToolRegistry {
         } else {
             serde_json::from_str(arguments)?
         };
-        tool.call(args).await
+        tool.call(args, ToolProgress::default()).await
+    }
+
+    pub async fn call_with_progress(
+        &self,
+        name: &str,
+        arguments: &str,
+        sender: mpsc::UnboundedSender<String>,
+    ) -> Result<String> {
+        let Some(tool) = self.tools.get(name) else {
+            bail!("unknown tool: {name}");
+        };
+        let args = if arguments.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(arguments)?
+        };
+        tool.call(args, ToolProgress::new(sender)).await
     }
 }
 

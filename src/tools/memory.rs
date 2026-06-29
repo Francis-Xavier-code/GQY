@@ -32,7 +32,7 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths
                 async move { remember_fact(args, config, paths).await }
             }
         },
-    ));
+    ).writes());
 }
 
 pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
@@ -85,7 +85,7 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
     ));
     registry.register(ToolSpec::new(
         "recall_memories",
-        t("Search remembered facts and past events, including forgotten memories when requested. If a forgotten memory is useful, it is restored to active memory.", "搜索已记住的事实和过往事件；需要时也可包含已遗忘记忆。如果遗忘记忆有用，会恢复为活跃记忆。"),
+        t("Search remembered facts and past events, including forgotten memories when requested. This read-only tool does not change memory state.", "搜索已记住的事实和过往事件；需要时也可包含已遗忘记忆。此只读工具不会改变记忆状态。"),
         json!({
             "type": "object",
             "properties": {
@@ -116,14 +116,16 @@ async fn search_evicted_context(
     let query = required_str(&args, "query")?;
     let limit = optional_limit(&args);
     let store = MemoryStore::new(&config, &paths);
-    Ok(store.search_evicted_context(query, limit)?.to_string())
+    Ok(store
+        .search_evicted_context_readonly(query, limit)?
+        .to_string())
 }
 
 async fn recall_past_events(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
     let query = required_str(&args, "query")?;
     let limit = optional_limit(&args);
     let store = MemoryStore::new(&config, &paths);
-    Ok(store.recall_past_events(query, limit)?.to_string())
+    Ok(store.recall_past_events_readonly(query, limit)?.to_string())
 }
 
 async fn remember_fact(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
@@ -146,7 +148,7 @@ async fn recall_memories(args: Value, config: AppConfig, paths: MiyuPaths) -> Re
         .unwrap_or(false);
     let store = MemoryStore::new(&config, &paths);
     Ok(store
-        .recall_memories(query, limit, include_forgotten)?
+        .recall_memories_readonly(query, limit, include_forgotten)?
         .to_string())
 }
 

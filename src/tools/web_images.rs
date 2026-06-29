@@ -1,4 +1,4 @@
-use super::{vision, ToolRegistry, ToolSpec};
+use super::{vision, ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, ProviderConfig, VisionPluginConfig};
 use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
 use crate::i18n::text as t;
@@ -81,7 +81,7 @@ pub fn register(
     paths: MiyuPaths,
     allow_download: bool,
 ) {
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "search_web_images",
         t(
             "Search web images with DuckDuckGo and Bing fallback. In normal mode it can download selected images to the local cache and optionally preview them with chafa. In read-only mode it only returns remote image metadata.",
@@ -99,10 +99,10 @@ pub fn register(
             "required": ["query", "count"],
             "additionalProperties": false
         }),
-        move |args| {
+        move |args, progress| {
             let config = config.clone();
             let paths = paths.clone();
-            async move { search_web_images(args, config, paths, allow_download).await }
+            async move { search_web_images(args, config, paths, allow_download, progress).await }
         },
     ));
 }
@@ -112,6 +112,7 @@ async fn search_web_images(
     config: AppConfig,
     paths: MiyuPaths,
     allow_download: bool,
+    progress: ToolProgress,
 ) -> Result<String> {
     let plugin = &config.plugins.web_images;
     if !plugin.enabled {
@@ -147,6 +148,7 @@ async fn search_web_images(
         .timeout(Duration::from_secs(plugin.timeout_seconds.max(5)))
         .redirect(reqwest::redirect::Policy::limited(8))
         .build()?;
+    progress.report(t("searching image candidates", "正在搜索图片候选"));
     let candidates = search_images(&client, query, count, safe_search).await?;
     if !allow_download {
         return Ok(json!({
@@ -168,12 +170,14 @@ async fn search_web_images(
         candidates,
         count,
         (plugin.max_download_mb.max(0.1) * 1024.0 * 1024.0) as usize,
+        progress.clone(),
     )
     .await?;
     let stored = download_result.images;
     let mut print_errors = Vec::new();
     let should_print = preview && config.plugins.print_image.enabled && preview_count > 0;
     if should_print {
+        progress.report("__external_output__");
         for item in stored.iter().take(preview_count) {
             if let Err(err) = vision::print_image_file(
                 &item.local_path,
@@ -453,6 +457,7 @@ async fn download_and_store_images(
     candidates: Vec<ImageCandidate>,
     count: usize,
     max_bytes: usize,
+    progress: ToolProgress,
 ) -> Result<DownloadResult> {
     std::fs::create_dir_all(cache_dir)
         .with_context(|| format!("failed to create {}", cache_dir.display()))?;
@@ -466,6 +471,12 @@ async fn download_and_store_images(
         if stored.len() >= count {
             break;
         }
+        progress.report(format!(
+            "{} {}/{}",
+            t("downloading images", "正在下载图片"),
+            stored.len() + 1,
+            count
+        ));
         let Some(mut item) = download_candidate(client, cache_dir, candidate, max_bytes).await?
         else {
             continue;
@@ -473,12 +484,31 @@ async fn download_and_store_images(
         if !seen_hashes.insert(item.sha256.clone()) {
             continue;
         }
+        if vision_screening_available(config) {
+            progress.report(format!(
+                "{} {}/{}",
+                t("reviewing images", "正在审核图片"),
+                stored.len() + 1,
+                count
+            ));
+        }
         item.vision = screen_image_with_vision(config, paths, query, &item).await;
         if item.vision.status == "success" && !item.vision.accepted {
             rejected_by_vision += 1;
+            progress.report(format!(
+                "{} {}",
+                t("image rejected by review", "图片审核已拒绝"),
+                rejected_by_vision
+            ));
             continue;
         }
         stored.push(item);
+        progress.report(format!(
+            "{} {}/{}",
+            t("accepted images", "已通过图片"),
+            stored.len(),
+            count
+        ));
     }
     if stored.is_empty() {
         bail!("image search found candidates, but no image could be downloaded")

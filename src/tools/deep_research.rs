@@ -1,11 +1,11 @@
-use super::{ToolRegistry, ToolSpec};
+use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, DeepResearchPluginConfig};
-use crate::llm::{ChatMessage, ChatResult, OpenAiCompatibleClient};
+use crate::i18n::text as t;
+use crate::llm::{ChatMessage, ChatResult, OpenAiCompatibleClient, Usage};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use chrono::Local;
 use serde_json::{json, Value};
-use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,11 +47,114 @@ struct DeepResearchContext {
     tools: ToolRegistry,
 }
 
+#[derive(Clone)]
+struct ResearchProgress {
+    progress: ToolProgress,
+    mode: ResearchProgressMode,
+    enabled: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ResearchProgressMode {
+    Hidden,
+    Summary,
+    Full,
+}
+
+impl ResearchProgress {
+    fn new(config: &AppConfig, progress: ToolProgress) -> Self {
+        let mode = match config
+            .display
+            .tool_calls
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "hidden" => ResearchProgressMode::Hidden,
+            "full" => ResearchProgressMode::Full,
+            _ => ResearchProgressMode::Summary,
+        };
+        Self {
+            progress,
+            mode,
+            enabled: config.plugins.deep_research.show_progress,
+        }
+    }
+
+    fn phase(&self, message: impl Into<String>) {
+        if self.enabled && self.mode != ResearchProgressMode::Hidden {
+            self.progress.report(message.into());
+        }
+    }
+
+    fn detail(&self, message: impl Into<String>) {
+        if self.enabled && self.mode == ResearchProgressMode::Full {
+            self.progress.report(message.into());
+        }
+    }
+
+    fn tool(&self, message: impl Into<String>) {
+        if self.enabled && self.mode != ResearchProgressMode::Hidden {
+            self.progress.report(message.into());
+        }
+    }
+}
+
 #[derive(Default)]
 struct ResearchState {
     topic_title: String,
     references: Vec<Reference>,
     counters: ReferenceCounters,
+    stats: ResearchStats,
+}
+
+#[derive(Default)]
+struct ResearchStats {
+    tool_calls: usize,
+    tool_ok: usize,
+    tool_errors: usize,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    token_estimate: u64,
+    token_estimate_method: TokenEstimateMethod,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum TokenEstimateMethod {
+    #[default]
+    None,
+    ProviderUsage,
+    ProviderUsagePlusEstimate,
+    RoughCharEstimate,
+}
+
+impl ResearchStats {
+    fn add_usage_or_estimate(&mut self, usage: Option<&Usage>, texts: &[&str]) {
+        if let Some(usage) = usage {
+            if usage.total_tokens > 0 {
+                self.prompt_tokens += usage.prompt_tokens;
+                self.completion_tokens += usage.completion_tokens;
+                self.total_tokens += usage.total_tokens;
+                self.token_estimate += usage.total_tokens;
+                self.token_estimate_method = match self.token_estimate_method {
+                    TokenEstimateMethod::None | TokenEstimateMethod::ProviderUsage => {
+                        TokenEstimateMethod::ProviderUsage
+                    }
+                    _ => TokenEstimateMethod::ProviderUsagePlusEstimate,
+                };
+                return;
+            }
+        }
+        let estimate = estimate_tokens(texts);
+        self.token_estimate += estimate;
+        self.token_estimate_method = match self.token_estimate_method {
+            TokenEstimateMethod::None | TokenEstimateMethod::RoughCharEstimate => {
+                TokenEstimateMethod::RoughCharEstimate
+            }
+            _ => TokenEstimateMethod::ProviderUsagePlusEstimate,
+        };
+    }
 }
 
 #[derive(Default)]
@@ -82,7 +185,7 @@ pub fn register(
         paths,
         tools,
     };
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "deep_research",
         "Run a dual-role deep research task and write the final Markdown report to the configured output directory.",
         json!({
@@ -94,14 +197,18 @@ pub fn register(
             "required": ["topic"],
             "additionalProperties": false
         }),
-        move |args| {
+        move |args, progress| {
             let context = context.clone();
-            async move { run_deep_research(args, context).await }
+            async move { run_deep_research(args, context, progress).await }
         },
     ));
 }
 
-async fn run_deep_research(args: Value, context: DeepResearchContext) -> Result<String> {
+async fn run_deep_research(
+    args: Value,
+    context: DeepResearchContext,
+    progress: ToolProgress,
+) -> Result<String> {
     if !context.config.plugins.deep_research.enabled {
         bail!("deep_research plugin is disabled")
     }
@@ -115,6 +222,7 @@ async fn run_deep_research(args: Value, context: DeepResearchContext) -> Result<
         bail!("topic is required")
     }
     let plugin = &context.config.plugins.deep_research;
+    let progress = ResearchProgress::new(&context.config, progress);
     let depth = args
         .get("thinking_depth")
         .and_then(Value::as_str)
@@ -137,16 +245,11 @@ async fn run_deep_research(args: Value, context: DeepResearchContext) -> Result<
         json!({"accepted": false, "challenge": "首轮暂无审视意见", "revision_instructions": []});
     let mut iterations = 0usize;
     let mut stop_reason = "max_review_revisions_reached".to_string();
-    progress(
-        plugin,
-        &format!(
-            "started topic=\"{}\" depth={} max_revisions={} max_tool_steps={}",
-            clip_inline(&topic, 60),
-            depth,
-            limit_label(max_revisions),
-            limit_label(max_tool_steps)
-        ),
-    );
+    progress.phase(format!(
+        "{}=\"{}\"",
+        t("topic", "主题"),
+        topic_title(&state, &topic)
+    ));
 
     loop {
         let iteration = iterations + 1;
@@ -154,48 +257,64 @@ async fn run_deep_research(args: Value, context: DeepResearchContext) -> Result<
             break;
         }
         iterations = iteration;
-        progress(plugin, &format!("round {iteration}: thinker drafting"));
+        progress.phase(format!("round {iteration}: thinker drafting"));
         let tools = research_tool_registry(&context, Arc::clone(&state));
         let prompt = thinker_prompt(&topic, iteration, &draft, &review, &state)?;
+        let thinker_system = THINKER_SYSTEM_PROMPT;
         let thinker = chat_with_tools(
             &client,
             vec![
-                ChatMessage::system(THINKER_SYSTEM_PROMPT),
-                ChatMessage::plain("user", prompt),
+                ChatMessage::system(thinker_system),
+                ChatMessage::plain("user", prompt.clone()),
             ],
             tools,
             max_tool_steps,
             plugin.tool_call_timeout_seconds,
-            plugin,
+            &progress,
+            Arc::clone(&state),
         )
         .await?;
+        state
+            .lock()
+            .expect("deep research state lock")
+            .stats
+            .add_usage_or_estimate(
+                thinker.usage.as_ref(),
+                &[thinker_system, &prompt, &thinker.content],
+            );
         if !thinker.content.trim().is_empty() {
             draft = thinker.content.trim().to_string();
         }
         if draft.is_empty() {
             stop_reason = "thinker_failed".to_string();
-            progress(plugin, "thinker failed to produce a draft");
+            progress.phase("thinker failed to produce a draft");
             break;
         }
-        progress(
-            plugin,
-            &format!(
-                "round {iteration}: draft ready chars={}",
-                draft.chars().count()
-            ),
-        );
+        progress.phase(&format!(
+            "round {iteration}: draft ready chars={}",
+            draft.chars().count()
+        ));
         let review_prompt = reviewer_prompt(&topic, iteration, &draft, &state)?;
-        progress(plugin, &format!("round {iteration}: reviewer checking"));
+        progress.phase(format!("round {iteration}: reviewer checking"));
+        let reviewer_system = REVIEWER_SYSTEM_PROMPT;
         let review_result = client
             .chat_stream(
                 vec![
-                    ChatMessage::system(REVIEWER_SYSTEM_PROMPT),
-                    ChatMessage::plain("user", review_prompt),
+                    ChatMessage::system(reviewer_system),
+                    ChatMessage::plain("user", review_prompt.clone()),
                 ],
                 Vec::new(),
                 |_| Ok(()),
             )
             .await?;
+        state
+            .lock()
+            .expect("deep research state lock")
+            .stats
+            .add_usage_or_estimate(
+                review_result.usage.as_ref(),
+                &[reviewer_system, &review_prompt, &review_result.content],
+            );
         review = parse_review(&review_result.content);
         if review
             .get("accepted")
@@ -203,25 +322,22 @@ async fn run_deep_research(args: Value, context: DeepResearchContext) -> Result<
             .unwrap_or(false)
         {
             stop_reason = "accepted".to_string();
-            progress(plugin, &format!("round {iteration}: accepted"));
+            progress.phase(format!("round {iteration}: accepted"));
             break;
         }
-        progress(
-            plugin,
-            &format!(
-                "round {iteration}: revision requested - {}",
-                clip_inline(
-                    review
-                        .get("challenge")
-                        .and_then(Value::as_str)
-                        .unwrap_or("reviewer requested changes"),
-                    100
-                )
-            ),
-        );
+        progress.phase(&format!(
+            "round {iteration}: revision requested - {}",
+            clip_inline(
+                review
+                    .get("challenge")
+                    .and_then(Value::as_str)
+                    .unwrap_or("reviewer requested changes"),
+                100
+            )
+        ));
     }
 
-    progress(plugin, "finalizing report");
+    progress.phase("finalizing report");
     let mut final_answer = normalize_final_answer(&draft, &state)?;
     if plugin.max_final_answer_chars > 0
         && final_answer.chars().count() > plugin.max_final_answer_chars
@@ -243,8 +359,22 @@ async fn run_deep_research(args: Value, context: DeepResearchContext) -> Result<
         &state,
         &stop_reason,
         iterations,
+        &state,
     )?;
-    progress(plugin, &format!("wrote report {}", path.display()));
+    let stats = public_stats(&state);
+    progress.phase(format!(
+        "{} {} {} {} {}\n{} {}",
+        t("tool calls", "工具调用"),
+        stats["tool_calls"].as_u64().unwrap_or(0),
+        t("times", "次"),
+        t("token cost", "消耗 Token"),
+        format_token_count(
+            stats["token_estimate"].as_u64().unwrap_or(0),
+            !stats["token_estimate_is_actual"].as_bool().unwrap_or(false)
+        ),
+        t("result file", "结果文件"),
+        path.display()
+    ));
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,
         "kind": "deep_research",
@@ -254,17 +384,9 @@ async fn run_deep_research(args: Value, context: DeepResearchContext) -> Result<
         "stop_reason": stop_reason,
         "archive_path": path.display().to_string(),
         "final_answer": final_answer,
+        "stats": stats,
         "sources": public_sources(&state)
     }))?)
-}
-
-fn progress(plugin: &DeepResearchPluginConfig, message: &str) {
-    if !plugin.show_progress {
-        return;
-    }
-    let mut stdout = io::stdout();
-    let _ = writeln!(stdout, "· deep_research: {message}");
-    let _ = stdout.flush();
 }
 
 fn research_tool_registry(
@@ -341,7 +463,8 @@ async fn chat_with_tools(
     tools: ToolRegistry,
     max_steps: usize,
     timeout_seconds: u64,
-    plugin: &DeepResearchPluginConfig,
+    progress: &ResearchProgress,
+    state: Arc<Mutex<ResearchState>>,
 ) -> Result<ChatResult> {
     let definitions = tools.definitions_except(&["deep_research"]);
     let mut steps = 0usize;
@@ -358,10 +481,10 @@ async fn chat_with_tools(
         ));
         for call in result.tool_calls {
             if max_steps > 0 && steps >= max_steps {
-                progress(
-                    plugin,
-                    &format!("→{} skipped: tool budget reached", call.function.name),
-                );
+                progress.tool(format!(
+                    "→{} skipped: tool budget reached",
+                    call.function.name
+                ));
                 messages.push(ChatMessage::tool(
                     call.id,
                     "tool budget reached for this deep research round",
@@ -369,14 +492,16 @@ async fn chat_with_tools(
                 continue;
             }
             steps += 1;
-            progress(
-                plugin,
-                &format!(
-                    "→{} {}",
-                    call.function.name,
-                    compact_arguments(&call.function.arguments)
-                ),
-            );
+            {
+                let mut state = state.lock().expect("deep research state lock");
+                state.stats.tool_calls += 1;
+            }
+            progress.tool(format!("tool #{steps}: {} running", call.function.name));
+            progress.detail(&format!(
+                "→{} {}",
+                call.function.name,
+                compact_arguments(&call.function.arguments)
+            ));
             let (output, ok) = match tokio::time::timeout(
                 Duration::from_secs(timeout_seconds.max(5)),
                 tools.call(&call.function.name, &call.function.arguments),
@@ -393,14 +518,24 @@ async fn chat_with_tools(
                     false,
                 ),
             };
-            progress(
-                plugin,
-                &format!(
-                    "←{} {}",
-                    call.function.name,
-                    if ok { "ok" } else { "error" }
-                ),
-            );
+            {
+                let mut state = state.lock().expect("deep research state lock");
+                if ok {
+                    state.stats.tool_ok += 1;
+                } else {
+                    state.stats.tool_errors += 1;
+                }
+            }
+            progress.tool(format!(
+                "tool #{steps}: {} {}",
+                call.function.name,
+                if ok { "ok" } else { "error" }
+            ));
+            progress.detail(&format!(
+                "←{} {}",
+                call.function.name,
+                if ok { "ok" } else { "error" }
+            ));
             messages.push(ChatMessage::tool(call.id, output));
         }
     }
@@ -522,20 +657,27 @@ fn write_report(
     state: &Arc<Mutex<ResearchState>>,
     stop_reason: &str,
     iterations: usize,
+    state_for_stats: &Arc<Mutex<ResearchState>>,
 ) -> Result<PathBuf> {
     let output_dir = expand_output_dir(&plugin.output_dir, paths);
     std::fs::create_dir_all(&output_dir)?;
     let title = topic_title(state, topic);
-    let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let filename = format!("{}-{}.md", sanitize_filename(&title), timestamp);
+    let filename = unique_report_filename(&output_dir, &title);
     let path = output_dir.join(filename);
+    let stats = public_stats(state_for_stats);
     let report = format!(
-        "---\ntopic: {}\ntopic_title: {}\ncreated_at: {}\nstop_reason: {}\niterations_used: {}\n---\n\n{}\n",
+        "---\ntopic: {}\ntopic_title: {}\ncreated_at: {}\nstop_reason: {}\niterations_used: {}\ntool_calls: {}\ntool_ok: {}\ntool_errors: {}\ntoken_estimate: {}\ntoken_estimate_method: {}\ntoken_estimate_is_actual: {}\n---\n\n{}\n",
         topic,
         title,
         Local::now().to_rfc3339(),
         stop_reason,
         iterations,
+        stats["tool_calls"].as_u64().unwrap_or(0),
+        stats["tool_ok"].as_u64().unwrap_or(0),
+        stats["tool_errors"].as_u64().unwrap_or(0),
+        stats["token_estimate"].as_u64().unwrap_or(0),
+        stats["token_estimate_method"].as_str().unwrap_or("rough_char_estimate"),
+        stats["token_estimate_is_actual"].as_bool().unwrap_or(false),
         final_answer.trim_end()
     );
     std::fs::write(&path, report)?;
@@ -545,6 +687,30 @@ fn write_report(
 fn public_sources(state: &Arc<Mutex<ResearchState>>) -> Vec<Value> {
     let state = state.lock().expect("deep research state lock");
     state.references.iter().map(|item| json!({"ref": item.marker, "type": item.kind, "title": item.title, "url": item.url, "path": item.path})).collect()
+}
+
+fn public_stats(state: &Arc<Mutex<ResearchState>>) -> Value {
+    let state = state.lock().expect("deep research state lock");
+    json!({
+        "tool_calls": state.stats.tool_calls,
+        "tool_ok": state.stats.tool_ok,
+        "tool_errors": state.stats.tool_errors,
+        "prompt_tokens": state.stats.prompt_tokens,
+        "completion_tokens": state.stats.completion_tokens,
+        "total_tokens": state.stats.total_tokens,
+        "token_estimate": state.stats.token_estimate,
+        "token_estimate_method": token_estimate_method_label(state.stats.token_estimate_method),
+        "token_estimate_is_actual": state.stats.token_estimate_method == TokenEstimateMethod::ProviderUsage,
+        "references": state.references.len(),
+    })
+}
+
+fn token_estimate_method_label(method: TokenEstimateMethod) -> &'static str {
+    match method {
+        TokenEstimateMethod::ProviderUsage => "provider_usage",
+        TokenEstimateMethod::ProviderUsagePlusEstimate => "provider_usage_plus_estimate",
+        TokenEstimateMethod::RoughCharEstimate | TokenEstimateMethod::None => "rough_char_estimate",
+    }
 }
 
 fn topic_title(state: &Arc<Mutex<ResearchState>>, topic: &str) -> String {
@@ -584,11 +750,26 @@ fn depth_default_tool_steps(depth: &str) -> usize {
     }
 }
 
-fn limit_label(value: usize) -> String {
-    if value == 0 || value == usize::MAX {
-        "unlimited".to_string()
+fn estimate_tokens(texts: &[&str]) -> u64 {
+    let chars = texts
+        .iter()
+        .map(|text| text.chars().count() as u64)
+        .sum::<u64>();
+    if chars == 0 {
+        0
     } else {
-        value.to_string()
+        (chars / 4).max(1)
+    }
+}
+
+fn format_token_count(tokens: u64, estimated: bool) -> String {
+    let prefix = if estimated { "≈" } else { "" };
+    if tokens >= 1_000_000 {
+        format!("{prefix}{:.2}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{prefix}{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        format!("{prefix}{tokens}")
     }
 }
 
@@ -643,6 +824,164 @@ fn sanitize_filename(value: &str) -> String {
     }
 }
 
+fn unique_report_filename(output_dir: &PathBuf, title: &str) -> String {
+    let stem = sanitize_filename(&strip_title_date_prefix(title));
+    let suffix = format!(
+        "{}_{}",
+        report_date_suffix(title).unwrap_or_else(|| Local::now().format("%Y%m%d").to_string()),
+        Local::now().format("%H%M")
+    );
+    let filename = format!("{stem}_{suffix}.md");
+    if !output_dir.join(&filename).exists() {
+        return filename;
+    }
+    let seconds = Local::now().format("%S").to_string();
+    format!("{stem}_{suffix}{seconds}.md")
+}
+
+fn report_date_suffix(value: &str) -> Option<String> {
+    chinese_date_suffix(value).or_else(|| ascii_date_suffix(value))
+}
+
+fn chinese_date_suffix(value: &str) -> Option<String> {
+    let chars = value.chars().collect::<Vec<_>>();
+    let year_index = chars.iter().position(|ch| *ch == '年')?;
+    let month_rel = chars[year_index + 1..].iter().position(|ch| *ch == '月')?;
+    let month_index = year_index + 1 + month_rel;
+    let day_rel = chars[month_index + 1..]
+        .iter()
+        .position(|ch| *ch == '日' || *ch == '号')?;
+    let day_index = month_index + 1 + day_rel;
+    if year_index != 4 || !chars[..year_index].iter().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let year = chars[..year_index].iter().collect::<String>();
+    let month = chars[year_index + 1..month_index]
+        .iter()
+        .collect::<String>();
+    let day = chars[month_index + 1..day_index].iter().collect::<String>();
+    if month.is_empty()
+        || day.is_empty()
+        || !month.chars().all(|ch| ch.is_ascii_digit())
+        || !day.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("{year}{:0>2}{:0>2}", month, day))
+}
+
+fn ascii_date_suffix(value: &str) -> Option<String> {
+    let chars = value.chars().collect::<Vec<_>>();
+    for start in 0..chars.len().saturating_sub(9) {
+        if chars[start..start + 4].iter().all(|ch| ch.is_ascii_digit())
+            && matches!(chars[start + 4], '-' | '/' | '.')
+            && chars[start + 5..start + 7]
+                .iter()
+                .all(|ch| ch.is_ascii_digit())
+            && matches!(chars[start + 7], '-' | '/' | '.')
+            && chars[start + 8..start + 10]
+                .iter()
+                .all(|ch| ch.is_ascii_digit())
+        {
+            let year = chars[start..start + 4].iter().collect::<String>();
+            let month = chars[start + 5..start + 7].iter().collect::<String>();
+            let day = chars[start + 8..start + 10].iter().collect::<String>();
+            return Some(format!("{year}{month}{day}"));
+        }
+    }
+    None
+}
+
+fn strip_title_date_prefix(value: &str) -> String {
+    let mut title = value.trim().to_string();
+    title = strip_leading_ascii_date(&title);
+    title = strip_leading_chinese_date(&title);
+    title = strip_leading_weekday(&title);
+    let title = title.trim_matches(|ch: char| {
+        ch.is_whitespace() || matches!(ch, '-' | '_' | '，' | ',' | '：' | ':' | '|' | '｜')
+    });
+    if title.is_empty() {
+        value.trim().to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn strip_leading_ascii_date(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() >= 10
+        && chars[0..4].iter().all(|ch| ch.is_ascii_digit())
+        && matches!(chars[4], '-' | '/' | '.')
+        && chars[5..7].iter().all(|ch| ch.is_ascii_digit())
+        && matches!(chars[7], '-' | '/' | '.')
+        && chars[8..10].iter().all(|ch| ch.is_ascii_digit())
+    {
+        chars[10..].iter().collect()
+    } else {
+        value.to_string()
+    }
+}
+
+fn strip_leading_chinese_date(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let Some(year_index) = chars.iter().position(|ch| *ch == '年') else {
+        return value.to_string();
+    };
+    let Some(month_rel) = chars[year_index + 1..].iter().position(|ch| *ch == '月') else {
+        return value.to_string();
+    };
+    let month_index = year_index + 1 + month_rel;
+    let Some(day_rel) = chars[month_index + 1..]
+        .iter()
+        .position(|ch| *ch == '日' || *ch == '号')
+    else {
+        return value.to_string();
+    };
+    let day_index = month_index + 1 + day_rel;
+    if year_index == 4
+        && chars[..year_index].iter().all(|ch| ch.is_ascii_digit())
+        && chars[year_index + 1..month_index]
+            .iter()
+            .all(|ch| ch.is_ascii_digit())
+        && chars[month_index + 1..day_index]
+            .iter()
+            .all(|ch| ch.is_ascii_digit())
+    {
+        chars[day_index + 1..].iter().collect()
+    } else {
+        value.to_string()
+    }
+}
+
+fn strip_leading_weekday(value: &str) -> String {
+    let weekdays = [
+        "星期一",
+        "星期二",
+        "星期三",
+        "星期四",
+        "星期五",
+        "星期六",
+        "星期日",
+        "星期天",
+        "周一",
+        "周二",
+        "周三",
+        "周四",
+        "周五",
+        "周六",
+        "周日",
+        "周天",
+    ];
+    let mut title = value.trim_start();
+    loop {
+        let Some(weekday) = weekdays.iter().find(|weekday| title.starts_with(**weekday)) else {
+            break;
+        };
+        title = title[weekday.len()..].trim_start();
+    }
+    title.to_string()
+}
+
 fn expand_output_dir(value: &str, paths: &MiyuPaths) -> PathBuf {
     let value = value.trim();
     if let Some(rest) = value.strip_prefix("~/") {
@@ -654,4 +993,33 @@ fn expand_output_dir(value: &str, paths: &MiyuPaths) -> PathBuf {
         return paths.config_dir.join("deep-research");
     }
     PathBuf::from(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_leading_chinese_date_and_weekday_from_title() {
+        assert_eq!(
+            strip_title_date_prefix("2026年6月29日周一夏季早餐推荐"),
+            "夏季早餐推荐"
+        );
+        assert_eq!(
+            strip_title_date_prefix("2026年06月29日 星期一：夏季早餐推荐"),
+            "夏季早餐推荐"
+        );
+    }
+
+    #[test]
+    fn extracts_report_date_suffix_from_title() {
+        assert_eq!(
+            report_date_suffix("2026年6月29日周一夏季早餐推荐").as_deref(),
+            Some("20260629")
+        );
+        assert_eq!(
+            report_date_suffix("夏季早餐推荐 2026-06-29").as_deref(),
+            Some("20260629")
+        );
+    }
 }

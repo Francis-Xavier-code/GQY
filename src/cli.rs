@@ -19,8 +19,10 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use std::io::Cursor;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Parser)]
 #[command(name = "miyu", version, about = "Miyu CLI AI Agent")]
@@ -159,21 +161,31 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         ),
         (
             "fish-init",
-            "Install fish natural-language hook",
-            "安装 fish 自然语言 hook",
+            "Integrate with fish so you can chat in natural language directly in the terminal",
+            "集成到 fish，集成后可在终端直接使用自然语言交流。",
         ),
         (
             "bash-init",
-            "Install bash natural-language hook",
-            "安装 bash 自然语言 hook",
+            "Integrate with bash so you can chat in natural language directly in the terminal",
+            "集成到 bash，集成后可在终端直接使用自然语言交流。",
         ),
         (
             "zsh-init",
-            "Install zsh natural-language hook",
-            "安装 zsh 自然语言 hook",
+            "Integrate with zsh so you can chat in natural language directly in the terminal",
+            "集成到 zsh，集成后可在终端直接使用自然语言交流。",
+        ),
+        (
+            "remove-shell-hook",
+            "Safely remove installed Miyu shell hooks",
+            "安全删除已安装的 Miyu shell hook",
         ),
         ("history", "Show conversation history", "显示会话历史"),
         ("kb", "Manage local knowledge base", "管理本地知识库"),
+        (
+            "update-default-kb",
+            "Update Miyu default knowledge base",
+            "更新 Miyu 默认知识库",
+        ),
         (
             "memory",
             "Inspect or edit assistant memory",
@@ -352,6 +364,10 @@ fn localize_skills_command(mut command: clap::Command) -> clap::Command {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(name = "__alarm-worker", hide = true)]
+    AlarmWorker(AlarmWorkerArgs),
+    #[command(name = "__tool", hide = true)]
+    Tool(ToolArgs),
     Ask(MessageArgs),
     Init,
     Paths,
@@ -360,8 +376,10 @@ pub enum Command {
     FishInit,
     BashInit,
     ZshInit,
+    RemoveShellHook,
     History(HistoryArgs),
     Kb(KbArgs),
+    UpdateDefaultKb,
     Memory(MemoryArgs),
     Skills(SkillsArgs),
     Reset,
@@ -371,6 +389,26 @@ pub enum Command {
 pub struct MessageArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub message: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct AlarmWorkerArgs {
+    #[arg(long)]
+    pub id: String,
+    #[arg(long)]
+    pub time: String,
+    #[arg(long, default_value = "Miyu alarm")]
+    pub label: String,
+    #[arg(long)]
+    pub state_dir: PathBuf,
+    #[arg(long)]
+    pub audio_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct ToolArgs {
+    pub name: String,
+    pub arguments: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -551,21 +589,17 @@ pub async fn run(cli: Cli) -> Result<()> {
         return run_shell_intercept(&paths, shell_name, message).await;
     }
 
+    if !paths.config_file.exists() && !matches!(cli.command, Some(Command::Init)) {
+        run_init(&paths, InitKind::FirstRun)?;
+    }
+
     match cli.command {
+        Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
+        Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Ask(args)) => {
             run_chat_with_options(&paths, join_message(args.message), None, false, mode).await
         }
-        Some(Command::Init) => {
-            AppConfig::init_files(&paths)?;
-            StateStore::new(&paths)?.init_files()?;
-            println!(
-                "{} {}",
-                t("initialized Miyu at", "Miyu 已初始化于"),
-                paths.config_dir.display()
-            );
-            maybe_prompt_shell_init(&paths)?;
-            Ok(())
-        }
+        Some(Command::Init) => run_init(&paths, InitKind::Explicit),
         Some(Command::Paths) => {
             paths.print();
             Ok(())
@@ -575,8 +609,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::FishInit) => shell::fish::install(&paths),
         Some(Command::BashInit) => shell::bash::install(&paths),
         Some(Command::ZshInit) => shell::zsh::install(&paths),
+        Some(Command::RemoveShellHook) => remove_shell_hooks(&paths),
         Some(Command::History(args)) => run_history(&paths, args),
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
+        Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
         Some(Command::Reset) => run_reset(&paths),
@@ -591,60 +627,252 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn maybe_prompt_shell_init(paths: &MiyuPaths) -> Result<()> {
+async fn run_tool(paths: &MiyuPaths, mode: AgentMode, args: ToolArgs) -> Result<()> {
+    let config = AppConfig::load_or_default(paths)?;
+    let registry = build_tool_registry(&config, paths, mode)?;
+    let output = registry
+        .call(&args.name, args.arguments.as_deref().unwrap_or("{}"))
+        .await?;
+    println!("{output}");
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum InitKind {
+    FirstRun,
+    Explicit,
+}
+
+fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    if interactive {
+        println!(
+            "{}\n",
+            match kind {
+                InitKind::FirstRun => t("Miyu first start", "Miyu 首次启动"),
+                InitKind::Explicit => t("Miyu initialization", "Miyu 初始化"),
+            }
+        );
+    }
+    print_init_step(
+        interactive,
+        t("Preparing config directory", "正在准备配置目录"),
+        &paths.config_dir.display().to_string(),
+    )?;
+    AppConfig::init_files(paths)?;
+    print_init_step(
+        interactive,
+        t("Writing default config", "正在写入默认配置"),
+        &paths.config_file.display().to_string(),
+    )?;
+    print_init_step(
+        interactive,
+        t("Creating state files", "正在创建状态文件"),
+        &paths.state_dir.display().to_string(),
+    )?;
+    StateStore::new(paths)?.init_files()?;
+    let config = AppConfig::load_or_default(paths)?;
+    crate::default_kb::ensure_initialized(paths, &config).ok();
+    print_init_step(
+        interactive,
+        t("Preparing data directory", "正在准备数据目录"),
+        &paths.data_dir.display().to_string(),
+    )?;
+    if interactive {
+        println!("\n{}\n", t("Initialization complete.", "初始化完成。"));
+        std::thread::sleep(Duration::from_millis(420));
+        prompt_shell_init_menu(paths)?;
+    } else {
+        println!(
+            "{} {}",
+            t("initialized Miyu at", "Miyu 已初始化于"),
+            paths.config_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn print_init_step(interactive: bool, label: &str, value: &str) -> Result<()> {
+    if interactive {
+        std::thread::sleep(Duration::from_millis(180));
+        println!("  {label:<24} ✓ {value}");
+        io::stdout().flush()?;
+    }
+    Ok(())
+}
+
+fn prompt_shell_init_menu(paths: &MiyuPaths) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Ok(());
     }
-    let shell_name = current_shell_name();
-    let prompt = match shell_name.as_deref() {
-        Some("fish") => t(
-            "Install fish shell hook now? [Y/n] ",
-            "现在安装 fish shell hook 吗？[Y/n] ",
-        ),
-        Some("bash") => t(
-            "Install bash shell hook now? [Y/n] ",
-            "现在安装 bash shell hook 吗？[Y/n] ",
-        ),
-        Some("zsh") => t(
-            "Install zsh shell hook now? [Y/n] ",
-            "现在安装 zsh shell hook 吗？[Y/n] ",
-        ),
-        _ => t(
-            "Install shell hook now? [Y/n] ",
-            "现在安装 shell hook 吗？[Y/n] ",
-        ),
-    };
-    print!("{prompt}");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    let answer = answer.trim().to_ascii_lowercase();
-    if matches!(answer.as_str(), "n" | "no" | "否" | "不") {
-        return Ok(());
-    }
-    match shell_name.as_deref() {
+    println!("{}", t("Integrate with shell?", "是否集成到 shell？"));
+    println!(
+        "{}\n",
+        t(
+            "After integration, you can chat in natural language directly in the terminal.",
+            "集成后可在终端直接使用自然语言交流。"
+        )
+    );
+    match select_shell_hook()? {
         Some("fish") => shell::fish::install(paths),
         Some("bash") => shell::bash::install(paths),
         Some("zsh") => shell::zsh::install(paths),
-        _ => {
-            println!(
-                "{}",
-                t(
-                    "Unsupported or unknown shell. Run one of: miyu fish-init, miyu bash-init, miyu zsh-init",
-                    "不支持或无法识别当前 shell。请手动运行：miyu fish-init、miyu bash-init 或 miyu zsh-init"
-                )
-            );
-            Ok(())
+        _ => Ok(()),
+    }
+}
+
+fn select_shell_hook() -> Result<Option<&'static str>> {
+    let options = [
+        (t("Skip", "跳过"), None),
+        ("fish", Some("fish")),
+        ("bash", Some("bash")),
+        ("zsh", Some("zsh")),
+    ];
+    let detected = shell::current_parent_shell();
+    let mut selected = detected
+        .as_deref()
+        .and_then(|shell| options.iter().position(|(_, value)| *value == Some(shell)))
+        .unwrap_or(0);
+    let mut stdout = io::stdout();
+    let (_, menu_row) = cursor::position()?;
+    execute!(stdout, Hide)?;
+    struct ShellMenuGuard;
+    impl Drop for ShellMenuGuard {
+        fn drop(&mut self) {
+            let _ = terminal::disable_raw_mode();
+            let _ = execute!(io::stdout(), Show);
+        }
+    }
+    let _guard = ShellMenuGuard;
+    loop {
+        queue!(stdout, MoveTo(0, menu_row))?;
+        for (index, (label, _)) in options.iter().enumerate() {
+            queue!(stdout, Clear(ClearType::CurrentLine))?;
+            if index == selected {
+                queue!(stdout, Print(format!("> {label}\n")))?;
+            } else {
+                queue!(stdout, Print(format!("  {label}\n")))?;
+            }
+        }
+        println!(
+            "\n\x1b[2m{}\x1b[0m",
+            t(
+                "Up/Down or j/k to choose, Enter to confirm, Esc/q to skip",
+                "↑/↓ 或 j/k 选择，Enter 确认，Esc/q 跳过"
+            )
+        );
+        stdout.flush()?;
+        terminal::enable_raw_mode()?;
+        let key = read_shell_menu_key();
+        terminal::disable_raw_mode()?;
+        match key? {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                execute!(stdout, Show)?;
+                return Ok(None);
+            }
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Enter => {
+                execute!(stdout, Show)?;
+                return Ok(options[selected].1);
+            }
+            _ => {}
         }
     }
 }
 
-fn current_shell_name() -> Option<String> {
-    let shell = std::env::var("SHELL").ok()?;
-    PathBuf::from(shell)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_ascii_lowercase)
+fn read_shell_menu_key() -> Result<KeyCode> {
+    loop {
+        if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+            return Ok(code);
+        }
+    }
+}
+
+fn remove_shell_hooks(paths: &MiyuPaths) -> Result<()> {
+    shell::fish::uninstall(paths)?;
+    shell::bash::uninstall(paths)?;
+    shell::zsh::uninstall(paths)?;
+    Ok(())
+}
+
+fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {
+    let paths = alarm_worker_paths(args.state_dir);
+    let seconds = crate::alarm::parse_alarm_seconds(&args.time)?;
+    let source = args
+        .audio_file
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "builtin".to_string());
+    let _ = append_alarm_log(
+        &paths,
+        &format!("{}: scheduled in {seconds}s; source={source}\n", args.id),
+    );
+    std::thread::sleep(Duration::from_secs(seconds));
+    let _ = crate::alarm::update_status(&paths, &args.id, crate::alarm::AlarmStatus::Ringing);
+    let _ = append_alarm_log(&paths, &format!("{}: playback starting\n", args.id));
+    let result = play_alarm_once(args.audio_file.as_deref()).or_else(|err| {
+        append_alarm_log(
+            &paths,
+            &format!("{}: audio playback failed: {err}\n", args.id),
+        )?;
+        terminal_bell_fallback();
+        Ok(())
+    });
+    if result.is_ok() {
+        let _ = append_alarm_log(&paths, &format!("{}: playback finished\n", args.id));
+    }
+    let _ = crate::alarm::remove(&paths, &args.id);
+    result
+}
+
+fn play_alarm_once(audio_file: Option<&std::path::Path>) -> Result<()> {
+    const ALARM_WAV: &[u8] = include_bytes!("assets/alarm.wav");
+    let (_stream, handle) = rodio::OutputStream::try_default()?;
+    let audio = match audio_file {
+        Some(path) => std::fs::read(path)?,
+        None => ALARM_WAV.to_vec(),
+    };
+    let cursor = Cursor::new(audio);
+    let sink = rodio::Sink::try_new(&handle)?;
+    let source = rodio::Decoder::new(cursor)?;
+    sink.append(source);
+    sink.sleep_until_end();
+    Ok(())
+}
+
+fn terminal_bell_fallback() {
+    for _ in 0..5 {
+        let _ = std::io::stderr().write_all(b"\x07");
+        let _ = std::io::stderr().flush();
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn append_alarm_log(paths: &MiyuPaths, line: &str) -> Result<()> {
+    std::fs::create_dir_all(&paths.state_dir)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crate::alarm::alarm_log_file(paths))?;
+    file.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+fn alarm_worker_paths(state_dir: PathBuf) -> MiyuPaths {
+    MiyuPaths {
+        config_dir: PathBuf::new(),
+        config_file: PathBuf::new(),
+        secrets_file: PathBuf::new(),
+        skills_dir: PathBuf::new(),
+        data_dir: PathBuf::new(),
+        cache_dir: PathBuf::new(),
+        state_dir,
+        pictures_dir: PathBuf::new(),
+        fish_hook_file: PathBuf::new(),
+        bash_hook_file: PathBuf::new(),
+        zsh_hook_file: PathBuf::new(),
+    }
 }
 
 fn run_providers(paths: &MiyuPaths, args: ProvidersArgs) -> Result<()> {
@@ -1014,8 +1242,10 @@ async fn run_chat_with_options(
     } else {
         render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
     };
+    let readable_tool_names = config.display.readable_tool_names;
     let mut agent = Agent::new(config, paths, state, client, registry, mode)?;
-    let mut renderer = render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain);
+    let mut renderer =
+        render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain, readable_tool_names);
     let result = agent
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
         .await;
@@ -1034,12 +1264,16 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     let mut prefill = None::<String>;
 
     println!(
-        "{}",
+        "\x1b[2m{}\x1b[0m",
         t(
-            "Miyu REPL. Press Tab to toggle YOLO/PLAN. Type /help for commands; exit or quit to leave.",
-            "Miyu REPL。按 Tab 切换 YOLO/PLAN。输入 /help 查看命令；exit 或 quit 退出。",
+            "Tab toggles mode; /help shows commands; exit quits",
+            "Tab 切换模式；/help 查看命令；exit 退出",
         )
     );
+    crate::default_kb::check_update_if_due(paths).ok();
+    if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
+        println!("\x1b[2m{message}\x1b[0m");
+    }
     loop {
         let input = match read_repl_input(mode, prefill.take(), &input_history)? {
             Some((new_mode, input)) => {
@@ -1087,6 +1321,10 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             prefill = prompt;
             continue;
         }
+        if input.eq_ignore_ascii_case("/reset") {
+            run_reset(paths)?;
+            continue;
+        }
         if input.is_empty() {
             continue;
         }
@@ -1102,7 +1340,12 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         )?;
         let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
         let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
-        let mut renderer = render::StreamRenderer::new(reasoning_mode, tool_call_mode, false);
+        let mut renderer = render::StreamRenderer::new(
+            reasoning_mode,
+            tool_call_mode,
+            false,
+            config.display.readable_tool_names,
+        );
         let chat_result = agent
             .chat_stream(input, |event| handle_agent_event(&mut renderer, event))
             .await
@@ -1139,7 +1382,7 @@ fn print_repl_help() {
     );
     println!(
         "  /yolo       {}",
-        t("switch to build mode", "切换到执行模式")
+        t("switch to YOLO mode", "切换到 YOLO 模式")
     );
     println!(
         "  /undo       {}",
@@ -1147,6 +1390,10 @@ fn print_repl_help() {
             "remove last turn and restore prompt",
             "撤销上一轮并恢复输入"
         )
+    );
+    println!(
+        "  /reset      {}",
+        t("clear current conversation history", "清空当前会话历史")
     );
     println!("  /help       {}", t("show this help", "显示此帮助"));
     println!("  /exit       {}", t("leave REPL", "退出 REPL"));
@@ -1176,14 +1423,33 @@ fn read_repl_input(
     let mut stdout = io::stdout();
     let mut input = prefill.unwrap_or_default();
     let mut history_index = history.len();
+    let (cursor_col, _) = cursor::position()?;
+    if cursor_col != 0 {
+        writeln!(stdout)?;
+        stdout.flush()?;
+    }
     terminal::enable_raw_mode()?;
     execute!(stdout, EnableBracketedPaste)?;
-    clear_repl_line(&mut stdout, mode, &input)?;
+    let (_, mut input_row) = cursor::position()?;
+    let mut rendered_rows = 0u16;
+    render_repl_input(
+        &mut stdout,
+        &mut input_row,
+        &mut rendered_rows,
+        mode,
+        &input,
+    )?;
     loop {
         match event::read()? {
             Event::Paste(text) => {
                 input.push_str(&text);
-                clear_repl_line(&mut stdout, mode, &input)?;
+                render_repl_input(
+                    &mut stdout,
+                    &mut input_row,
+                    &mut rendered_rows,
+                    mode,
+                    &input,
+                )?;
             }
             Event::Key(KeyEvent {
                 code, modifiers, ..
@@ -1200,17 +1466,35 @@ fn read_repl_input(
                             AgentMode::Yolo
                         };
                     }
-                    clear_repl_line(&mut stdout, mode, &input)?;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                    )?;
                 }
                 KeyCode::Esc => {
                     input.clear();
-                    clear_repl_line(&mut stdout, mode, &input)?;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                    )?;
                 }
                 KeyCode::Up => {
                     if !history.is_empty() {
                         history_index = history_index.saturating_sub(1);
                         input = history.get(history_index).cloned().unwrap_or_default();
-                        clear_repl_line(&mut stdout, mode, &input)?;
+                        render_repl_input(
+                            &mut stdout,
+                            &mut input_row,
+                            &mut rendered_rows,
+                            mode,
+                            &input,
+                        )?;
                     }
                 }
                 KeyCode::Down => {
@@ -1221,35 +1505,53 @@ fn read_repl_input(
                         history_index = history.len();
                         input.clear();
                     }
-                    clear_repl_line(&mut stdout, mode, &input)?;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                    )?;
                 }
                 KeyCode::Enter => {
+                    move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
-                    println!();
                     return Ok(Some((mode, input)));
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
-                    println!();
                     return Ok(None);
                 }
                 KeyCode::Char('d')
                     if modifiers.contains(KeyModifiers::CONTROL) && input.is_empty() =>
                 {
+                    move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
-                    println!();
                     return Ok(None);
                 }
                 KeyCode::Backspace => {
                     input.pop();
-                    clear_repl_line(&mut stdout, mode, &input)?;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                    )?;
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
                     input.push(ch);
-                    clear_repl_line(&mut stdout, mode, &input)?;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                    )?;
                 }
                 _ => {}
             },
@@ -1258,36 +1560,155 @@ fn read_repl_input(
     }
 }
 
-fn clear_repl_line(stdout: &mut io::Stdout, mode: AgentMode, input: &str) -> Result<()> {
+fn render_repl_input(
+    stdout: &mut io::Stdout,
+    input_row: &mut u16,
+    rendered_rows: &mut u16,
+    mode: AgentMode,
+    input: &str,
+) -> Result<()> {
     let suggestions = repl_command_suggestions(input);
-    let (_, row) = cursor::position()?;
-    let visible_input = repl_input_preview(input);
-    let prompt = format!("{} > {}", colored_mode_label(mode), visible_input);
-    let prompt_width = visible_width(&format!("[{}] > {}", mode.label(), visible_input)) as u16;
-    queue!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-        Print(&prompt),
-        MoveTo(0, row.saturating_add(1)),
-        Clear(ClearType::CurrentLine)
-    )?;
-    if !suggestions.is_empty() {
+    let lines = repl_input_lines(input);
+    let prompt_prefix = format!("{} > ", colored_mode_label(mode));
+    let plain_prefix = format!("[{}] > ", mode.label());
+    let current_rows = repl_render_rows(&plain_prefix, &lines, !suggestions.is_empty());
+    let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
+    ensure_repl_space(stdout, input_row, rows_to_clear)?;
+    for row_offset in 0..rows_to_clear {
         queue!(
             stdout,
+            MoveTo(0, (*input_row).saturating_add(row_offset)),
+            Clear(ClearType::CurrentLine)
+        )?;
+    }
+    let mut row_offset = 0u16;
+    for (index, line) in lines.iter().enumerate() {
+        let row = (*input_row).saturating_add(row_offset);
+        queue!(stdout, MoveTo(0, row))?;
+        if index == 0 {
+            queue!(stdout, Print(&prompt_prefix), Print(line))?;
+            row_offset = row_offset.saturating_add(repl_line_rows(&plain_prefix, line));
+        } else {
+            queue!(stdout, Print(line))?;
+            row_offset = row_offset.saturating_add(repl_line_rows("", line));
+        }
+    }
+    if !suggestions.is_empty() {
+        let suggestion_row = (*input_row).saturating_add(repl_prompt_rows(&plain_prefix, &lines));
+        queue!(
+            stdout,
+            MoveTo(0, suggestion_row),
             Print(format!("\x1b[2m{}\x1b[0m", suggestions.join("  ")))
         )?;
     }
-    queue!(stdout, MoveTo(prompt_width, row))?;
+    let (cursor_col, cursor_row_offset) = repl_cursor_position(&plain_prefix, &lines);
+    queue!(
+        stdout,
+        MoveTo(cursor_col, (*input_row).saturating_add(cursor_row_offset))
+    )?;
+    stdout.flush()?;
+    *rendered_rows = current_rows;
+    Ok(())
+}
+
+fn ensure_repl_space(stdout: &mut io::Stdout, input_row: &mut u16, needed_rows: u16) -> Result<()> {
+    let (_, term_rows) = terminal::size().unwrap_or((80, 24));
+    let term_rows = term_rows.max(1);
+    if (*input_row).saturating_add(needed_rows) < term_rows {
+        return Ok(());
+    }
+    let overflow = (*input_row)
+        .saturating_add(needed_rows)
+        .saturating_sub(term_rows.saturating_sub(1));
+    queue!(stdout, MoveTo(0, term_rows.saturating_sub(1)))?;
+    for _ in 0..overflow {
+        queue!(stdout, Print("\n"))?;
+    }
+    *input_row = (*input_row).saturating_sub(overflow);
+    Ok(())
+}
+
+fn move_after_repl_input(
+    stdout: &mut io::Stdout,
+    input_row: u16,
+    rendered_rows: u16,
+) -> Result<()> {
+    queue!(
+        stdout,
+        MoveTo(0, input_row.saturating_add(rendered_rows.max(1)))
+    )?;
     stdout.flush()?;
     Ok(())
 }
 
-fn repl_input_preview(input: &str) -> String {
-    input
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\n', " ↵ ")
+fn repl_render_rows(prefix: &str, lines: &[String], has_suggestions: bool) -> u16 {
+    repl_prompt_rows_for_cols(prefix, lines, terminal_cols()) + u16::from(has_suggestions)
+}
+
+fn repl_prompt_rows(prefix: &str, lines: &[String]) -> u16 {
+    repl_prompt_rows_for_cols(prefix, lines, terminal_cols())
+}
+
+fn repl_cursor_position(prefix: &str, lines: &[String]) -> (u16, u16) {
+    repl_cursor_position_for_cols(prefix, lines, terminal_cols())
+}
+
+fn repl_line_rows(prefix: &str, line: &str) -> u16 {
+    repl_line_rows_for_cols(prefix, line, terminal_cols())
+}
+
+fn repl_line_rows_for_cols(prefix: &str, line: &str, cols: usize) -> u16 {
+    let cols = cols.max(1);
+    let width = visible_width(prefix) + visible_width(line);
+    (width / cols + 1).min(u16::MAX as usize) as u16
+}
+
+fn repl_prompt_rows_for_cols(prefix: &str, lines: &[String], cols: usize) -> u16 {
+    let cols = cols.max(1);
+    let mut rows = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        rows += repl_line_rows_for_cols(if index == 0 { prefix } else { "" }, line, cols) as usize;
+    }
+    rows.max(1).min(u16::MAX as usize) as u16
+}
+
+fn repl_cursor_position_for_cols(prefix: &str, lines: &[String], cols: usize) -> (u16, u16) {
+    let cols = cols.max(1);
+    let last_index = lines.len().saturating_sub(1);
+    let mut row_offset = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        let width = if index == 0 {
+            visible_width(prefix) + visible_width(line)
+        } else {
+            visible_width(line)
+        };
+        if index == last_index {
+            return (
+                (width % cols).min(u16::MAX as usize) as u16,
+                (row_offset + width / cols).min(u16::MAX as usize) as u16,
+            );
+        }
+        row_offset += width / cols + 1;
+    }
+    (visible_width(prefix).min(u16::MAX as usize) as u16, 0)
+}
+
+fn terminal_cols() -> usize {
+    terminal::size()
+        .map(|(cols, _)| cols.max(1) as usize)
+        .unwrap_or(80)
+}
+
+fn repl_input_lines(input: &str) -> Vec<String> {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = normalized
+        .split('\n')
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 fn visible_width(value: &str) -> usize {
@@ -1318,13 +1739,14 @@ fn colored_mode_label(mode: AgentMode) -> String {
     }
 }
 
-fn repl_commands() -> [&'static str; 7] {
+fn repl_commands() -> [&'static str; 8] {
     [
         "/providers",
         "/config",
         "/plan",
         "/yolo",
         "/undo",
+        "/reset",
         "/help",
         "/exit",
     ]
@@ -1346,6 +1768,42 @@ fn complete_repl_command(input: &str) -> Option<&'static str> {
         suggestions.first().copied()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod repl_input_tests {
+    use super::*;
+
+    #[test]
+    fn prompt_rows_wrap_at_terminal_width() {
+        assert_eq!(repl_prompt_rows_for_cols("", &["1234567".into()], 10), 1);
+        assert_eq!(repl_prompt_rows_for_cols("", &["1234567890".into()], 10), 2);
+        assert_eq!(
+            repl_prompt_rows_for_cols("", &["123".into(), "456".into()], 10),
+            2
+        );
+    }
+
+    #[test]
+    fn cursor_position_wraps_at_terminal_width() {
+        assert_eq!(
+            repl_cursor_position_for_cols("", &["1234567".into()], 10),
+            (7, 0)
+        );
+        assert_eq!(
+            repl_cursor_position_for_cols("", &["1234567890".into()], 10),
+            (0, 1)
+        );
+        assert_eq!(
+            repl_cursor_position_for_cols("", &["123".into(), "456".into()], 10),
+            (3, 1)
+        );
+    }
+
+    #[test]
+    fn reset_is_a_repl_command() {
+        assert!(repl_commands().contains(&"/reset"));
     }
 }
 
@@ -1419,7 +1877,16 @@ async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()> {
             );
         }
         KbCommand::Stats => {
-            println!("{}", kb.stats()?);
+            let mut stats = kb.stats()?;
+            if let Some(object) = stats.as_object_mut() {
+                if let Ok(status) = crate::default_kb::status(paths) {
+                    object.insert(
+                        "default_kb_update_available".to_string(),
+                        serde_json::json!(status.has_update_notice),
+                    );
+                }
+            }
+            println!("{}", stats);
         }
         KbCommand::Embed(args) => match args.command {
             KbEmbedCommand::Reindex(args) => {
@@ -1427,6 +1894,17 @@ async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()> {
             }
         },
     }
+    Ok(())
+}
+
+async fn run_update_default_kb(paths: &MiyuPaths) -> Result<()> {
+    let config = AppConfig::load_or_default(paths)?;
+    let state = crate::default_kb::update(paths, &config)?;
+    println!(
+        "{}: {}",
+        t("updated default knowledge base", "已更新默认知识库"),
+        state.shorin_wiki_commit
+    );
     Ok(())
 }
 
@@ -1559,7 +2037,10 @@ fn skill_dir(paths: &MiyuPaths, name: &str) -> Result<PathBuf> {
 fn run_reset(paths: &MiyuPaths) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
     StateStore::new(paths)?.reset_conversation()?;
-    MemoryStore::new(&config, paths).clear_evicted_context()?;
+    let memory = MemoryStore::new(&config, paths);
+    memory.clear_evicted_context()?;
+    memory.clear_pending_events()?;
+    tools::clear_aur_review_state(paths)?;
     println!(
         "{}",
         t("cleared current conversation history", "已清空当前会话历史")
@@ -1585,12 +2066,7 @@ fn build_tool_registry(
         tools::ToolRegistry::new()
     };
     if mode == AgentMode::Yolo && config.tools.enabled && config.skills.enabled {
-        tools::register_skills(
-            &mut registry,
-            config,
-            paths,
-            config.skills.allow_command_execution,
-        )?;
+        tools::register_skills(&mut registry, config, paths, true)?;
     }
     Ok(registry)
 }
@@ -1602,5 +2078,6 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         AgentEvent::ToolResult { name, ok, output } => {
             renderer.write_tool_result(&name, ok, &output)
         }
+        AgentEvent::ToolProgress { name, message } => renderer.write_tool_progress(&name, &message),
     }
 }

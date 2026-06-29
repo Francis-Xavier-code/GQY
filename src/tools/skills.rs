@@ -3,38 +3,39 @@ use crate::config::AppConfig;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 
 pub fn skills_prompt(config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
-    let skills_dir = config.active_persona_skills_dir(paths);
-    if !skills_dir.exists() {
-        return Ok(String::new());
-    }
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(&skills_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+    let mut seen = BTreeSet::new();
+    for skills_dir in skill_search_dirs(config, paths) {
+        if !skills_dir.exists() {
             continue;
         }
-        if entry.path().join(".disabled").exists() {
-            continue;
+        for entry in std::fs::read_dir(&skills_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() || entry.path().join(".disabled").exists() {
+                continue;
+            }
+            let skill_file = entry.path().join("SKILL.md");
+            if !skill_file.is_file() {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&skill_file)?;
+            let name = skill_name(&raw, &entry.file_name().to_string_lossy());
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let description = frontmatter_value(&raw, "description").unwrap_or_default();
+            let body = strip_frontmatter(&raw);
+            entries.push(format!(
+                "- {name}: {description}\n  {}",
+                compact_skill_body(&body)
+            ));
         }
-        let skill_file = entry.path().join("SKILL.md");
-        if !skill_file.is_file() {
-            continue;
-        }
-        let raw = std::fs::read_to_string(&skill_file)?;
-        let name = frontmatter_value(&raw, "name")
-            .or_else(|| entry.file_name().to_str().map(ToString::to_string))
-            .unwrap_or_else(|| "unknown".to_string());
-        let description = frontmatter_value(&raw, "description").unwrap_or_default();
-        let body = strip_frontmatter(&raw);
-        entries.push(format!(
-            "- {name}: {description}\n  {}",
-            compact_skill_body(&body)
-        ));
     }
     if entries.is_empty() {
         return Ok(String::new());
@@ -51,29 +52,48 @@ pub fn register_skills(
     paths: &MiyuPaths,
     allow_command_execution: bool,
 ) -> Result<()> {
-    let skills_dir = config.active_persona_skills_dir(paths);
-    if !skills_dir.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(&skills_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+    let mut seen = BTreeSet::new();
+    for skills_dir in skill_search_dirs(config, paths) {
+        if !skills_dir.exists() {
             continue;
         }
-        let skill_dir = entry.path();
-        if skill_dir.join(".disabled").exists() {
-            continue;
-        }
-        let skill_file = skill_dir.join("SKILL.md");
-        if !skill_file.is_file() {
-            continue;
-        }
-        let raw = std::fs::read_to_string(&skill_file)?;
-        if frontmatter_value(&raw, "name").as_deref() == Some("web-search") {
-            register_web_search(registry, skill_dir, allow_command_execution);
+        for entry in std::fs::read_dir(&skills_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let skill_dir = entry.path();
+            if skill_dir.join(".disabled").exists() {
+                continue;
+            }
+            let skill_file = skill_dir.join("SKILL.md");
+            if !skill_file.is_file() {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&skill_file)?;
+            let name = skill_name(&raw, &entry.file_name().to_string_lossy());
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if name == "web-search" {
+                register_web_search(registry, skill_dir, allow_command_execution);
+            }
         }
     }
     Ok(())
+}
+
+fn skill_search_dirs(config: &AppConfig, paths: &MiyuPaths) -> Vec<PathBuf> {
+    let mut dirs = vec![paths.skills_dir.clone()];
+    let active = config.active_persona_skills_dir(paths);
+    if active != paths.skills_dir {
+        dirs.push(active);
+    }
+    dirs
+}
+
+fn skill_name(raw: &str, fallback: &str) -> String {
+    frontmatter_value(raw, "name").unwrap_or_else(|| fallback.to_string())
 }
 
 fn register_web_search(
@@ -186,5 +206,43 @@ fn compact_skill_body(body: &str) -> String {
         format!("{}...", text.chars().take(697).collect::<String>())
     } else {
         text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_paths(root: &std::path::Path) -> MiyuPaths {
+        MiyuPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            secrets_file: root.join("config/secrets.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/miyu.fish"),
+            bash_hook_file: root.join("shell/bash-hook.sh"),
+            zsh_hook_file: root.join("shell/zsh-hook.zsh"),
+        }
+    }
+
+    #[test]
+    fn skills_prompt_reads_global_skills_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let skill_dir = paths.skills_dir.join("gpu-passthrough");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: gpu-passthrough\ndescription: GPU switching\n---\n\nUse `gpustoggle --status`.",
+        )
+        .unwrap();
+        let config = AppConfig::default();
+        let prompt = skills_prompt(&config, &paths).unwrap();
+        assert!(prompt.contains("gpu-passthrough"));
+        assert!(prompt.contains("GPU switching"));
     }
 }

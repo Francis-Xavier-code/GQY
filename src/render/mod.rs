@@ -72,7 +72,9 @@ pub struct StreamRenderer {
     reasoning_chars: usize,
     reasoning_lines: usize,
     tool_stats: BTreeMap<String, ToolStats>,
+    readable_tool_names: bool,
     summary_line_active: bool,
+    summary_lines_active: u16,
     live_summary: bool,
 }
 
@@ -81,6 +83,7 @@ impl StreamRenderer {
         reasoning_mode: ReasoningDisplayMode,
         tool_call_mode: ToolCallDisplayMode,
         plain: bool,
+        readable_tool_names: bool,
     ) -> Self {
         Self {
             reasoning_mode,
@@ -92,7 +95,9 @@ impl StreamRenderer {
             reasoning_chars: 0,
             reasoning_lines: 0,
             tool_stats: BTreeMap::new(),
+            readable_tool_names,
             summary_line_active: false,
+            summary_lines_active: 0,
             live_summary: io::stdout().is_terminal(),
         }
     }
@@ -115,7 +120,7 @@ impl StreamRenderer {
             self.reasoning_chars += text.chars().count();
             self.reasoning_lines += text.matches('\n').count();
             self.mode = Some(ChatStreamKind::Reasoning);
-            self.render_summary_line(&self.reasoning_summary_text())?;
+            self.render_summary_line(&self.reasoning_summary_text(), SummaryStyle::Reasoning)?;
             return Ok(());
         }
         if self.mode != Some(chunk.kind) {
@@ -152,12 +157,12 @@ impl StreamRenderer {
         }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
             let mut stdout = io::stdout();
-            writeln!(stdout, "tool {name}")?;
+            writeln!(stdout, "tool {}", self.display_tool_name(name))?;
             write_tool_payload(&mut stdout, t("args", "参数"), arguments)?;
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
             self.tool_stats.entry(name.to_string()).or_default().calls += 1;
-            self.render_summary_line(&self.tool_summary_text())?;
+            self.render_summary_line(&self.tool_summary_text(), SummaryStyle::Tool)?;
         }
         Ok(())
     }
@@ -166,11 +171,7 @@ impl StreamRenderer {
         if self.plain {
             return Ok(());
         }
-        let status = if ok {
-            t("ok", "成功")
-        } else {
-            t("error", "错误")
-        };
+        let status = if ok { "ok" } else { "err" };
         if name == "run_command" {
             if self.tool_call_mode == ToolCallDisplayMode::Summary {
                 let stats = self.tool_stats.entry(name.to_string()).or_default();
@@ -178,6 +179,7 @@ impl StreamRenderer {
                     stats.ok += 1;
                 } else {
                     stats.error += 1;
+                    stats.progress = None;
                     let mut stdout = io::stdout();
                     write_command_error_block(&mut stdout, output)?;
                     stdout.flush()?;
@@ -193,7 +195,7 @@ impl StreamRenderer {
         }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
             let mut stdout = io::stdout();
-            writeln!(stdout, "result {name} {status}")?;
+            writeln!(stdout, "result {} {status}", self.display_tool_name(name))?;
             write_tool_payload(&mut stdout, t("output", "输出"), output)?;
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
@@ -202,15 +204,58 @@ impl StreamRenderer {
                 stats.ok += 1;
             } else {
                 stats.error += 1;
+                stats.progress = None;
             }
-            self.render_summary_line(&self.tool_summary_text())?;
+            self.render_summary_line(&self.tool_summary_text(), SummaryStyle::Tool)?;
         }
+        Ok(())
+    }
+
+    pub fn write_tool_progress(&mut self, name: &str, message: &str) -> Result<()> {
+        if self.plain {
+            return Ok(());
+        }
+        if message == "__external_output__" {
+            self.prepare_for_external_output()?;
+            return Ok(());
+        }
+        self.end_active_stream_line()?;
+        self.finalize_reasoning_summary()?;
+        if self.tool_call_mode == ToolCallDisplayMode::Full {
+            let mut stdout = io::stdout();
+            writeln!(
+                stdout,
+                "progress {}: {message}",
+                self.display_tool_name(name)
+            )?;
+            stdout.flush()?;
+        } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
+            self.tool_stats
+                .entry(name.to_string())
+                .or_default()
+                .progress = Some(message.to_string());
+            self.render_summary_line(&self.tool_summary_text(), SummaryStyle::Tool)?;
+        }
+        Ok(())
+    }
+
+    pub fn prepare_for_external_output(&mut self) -> Result<()> {
+        if self.summary_line_active {
+            let mut stdout = io::stdout();
+            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            stdout.flush()?;
+            self.summary_line_active = false;
+        }
+        self.end_active_stream_line()?;
+        self.finalize_reasoning_summary()?;
+        self.finalize_tools_summary()?;
+        self.show_cursor()?;
         Ok(())
     }
 
     pub fn finish(&mut self) -> Result<()> {
         if self.summary_line_active {
-            execute!(io::stdout(), MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            self.clear_summary_lines()?;
             self.summary_line_active = false;
         }
         if self.mode == Some(ChatStreamKind::Content) && !self.plain {
@@ -238,7 +283,7 @@ impl StreamRenderer {
                 if self.mode.is_some() {
                     writeln!(stdout)?;
                 }
-                execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                execute!(stdout, SetForegroundColor(Color::DarkCyan))?;
                 writeln!(stdout, "{}", t("thinking", "思考"))?;
             }
             ChatStreamKind::Content => {
@@ -278,12 +323,20 @@ impl StreamRenderer {
         if self.reasoning_mode == ReasoningDisplayMode::Summary && self.reasoning_chars > 0 {
             if self.summary_line_active {
                 let mut stdout = io::stdout();
-                execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-                writeln!(stdout, "\x1b[2m{}\x1b[0m", self.reasoning_summary_text())?;
+                self.clear_summary_lines()?;
+                writeln!(
+                    stdout,
+                    "{}",
+                    style_summary_text(&self.reasoning_summary_text(), SummaryStyle::Reasoning)
+                )?;
                 stdout.flush()?;
                 self.summary_line_active = false;
+                self.summary_lines_active = 0;
             } else {
-                println!("\x1b[2m{}\x1b[0m", self.reasoning_summary_text());
+                println!(
+                    "{}",
+                    style_summary_text(&self.reasoning_summary_text(), SummaryStyle::Reasoning)
+                );
             }
             self.reasoning_chars = 0;
             self.reasoning_lines = 0;
@@ -296,27 +349,60 @@ impl StreamRenderer {
         if self.tool_call_mode == ToolCallDisplayMode::Summary && !self.tool_stats.is_empty() {
             if self.summary_line_active {
                 let mut stdout = io::stdout();
-                execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-                writeln!(stdout, "\x1b[2m{}\x1b[0m", self.tool_summary_text())?;
+                self.clear_summary_lines()?;
+                writeln!(
+                    stdout,
+                    "{}",
+                    style_summary_text(&self.tool_summary_text(), SummaryStyle::Tool)
+                )?;
                 stdout.flush()?;
                 self.summary_line_active = false;
+                self.summary_lines_active = 0;
             } else {
-                println!("\x1b[2m{}\x1b[0m", self.tool_summary_text());
+                println!(
+                    "{}",
+                    style_summary_text(&self.tool_summary_text(), SummaryStyle::Tool)
+                );
             }
             self.tool_stats.clear();
         }
         Ok(())
     }
 
-    fn render_summary_line(&mut self, text: &str) -> Result<()> {
+    fn render_summary_line(&mut self, text: &str, style: SummaryStyle) -> Result<()> {
         if !self.live_summary {
             return Ok(());
         }
         let mut stdout = io::stdout();
-        execute!(stdout, MoveToColumn(0))?;
-        write!(stdout, "\x1b[2m{text}\x1b[0m\x1b[K")?;
+        self.clear_summary_lines()?;
+        let lines = text.lines().collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            if index > 0 {
+                writeln!(stdout)?;
+            }
+            write!(stdout, "{}\x1b[K", style_summary_text(line, style))?;
+        }
         stdout.flush()?;
         self.summary_line_active = true;
+        self.summary_lines_active = lines.len().max(1) as u16;
+        Ok(())
+    }
+
+    fn clear_summary_lines(&mut self) -> Result<()> {
+        if !self.summary_line_active {
+            return Ok(());
+        }
+        let mut stdout = io::stdout();
+        let lines = self.summary_lines_active.max(1);
+        for index in 0..lines {
+            if index > 0 {
+                execute!(stdout, crossterm::cursor::MoveUp(1))?;
+            }
+            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        }
+        stdout.flush()?;
+        self.summary_line_active = false;
+        self.summary_lines_active = 0;
         Ok(())
     }
 
@@ -336,18 +422,32 @@ impl StreamRenderer {
             .tool_stats
             .iter()
             .map(|(name, stats)| {
-                format!(
-                    "{name}×{} {}:{} {}:{}",
-                    stats.calls.max(stats.ok + stats.error),
-                    t("ok", "成功"),
-                    stats.ok,
-                    t("err", "错误"),
-                    stats.error
-                )
+                let header = tool_status_text(&self.display_tool_name(name), stats);
+                stats.progress.as_ref().map_or(header.clone(), |message| {
+                    let progress = message
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .map(|line| format!("· {}", clip_progress_line(line, 120)))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if progress.is_empty() {
+                        header
+                    } else {
+                        format!("{header}\n{progress}")
+                    }
+                })
             })
             .collect::<Vec<_>>()
             .join(", ");
         format!("{}: {parts}", t("tools", "工具"))
+    }
+
+    fn display_tool_name<'a>(&self, name: &'a str) -> &'a str {
+        if self.readable_tool_names {
+            readable_tool_name(name)
+        } else {
+            name
+        }
     }
 
     fn hide_cursor(&mut self) -> Result<()> {
@@ -372,6 +472,117 @@ struct ToolStats {
     calls: usize,
     ok: usize,
     error: usize,
+    progress: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum SummaryStyle {
+    Reasoning,
+    Tool,
+}
+
+fn style_summary_text(text: &str, style: SummaryStyle) -> String {
+    match style {
+        SummaryStyle::Reasoning => format!("\x1b[2m\x1b[36m{text}\x1b[0m"),
+        SummaryStyle::Tool => format!("\x1b[2m{text}\x1b[0m"),
+    }
+}
+
+fn tool_status_text(name: &str, stats: &ToolStats) -> String {
+    let calls = stats.calls.max(stats.ok + stats.error).max(1);
+    let running = stats.calls.saturating_sub(stats.ok + stats.error);
+    if calls == 1 {
+        if running > 0 {
+            return format!("{name}×1 {}", t("running", "运行中"));
+        }
+        if stats.error > 0 {
+            return format!("{name}×1 err");
+        }
+        if stats.ok > 0 {
+            return format!("{name}×1 ok");
+        }
+    }
+    if running > 0 {
+        format!(
+            "{name}×{calls} {}:{} ok:{} err:{}",
+            t("running", "运行中"),
+            running,
+            stats.ok,
+            stats.error
+        )
+    } else {
+        format!("{name}×{calls} ok:{} err:{}", stats.ok, stats.error)
+    }
+}
+
+fn readable_tool_name(name: &str) -> &str {
+    match name {
+        "run_command" => "运行命令",
+        "task_agent" => "创建子任务",
+        "read_file" => "读取文件",
+        "write_file" => "写入文件",
+        "edit_file" => "编辑文件",
+        "list_directory" => "列目录",
+        "create_directory" => "创建目录",
+        "trash_path" => "移入回收站",
+        "find_files" | "glob" => "查找文件",
+        "search_text" | "grep" => "搜索文本",
+        "get_current_directory" => "当前目录",
+        "get_current_time" => "当前时间",
+        "inspect_issue" => "检查问题",
+        "check_os_info" => "查看系统信息",
+        "web_search" => "网页搜索",
+        "web_fetch" => "读取网页",
+        "search_web_images" => "搜索图片",
+        "analyze_image" | "vision_analyze" => "分析图片",
+        "print_image" => "显示图片",
+        "generate_image" => "生成图片",
+        "search_meme" => "搜索表情包",
+        "show_meme" => "发送表情",
+        "add_meme" => "添加表情包",
+        "update_meme" => "更新表情包",
+        "delete_meme" => "删除表情包",
+        "deep_research" => "深度研究",
+        "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => "导入知识库",
+        "read_knowledge_base_file" => "读取知识库",
+        "search_knowledge_base" => "搜索知识库",
+        "search_knowledge_base_by_name" => "按名称搜索知识库",
+        "edit_knowledge_base_file" => "编辑知识库",
+        "remove_knowledge_base_file" => "移除知识库",
+        "list_knowledge_base_files" => "列出知识库",
+        "set_alarm" => "设置闹钟",
+        "list_alarms" => "列出闹钟",
+        "cancel_alarm" => "取消闹钟",
+        "remember_fact" => "记录记忆",
+        "search_evicted_context" => "搜索旧上下文",
+        "recall_past_events" => "回忆往事",
+        "recall_memory" | "recall_memories" => "召回记忆",
+        "forget_memory" | "forget_memories" => "删除记忆",
+        "list_memory" | "list_memories" => "列出记忆",
+        "aur_search_packages" => "搜索 AUR",
+        "aur_get_package_info" => "查看 AUR 包",
+        "pacman_search" => "搜索软件包",
+        "archwiki_query" => "查询 ArchWiki",
+        "man_search" => "搜索手册",
+        "man_read" => "读取手册",
+        "moegirl_query" => "查询萌娘百科",
+        "calculate" | "calculator" => "计算",
+        "calculate_hash" => "计算哈希",
+        "decode_encoded_text" => "解码文本",
+        "exchange_rate" | "get_exchange_rate" => "汇率查询",
+        "weather" | "get_weather" => "天气查询",
+        "xuanxue_pick" => "玄学选择",
+        "xuanxue_divine" => "玄学占卜",
+        "draw_zhouyi_hexagram" => "周易起卦",
+        "draw_tarot_card" => "抽塔罗牌",
+        "draw_fortune_lot" => "抽签",
+        "load_skill" => "加载技能",
+        "review_aur_package" => "审查 AUR 包",
+        "install_aur_package" => "安装 AUR 包",
+        "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
+        "linux_game_compatibility" => "查询 Linux 游戏兼容性",
+        _ => name,
+    }
 }
 
 struct MarkdownStreamRenderer {
@@ -413,7 +624,14 @@ struct MarkdownLineRenderer {
     in_code_block: bool,
     in_math_block: bool,
     code_lang: String,
+    code_buffer: Vec<String>,
     table_buffer: Vec<String>,
+    active_table: Option<ActiveTable>,
+}
+
+struct ActiveTable {
+    widths: Vec<usize>,
+    alignments: Vec<TableAlign>,
 }
 
 impl MarkdownLineRenderer {
@@ -422,18 +640,22 @@ impl MarkdownLineRenderer {
             in_code_block: false,
             in_math_block: false,
             code_lang: String::new(),
+            code_buffer: Vec::new(),
             table_buffer: Vec::new(),
+            active_table: None,
         }
     }
 
     fn render_line(&mut self, line: &str) -> String {
         if line.trim_start().starts_with("```") {
-            let pending = self.flush();
             if self.in_code_block {
                 self.in_code_block = false;
+                let code = render_code_block(&self.code_lang, &self.code_buffer);
                 self.code_lang.clear();
-                return format!("{pending}\x1b[2m`--\x1b[0m\n");
+                self.code_buffer.clear();
+                return code;
             }
+            let pending = self.flush();
             self.in_code_block = true;
             self.code_lang = line
                 .trim_start()
@@ -442,15 +664,12 @@ impl MarkdownLineRenderer {
                 .next()
                 .unwrap_or_default()
                 .to_string();
-            let label = if self.code_lang.is_empty() {
-                "code".to_string()
-            } else {
-                format!("code {}", self.code_lang)
-            };
-            return format!("{pending}\x1b[2m,-- {label}\x1b[0m\n");
+            self.code_buffer.clear();
+            return pending;
         }
         if self.in_code_block {
-            return format!("{}\n", highlight_code_line(&self.code_lang, line));
+            self.code_buffer.push(line.to_string());
+            return String::new();
         }
         if line.trim() == "$$" {
             let pending = self.flush();
@@ -460,9 +679,38 @@ impl MarkdownLineRenderer {
         if self.in_math_block {
             return format!("\x1b[36m{}\x1b[0m\n", line.trim_end());
         }
+        if let Some(table) = &self.active_table {
+            if looks_like_table_row(line) {
+                let row = parse_table_row(line);
+                return render_table_row(&row, &table.widths, &table.alignments, false);
+            }
+            let mut output = table_border(&table.widths, '+', '+', '+');
+            self.active_table = None;
+            output.push_str(&self.render_line(line));
+            return output;
+        }
         if looks_like_table_row(line) {
             self.table_buffer.push(line.to_string());
-            return String::new();
+            if self.table_buffer.len() < 2 {
+                return String::new();
+            }
+            let first = self.table_buffer.first().cloned().unwrap_or_default();
+            let second = self.table_buffer.get(1).cloned().unwrap_or_default();
+            if is_table_separator(&second) {
+                let header = parse_table_row(&first);
+                let alignments = parse_table_alignments(&second);
+                let widths = bounded_table_widths_for_cols(header.len().max(alignments.len()));
+                self.table_buffer.clear();
+                self.active_table = Some(ActiveTable {
+                    widths: widths.clone(),
+                    alignments: alignments.clone(),
+                });
+                let mut output = table_border(&widths, '+', '+', '+');
+                output.push_str(&render_table_row(&header, &widths, &alignments, true));
+                output.push_str(&table_border(&widths, '+', '+', '+'));
+                return output;
+            }
+            return self.flush();
         }
         let mut output = self.flush();
         output.push_str(&render_markdown_line(line));
@@ -471,6 +719,16 @@ impl MarkdownLineRenderer {
     }
 
     fn flush(&mut self) -> String {
+        if self.in_code_block {
+            self.in_code_block = false;
+            let output = render_code_block(&self.code_lang, &self.code_buffer);
+            self.code_lang.clear();
+            self.code_buffer.clear();
+            return output;
+        }
+        if let Some(table) = self.active_table.take() {
+            return table_border(&table.widths, '+', '+', '+');
+        }
         if self.table_buffer.is_empty() {
             return String::new();
         }
@@ -495,15 +753,15 @@ fn render_markdown_line(line: &str) -> String {
         return header;
     }
     if let Some((depth, rest)) = parse_blockquote(trimmed) {
-        let bars = "\x1b[90m|\x1b[0m ".repeat(depth);
-        return format!("{indent}{bars}\x1b[90m{}\x1b[0m", render_inline(rest));
+        let bars = "\x1b[32m| \x1b[0m".repeat(depth);
+        return format!("{indent}{bars}\x1b[32m{}\x1b[0m", render_inline(rest));
     }
     if let Some(rest) = trimmed
         .strip_prefix("- ")
         .or_else(|| trimmed.strip_prefix("* "))
         .or_else(|| trimmed.strip_prefix("+ "))
     {
-        return format!("{indent}\x1b[2m-\x1b[0m {}", render_inline(rest));
+        return format!("{indent}{TERTIARY_STYLE}-{RESET} {}", render_inline(rest));
     }
     let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
     if digits > 0
@@ -512,7 +770,10 @@ fn render_markdown_line(line: &str) -> String {
     {
         let marker = &trimmed[..=digits];
         let rest = &trimmed[digits + 2..];
-        return format!("{indent}\x1b[2m{marker}\x1b[0m {}", render_inline(rest));
+        return format!(
+            "{indent}{TERTIARY_STYLE}{marker}{RESET} {}",
+            render_inline(rest)
+        );
     }
     if is_horizontal_rule(trimmed) {
         return horizontal_rule();
@@ -535,16 +796,9 @@ fn render_header(line: &str) -> Option<String> {
     if level == 0 || level > 6 || line.as_bytes().get(level) != Some(&b' ') {
         return None;
     }
-    let prefix = match level {
-        1 => "·",
-        2 => "··",
-        3 => "···",
-        4 => "····",
-        5 => "·····",
-        _ => "······",
-    };
+    let prefix = "#".repeat(level);
     Some(format!(
-        "\x1b[1m\x1b[36m{prefix} {}\x1b[0m",
+        "{HEADER_STYLE}{prefix} {}{RESET}",
         render_inline(&line[level + 1..])
     ))
 }
@@ -559,12 +813,15 @@ fn render_inline(text: &str) -> String {
                 if chars.get(label_end + 1) == Some(&'(') {
                     if let Some(url_end) = find_marker(&chars, label_end + 2, ')') {
                         let alt = chars[index + 2..label_end].iter().collect::<String>();
-                        output.push_str("\x1b[35m[image");
+                        output.push_str(IMAGE_STYLE);
+                        output.push_str("[image");
                         if !alt.is_empty() {
                             output.push_str(": ");
                             output.push_str(&alt);
                         }
-                        output.push_str("]\x1b[0m(");
+                        output.push_str("]");
+                        output.push_str(RESET);
+                        output.push('(');
                         output.push_str(&render_url(
                             &chars[label_end + 2..url_end].iter().collect::<String>(),
                         ));
@@ -577,54 +834,58 @@ fn render_inline(text: &str) -> String {
         }
         if chars[index] == '`' {
             if let Some(end) = find_marker(&chars, index + 1, '`') {
-                output.push_str("\x1b[33m");
+                output.push_str(INLINE_CODE_STYLE);
                 output.extend(chars[index + 1..end].iter());
-                output.push_str("\x1b[0m");
+                output.push_str(RESET);
                 index = end + 1;
                 continue;
             }
         }
         if index + 1 < chars.len() && chars[index] == '$' && chars[index + 1] == '$' {
             if let Some(end) = find_double_marker(&chars, index + 2, '$') {
-                output.push_str("\x1b[36m$$ ");
+                output.push_str(MATH_STYLE);
+                output.push_str("$$ ");
                 output.extend(chars[index + 2..end].iter());
-                output.push_str(" $$\x1b[0m");
+                output.push_str(" $$");
+                output.push_str(RESET);
                 index = end + 2;
                 continue;
             }
         }
         if chars[index] == '$' {
             if let Some(end) = find_marker(&chars, index + 1, '$') {
-                output.push_str("\x1b[36m$");
+                output.push_str(MATH_STYLE);
+                output.push('$');
                 output.extend(chars[index + 1..end].iter());
-                output.push_str("$\x1b[0m");
+                output.push('$');
+                output.push_str(RESET);
                 index = end + 1;
                 continue;
             }
         }
         if index + 1 < chars.len() && chars[index] == '~' && chars[index + 1] == '~' {
             if let Some(end) = find_double_marker(&chars, index + 2, '~') {
-                output.push_str("\x1b[9m");
+                output.push_str(STRIKE_STYLE);
                 output.extend(chars[index + 2..end].iter());
-                output.push_str("\x1b[0m");
+                output.push_str(RESET);
                 index = end + 2;
                 continue;
             }
         }
         if index + 1 < chars.len() && chars[index] == '*' && chars[index + 1] == '*' {
             if let Some(end) = find_double_marker(&chars, index + 2, '*') {
-                output.push_str("\x1b[1m");
+                output.push_str(BOLD_STYLE);
                 output.extend(chars[index + 2..end].iter());
-                output.push_str("\x1b[0m");
+                output.push_str(RESET);
                 index = end + 2;
                 continue;
             }
         }
         if chars[index] == '*' {
             if let Some(end) = find_marker(&chars, index + 1, '*') {
-                output.push_str("\x1b[3m");
+                output.push_str(ITALIC_STYLE);
                 output.extend(chars[index + 1..end].iter());
-                output.push_str("\x1b[0m");
+                output.push_str(RESET);
                 index = end + 1;
                 continue;
             }
@@ -632,9 +893,9 @@ fn render_inline(text: &str) -> String {
         if chars[index] == '_' {
             if is_emphasis_start(&chars, index) {
                 if let Some(end) = find_emphasis_end(&chars, index + 1, '_') {
-                    output.push_str("\x1b[3m");
+                    output.push_str(ITALIC_STYLE);
                     output.extend(chars[index + 1..end].iter());
-                    output.push_str("\x1b[0m");
+                    output.push_str(RESET);
                     index = end + 1;
                     continue;
                 }
@@ -644,9 +905,10 @@ fn render_inline(text: &str) -> String {
             if let Some(label_end) = find_marker(&chars, index + 1, ']') {
                 if chars.get(label_end + 1) == Some(&'(') {
                     if let Some(url_end) = find_marker(&chars, label_end + 2, ')') {
-                        output.push_str("\x1b[4m\x1b[36m");
+                        output.push_str(LINK_LABEL_STYLE);
                         output.extend(chars[index + 1..label_end].iter());
-                        output.push_str("\x1b[0m ");
+                        output.push_str(RESET);
+                        output.push(' ');
                         output.push_str(&render_url_wrapped(
                             &chars[label_end + 2..url_end].iter().collect::<String>(),
                         ));
@@ -662,7 +924,7 @@ fn render_inline(text: &str) -> String {
                 if value.starts_with("http://") || value.starts_with("https://") {
                     output.push_str("\x1b[4m");
                     output.push_str(&render_url_wrapped(&value));
-                    output.push_str("\x1b[0m");
+                    output.push_str(RESET);
                     index = end + 1;
                     continue;
                 }
@@ -679,8 +941,30 @@ fn render_inline(text: &str) -> String {
     output
 }
 
+const RESET: &str = "\x1b[0m";
+const PRIMARY_STYLE: &str = "\x1b[38;5;189m";
+const SECONDARY_STYLE: &str = "\x1b[36m";
+const TERTIARY_STYLE: &str = "\x1b[35m";
+const HEADER_STYLE: &str = "\x1b[1m\x1b[35m";
+const INLINE_CODE_STYLE: &str = SECONDARY_STYLE;
+const LINK_LABEL_STYLE: &str = "\x1b[4m\x1b[38;5;81m";
+const URL_STYLE: &str = "\x1b[2m\x1b[38;5;75m";
+const IMAGE_STYLE: &str = "\x1b[1m\x1b[38;5;213m";
+const MATH_STYLE: &str = "\x1b[38;5;117m";
+const BOLD_STYLE: &str = "\x1b[1m\x1b[34m";
+const ITALIC_STYLE: &str = "\x1b[3m\x1b[38;5;250m";
+const STRIKE_STYLE: &str = "\x1b[9m";
+const CODE_BLOCK_BG: &str = "";
+const CODE_BLOCK_FRAME_STYLE: &str = SECONDARY_STYLE;
+const CODE_TOKEN_RESET: &str = "\x1b[0m";
+const CODE_KEYWORD_STYLE: &str = "\x1b[38;2;196;167;231m";
+const CODE_FUNCTION_STYLE: &str = "\x1b[38;2;156;207;216m";
+const CODE_STRING_STYLE: &str = "\x1b[38;2;166;214;160m";
+const CODE_NUMBER_STYLE: &str = "\x1b[38;2;246;193;119m";
+const CODE_COMMENT_STYLE: &str = "\x1b[2m\x1b[38;2;110;106;134m";
+
 fn render_url(url: &str) -> String {
-    format!("\x1b[2m\x1b[34m{url}\x1b[0m")
+    format!("{URL_STYLE}{url}{RESET}")
 }
 
 fn render_url_wrapped(url: &str) -> String {
@@ -732,13 +1016,84 @@ fn render_table(lines: &[String]) -> String {
             widths[index] = widths[index].max(visible_width(cell));
         }
     }
+    widths = bounded_table_widths(widths);
     let mut output = String::new();
     output.push_str(&table_border(&widths, '+', '+', '+'));
     for (row_index, row) in rows.iter().enumerate() {
+        let wrapped = widths
+            .iter()
+            .enumerate()
+            .map(|(index, width)| {
+                let cell = row.get(index).map(String::as_str).unwrap_or("");
+                wrap_ansi_text(cell, *width)
+            })
+            .collect::<Vec<_>>();
+        let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        for line_index in 0..row_height {
+            output.push('|');
+            for (index, width) in widths.iter().enumerate() {
+                let cell = wrapped
+                    .get(index)
+                    .and_then(|lines| lines.get(line_index))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let cell = if row_index == 0 && !cell.is_empty() {
+                    format!("\x1b[1m{cell}\x1b[0m")
+                } else {
+                    cell.to_string()
+                };
+                output.push(' ');
+                output.push_str(&aligned_cell(
+                    &cell,
+                    *width,
+                    alignments.get(index).copied().unwrap_or(TableAlign::Left),
+                ));
+                output.push(' ');
+                output.push('|');
+            }
+            output.push('\n');
+        }
+        if row_index == 0 {
+            output.push_str(&table_border(&widths, '+', '+', '+'));
+        }
+    }
+    output.push_str(&table_border(&widths, '+', '+', '+'));
+    output
+}
+
+fn parse_table_row(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|cell| render_inline(cell.trim()))
+        .collect()
+}
+
+fn render_table_row(
+    row: &[String],
+    widths: &[usize],
+    alignments: &[TableAlign],
+    header: bool,
+) -> String {
+    let wrapped = widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let cell = row.get(index).map(String::as_str).unwrap_or("");
+            wrap_ansi_text(cell, *width)
+        })
+        .collect::<Vec<_>>();
+    let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+    let mut output = String::new();
+    for line_index in 0..row_height {
         output.push('|');
         for (index, width) in widths.iter().enumerate() {
-            let cell = row.get(index).map(String::as_str).unwrap_or("");
-            let cell = if row_index == 0 {
+            let cell = wrapped
+                .get(index)
+                .and_then(|lines| lines.get(line_index))
+                .map(String::as_str)
+                .unwrap_or("");
+            let cell = if header && !cell.is_empty() {
                 format!("\x1b[1m{cell}\x1b[0m")
             } else {
                 cell.to_string()
@@ -753,12 +1108,98 @@ fn render_table(lines: &[String]) -> String {
             output.push('|');
         }
         output.push('\n');
-        if row_index == 0 {
-            output.push_str(&table_border(&widths, '+', '+', '+'));
-        }
     }
-    output.push_str(&table_border(&widths, '+', '+', '+'));
     output
+}
+
+fn bounded_table_widths_for_cols(cols: usize) -> Vec<usize> {
+    if cols == 0 {
+        return Vec::new();
+    }
+    let terminal_width = terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(100)
+        .saturating_sub(1)
+        .max(20);
+    let border_overhead = cols.saturating_mul(3).saturating_add(1);
+    let available = terminal_width.saturating_sub(border_overhead).max(cols);
+    let base = (available / cols).max(1);
+    let mut widths = vec![base; cols];
+    for width in widths.iter_mut().take(available % cols) {
+        *width += 1;
+    }
+    widths
+}
+
+fn bounded_table_widths(mut widths: Vec<usize>) -> Vec<usize> {
+    if widths.is_empty() {
+        return widths;
+    }
+    let terminal_width = terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(100)
+        .saturating_sub(1)
+        .max(20);
+    let border_overhead = widths.len().saturating_mul(3).saturating_add(1);
+    let available = terminal_width
+        .saturating_sub(border_overhead)
+        .max(widths.len());
+    while widths.iter().sum::<usize>() > available {
+        let Some((index, width)) = widths
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, width)| **width)
+            .map(|(index, width)| (index, *width))
+        else {
+            break;
+        };
+        if width <= 8 {
+            break;
+        }
+        widths[index] -= 1;
+    }
+    widths
+}
+
+fn wrap_ansi_text(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            current.push(ch);
+            for next in chars.by_ref() {
+                current.push(next);
+                if next == 'm' {
+                    break;
+                }
+            }
+            continue;
+        }
+        let ch_width = char_display_width(ch);
+        if current_width > 0 && current_width + ch_width > width {
+            lines.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
+    }
+    lines.push(current);
+    lines
+}
+
+fn char_display_width(ch: char) -> usize {
+    if ch.is_ascii() {
+        1
+    } else {
+        2
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -813,39 +1254,196 @@ fn table_border(widths: &[usize], left: char, mid: char, right: char) -> String 
 }
 
 fn highlight_code_line(lang: &str, line: &str) -> String {
-    let keywords = match lang {
-        "rs" | "rust" => &[
-            "fn", "let", "mut", "pub", "struct", "enum", "impl", "use", "match", "if", "else",
-            "async", "await",
-        ][..],
-        "js" | "ts" | "tsx" | "jsx" => &[
-            "function", "const", "let", "return", "if", "else", "import", "export", "async",
-            "await",
-        ][..],
-        "py" | "python" => &[
-            "def", "class", "import", "from", "return", "if", "else", "elif", "async", "await",
-        ][..],
-        _ => &[],
+    let lang = lang.trim().to_ascii_lowercase();
+    if lang.is_empty() {
+        return line.to_string();
+    }
+    let comment_marker = match lang.as_str() {
+        "py" | "python" | "sh" | "bash" | "zsh" | "fish" | "toml" | "yaml" | "yml" => Some('#'),
+        "rs" | "rust" | "js" | "ts" | "tsx" | "jsx" | "c" | "cpp" | "java" | "go" => None,
+        _ => None,
     };
-    if keywords.is_empty() {
-        return format!("\x1b[33m{line}\x1b[0m");
-    }
     let mut output = String::new();
-    let mut highlighted = false;
-    for token in line.split_inclusive(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_') {
-        let bare = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_');
-        if keywords.contains(&bare) {
-            highlighted = true;
-            output.push_str(&token.replace(bare, &format!("\x1b[1m\x1b[36m{bare}\x1b[0m\x1b[2m")));
-        } else {
-            output.push_str(token);
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < chars.len() {
+        if let Some(marker) = comment_marker {
+            if chars[index] == marker {
+                output.push_str(CODE_COMMENT_STYLE);
+                output.extend(chars[index..].iter());
+                output.push_str(CODE_TOKEN_RESET);
+                return output;
+            }
         }
+        if index + 1 < chars.len() && chars[index] == '/' && chars[index + 1] == '/' {
+            output.push_str(CODE_COMMENT_STYLE);
+            output.extend(chars[index..].iter());
+            output.push_str(CODE_TOKEN_RESET);
+            return output;
+        }
+        if chars[index] == '"'
+            || chars[index] == '\''
+            || (chars[index] == '`'
+                && matches!(lang.as_str(), "js" | "ts" | "tsx" | "jsx" | "sh" | "bash"))
+        {
+            let quote = chars[index];
+            let start = index;
+            index += 1;
+            let mut escaped = false;
+            while index < chars.len() {
+                if escaped {
+                    escaped = false;
+                } else if chars[index] == '\\' {
+                    escaped = true;
+                } else if chars[index] == quote {
+                    index += 1;
+                    break;
+                }
+                index += 1;
+            }
+            output.push_str(CODE_STRING_STYLE);
+            output.extend(chars[start..index].iter());
+            output.push_str(CODE_TOKEN_RESET);
+            continue;
+        }
+        if chars[index].is_ascii_digit() {
+            let start = index;
+            index += 1;
+            while index < chars.len()
+                && (chars[index].is_ascii_alphanumeric() || matches!(chars[index], '_' | '.'))
+            {
+                index += 1;
+            }
+            output.push_str(CODE_NUMBER_STYLE);
+            output.extend(chars[start..index].iter());
+            output.push_str(CODE_TOKEN_RESET);
+            continue;
+        }
+        if is_code_word_start(chars[index]) {
+            let start = index;
+            index += 1;
+            while index < chars.len() && is_code_word_char(chars[index]) {
+                index += 1;
+            }
+            let token = chars[start..index].iter().collect::<String>();
+            let style = if code_keywords(&lang).contains(&token.as_str()) {
+                Some(CODE_KEYWORD_STYLE)
+            } else if matches!(
+                token.as_str(),
+                "true" | "false" | "null" | "None" | "Some" | "Ok" | "Err"
+            ) {
+                Some(CODE_NUMBER_STYLE)
+            } else if next_non_space_is_open_paren(&chars, index) {
+                Some(CODE_FUNCTION_STYLE)
+            } else {
+                None
+            };
+            if let Some(style) = style {
+                output.push_str(style);
+                output.push_str(&token);
+                output.push_str(CODE_TOKEN_RESET);
+            } else {
+                output.push_str(PRIMARY_STYLE);
+                output.push_str(&token);
+                output.push_str(CODE_TOKEN_RESET);
+            }
+            continue;
+        }
+        output.push(chars[index]);
+        index += 1;
     }
-    if highlighted {
-        output
+    output
+}
+
+fn render_code_block(lang: &str, lines: &[String]) -> String {
+    let label = if lang.is_empty() {
+        "code".to_string()
     } else {
-        format!("\x1b[33m{line}\x1b[0m")
+        format!("code {lang}")
+    };
+    let header = format!("-- {label}");
+    let footer = "--";
+    let width = lines
+        .iter()
+        .map(|line| line.chars().count())
+        .chain([header.chars().count(), footer.chars().count()])
+        .max()
+        .unwrap_or(footer.len())
+        .max(24);
+    let mut output = String::new();
+    output.push_str(&render_code_block_frame(&header, width));
+    output.push('\n');
+    for line in lines {
+        output.push_str(&render_code_block_line_with_width(lang, line, width));
+        output.push('\n');
     }
+    output.push_str(&render_code_block_frame(footer, width));
+    output.push('\n');
+    output
+}
+
+fn render_code_block_frame(text: &str, width: usize) -> String {
+    if text == "--" {
+        return format!("{CODE_BLOCK_FRAME_STYLE}{}{RESET}", "-".repeat(width));
+    }
+    let prefix = format!("{text} ");
+    format!(
+        "{CODE_BLOCK_FRAME_STYLE}{prefix}{}{RESET}",
+        "-".repeat(width.saturating_sub(prefix.chars().count()))
+    )
+}
+
+fn render_code_block_line_with_width(lang: &str, line: &str, width: usize) -> String {
+    let line_width = line.chars().count();
+    let padding = " ".repeat(width.saturating_sub(line_width));
+    let highlighted = highlight_code_line(lang, line);
+    if highlighted.is_empty() {
+        format!("{CODE_BLOCK_BG}{}{RESET}", " ".repeat(width.max(1)))
+    } else {
+        format!("{CODE_BLOCK_BG}{highlighted}{padding}{RESET}")
+    }
+}
+
+fn code_keywords(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "rs" | "rust" => &[
+            "as", "async", "await", "break", "const", "continue", "crate", "else", "enum", "fn",
+            "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+            "return", "self", "Self", "static", "struct", "trait", "type", "unsafe", "use",
+            "where", "while",
+        ],
+        "py" | "python" => &[
+            "and", "as", "async", "await", "break", "class", "continue", "def", "elif", "else",
+            "except", "finally", "for", "from", "if", "import", "in", "is", "lambda", "not", "or",
+            "pass", "raise", "return", "try", "while", "with", "yield",
+        ],
+        "js" | "ts" | "tsx" | "jsx" => &[
+            "async", "await", "break", "case", "catch", "class", "const", "continue", "default",
+            "else", "export", "extends", "finally", "for", "from", "function", "if", "import",
+            "let", "new", "return", "switch", "throw", "try", "typeof", "var", "while",
+        ],
+        "sh" | "bash" | "zsh" | "fish" => &[
+            "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
+            "then", "while",
+        ],
+        "json" | "toml" | "yaml" | "yml" => &["true", "false", "null"],
+        _ => &[],
+    }
+}
+
+fn is_code_word_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_code_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn next_non_space_is_open_paren(chars: &[char], mut index: usize) -> bool {
+    while index < chars.len() && chars[index].is_whitespace() {
+        index += 1;
+    }
+    chars.get(index) == Some(&'(')
 }
 
 fn is_table_separator(line: &str) -> bool {
@@ -952,14 +1550,14 @@ fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<
     if !result.stderr.trim().is_empty() {
         let label = result
             .exit_code
-            .map(|code| format!("{} exit {code}", t("error", "错误")))
-            .unwrap_or_else(|| t("error", "错误").to_string());
+            .map(|code| format!("err exit {code}"))
+            .unwrap_or_else(|| "err".to_string());
         write_fenced_block(stdout, &label, &result.stderr)?;
     } else if !result.success {
         let label = result
             .exit_code
-            .map(|code| format!("{} exit {code}", t("error", "错误")))
-            .unwrap_or_else(|| t("error", "错误").to_string());
+            .map(|code| format!("err exit {code}"))
+            .unwrap_or_else(|| "err".to_string());
         write_fenced_block(
             stdout,
             &label,
@@ -974,15 +1572,15 @@ fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<
 
 fn write_command_error_block(stdout: &mut io::Stdout, output: &str) -> Result<()> {
     let Some(result) = parse_command_result(output) else {
-        return write_fenced_block(stdout, t("error", "错误"), output);
+        return write_fenced_block(stdout, "err", output);
     };
     if result.success {
         return Ok(());
     }
     let label = result
         .exit_code
-        .map(|code| format!("{} exit {code}", t("error", "错误")))
-        .unwrap_or_else(|| t("error", "错误").to_string());
+        .map(|code| format!("err exit {code}"))
+        .unwrap_or_else(|| "err".to_string());
     let message = if result.stderr.trim().is_empty() {
         result.stdout.as_str()
     } else {
@@ -1048,12 +1646,25 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     )
 }
 
+fn clip_progress_line(text: &str, max_chars: usize) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= max_chars {
+        text
+    } else {
+        format!(
+            "{}...",
+            text.chars()
+                .take(max_chars.saturating_sub(3))
+                .collect::<String>()
+        )
+    }
+}
+
 impl Drop for StreamRenderer {
     fn drop(&mut self) {
         if self.summary_line_active {
-            let _ = execute!(io::stdout(), MoveToColumn(0), Clear(ClearType::CurrentLine));
+            let _ = self.clear_summary_lines();
             eprintln!();
-            self.summary_line_active = false;
         }
         let _ = self.show_cursor();
         let _ = execute!(io::stdout(), ResetColor);
@@ -1066,7 +1677,7 @@ fn normalize_stream_text(text: &str) -> String {
 
 fn print_reasoning(reasoning: &str) -> Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+    execute!(stdout, SetForegroundColor(Color::DarkCyan))?;
     writeln!(stdout, "{}", t("thinking", "思考"))?;
     for line in reasoning.trim().lines() {
         writeln!(stdout, "  {line}")?;
@@ -1086,66 +1697,137 @@ mod tests {
     fn streams_only_complete_lines() {
         let mut renderer = MarkdownStreamRenderer::new();
         assert_eq!(renderer.push("**bo"), "");
-        assert_eq!(renderer.push("ld**\n"), "\x1b[1mbold\x1b[0m\n");
+        assert_eq!(
+            renderer.push("ld**\n"),
+            format!("{BOLD_STYLE}bold{RESET}\n")
+        );
     }
 
     #[test]
     fn flushes_partial_final_line() {
         let mut renderer = MarkdownStreamRenderer::new();
         assert_eq!(renderer.push("# Title"), "");
-        assert_eq!(renderer.flush(), "\x1b[1m\x1b[36m· Title\x1b[0m\n");
+        assert_eq!(renderer.flush(), format!("{HEADER_STYLE}# Title{RESET}\n"));
     }
 
     #[test]
     fn headings_use_one_color_and_distinct_prefix_lengths() {
-        assert_eq!(render_markdown_line("# One"), "\x1b[1m\x1b[36m· One\x1b[0m");
+        assert_eq!(
+            render_markdown_line("# One"),
+            format!("{HEADER_STYLE}# One{RESET}")
+        );
         assert_eq!(
             render_markdown_line("## Two"),
-            "\x1b[1m\x1b[36m·· Two\x1b[0m"
+            format!("{HEADER_STYLE}## Two{RESET}")
         );
         assert_eq!(
             render_markdown_line("### Three"),
-            "\x1b[1m\x1b[36m··· Three\x1b[0m"
+            format!("{HEADER_STYLE}### Three{RESET}")
         );
         assert_eq!(
             render_markdown_line("###### Six"),
-            "\x1b[1m\x1b[36m······ Six\x1b[0m"
+            format!("{HEADER_STYLE}###### Six{RESET}")
         );
+    }
+
+    #[test]
+    fn list_markers_use_tertiary_color() {
+        assert!(render_markdown_line("- item").contains(&format!("{TERTIARY_STYLE}-{RESET}")));
+        assert!(render_markdown_line("1. item").contains(&format!("{TERTIARY_STYLE}1.{RESET}")));
     }
 
     #[test]
     fn buffers_tables_until_non_table_line() {
         let mut renderer = MarkdownStreamRenderer::new();
-        assert_eq!(renderer.push("| a | b |\n| - | - |\n| 1 | 2 |\n"), "");
+        assert_eq!(renderer.push("| a | b |\n"), "");
+        let header = renderer.push("| - | - |\n");
+        assert!(header.contains("\x1b[1ma\x1b[0m"));
+        let row = renderer.push("| 1 | 2 |\n");
+        assert!(row.contains("1"));
         let output = renderer.push("done\n");
-        assert!(output.contains("+---+---+"));
-        assert!(output.contains("\x1b[1ma\x1b[0m"));
+        assert!(output.contains('+'));
         assert!(output.ends_with("done\n"));
+    }
+
+    #[test]
+    fn wraps_wide_table_cells_to_terminal_width() {
+        let output = render_table(&[
+            "| 项目 | 内容 |".to_string(),
+            "|---|---|".to_string(),
+            format!("| 很长 | {} |", "这是一段非常长的内容".repeat(20)),
+        ]);
+        let terminal_width = terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(100);
+        for line in output.lines() {
+            assert!(
+                visible_width(line) < terminal_width,
+                "line too wide: {line}"
+            );
+        }
+        assert!(output.lines().count() > 5);
     }
 
     #[test]
     fn blockquote_is_visually_distinct() {
         let mut renderer = MarkdownStreamRenderer::new();
         let output = renderer.push(">> quoted\n");
-        assert!(output.contains("\x1b[90m|\x1b[0m \x1b[90m|\x1b[0m"));
-        assert!(output.contains("\x1b[90mquoted\x1b[0m"));
+        assert!(output.contains("\x1b[32m| \x1b[0m\x1b[32m| \x1b[0m"));
+        assert!(output.contains("\x1b[32mquoted\x1b[0m"));
+        assert!(!output.contains("48;5;236"));
     }
 
     #[test]
     fn code_block_has_label_and_readable_content() {
         let mut renderer = MarkdownStreamRenderer::new();
         let output = renderer.push("```rust\nfn main() {}\n```\n");
-        assert!(output.contains(",-- code rust"));
+        assert!(output.contains("-- code rust"));
+        assert!(!output.contains(",-- code rust"));
         assert!(!output.contains("\x1b[2m|\x1b[0m"));
-        assert!(output.contains("\x1b[1m\x1b[36mfn\x1b[0m"));
-        assert!(output.contains("`--"));
+        assert!(output.contains(&format!(
+            "{CODE_BLOCK_BG}{CODE_KEYWORD_STYLE}fn{CODE_TOKEN_RESET}"
+        )));
+        assert!(output.contains(&format!("{CODE_FUNCTION_STYLE}main{CODE_TOKEN_RESET}")));
+        assert!(output.contains(&format!("{CODE_BLOCK_FRAME_STYLE}-- code rust -")));
+        assert!(output.contains(&format!(
+            "{CODE_BLOCK_FRAME_STYLE}{}{RESET}",
+            "-".repeat(24)
+        )));
+        assert!(!output.contains("`--"));
     }
 
     #[test]
     fn code_block_content_has_default_color() {
         let mut renderer = MarkdownStreamRenderer::new();
         let output = renderer.push("```\nXMODIFIERS \"@im=fcitx\"\n```\n");
-        assert!(output.contains("\x1b[33mXMODIFIERS \"@im=fcitx\"\x1b[0m"));
+        assert!(output.contains(&format!(
+            "{CODE_BLOCK_BG}XMODIFIERS \"@im=fcitx\"{}{RESET}",
+            " ".repeat(2)
+        )));
+        assert!(!output.contains("\x1b[33mXMODIFIERS"));
+    }
+
+    #[test]
+    fn code_block_variables_use_primary_color() {
+        let mut renderer = MarkdownStreamRenderer::new();
+        let output = renderer.push("```rust\nlet msg = String::from(\"hi\");\n```\n");
+        assert!(output.contains(&format!("{PRIMARY_STYLE}msg{CODE_TOKEN_RESET}")));
+    }
+
+    #[test]
+    fn code_block_background_uses_longest_line_width() {
+        let mut renderer = MarkdownStreamRenderer::new();
+        let output = renderer.push("```\nshort\nlonger line\n```\n");
+        assert!(output.contains(&format!("{CODE_BLOCK_BG}short{}{RESET}", " ".repeat(19))));
+        assert!(output.contains(&format!(
+            "{CODE_BLOCK_BG}longer line{}{RESET}",
+            " ".repeat(13)
+        )));
+        assert!(output.contains(&format!(
+            "{CODE_BLOCK_FRAME_STYLE}{}{RESET}",
+            "-".repeat(24)
+        )));
+        assert!(!output.contains("48;5;236"));
     }
 
     #[test]
@@ -1153,19 +1835,136 @@ mod tests {
         let output = render_inline(
             "*i* ~~gone~~ [site](https://example.com) <https://example.org> ![pic](https://img)",
         );
-        assert!(output.contains("\x1b[3mi\x1b[0m"));
-        assert!(output.contains("\x1b[9mgone\x1b[0m"));
-        assert!(output.contains("<\x1b[2m\x1b[34mhttps://example.com\x1b[0m>"));
-        assert!(output.contains("\x1b[4m<\x1b[2m\x1b[34mhttps://example.org\x1b[0m>\x1b[0m"));
-        assert!(output.contains("\x1b[35m[image: pic]\x1b[0m(\x1b[2m\x1b[34mhttps://img\x1b[0m)"));
+        assert!(output.contains(&format!("{ITALIC_STYLE}i{RESET}")));
+        assert!(output.contains(&format!("{STRIKE_STYLE}gone{RESET}")));
+        assert!(output.contains(&format!("<{URL_STYLE}https://example.com{RESET}>")));
+        assert!(output.contains(&format!(
+            "\x1b[4m<{URL_STYLE}https://example.org{RESET}>{RESET}"
+        )));
+        assert!(output.contains(&format!(
+            "{IMAGE_STYLE}[image: pic]{RESET}({URL_STYLE}https://img{RESET})"
+        )));
         assert!(!output.contains("\x1b[35mimage\x1b[0m"));
+    }
+
+    #[test]
+    fn renders_inline_code_at_start_of_bullet() {
+        let output = render_markdown_line("- `read_file` — 读文件内容");
+        assert!(output.contains(&format!("{INLINE_CODE_STYLE}read_file\x1b[0m")));
+        assert!(output.contains("— 读文件内容"));
+    }
+
+    #[test]
+    fn renders_multiple_inline_code_spans_in_bullet_with_chinese_text() {
+        let output = render_markdown_line(
+            "- `~/.config/Thunar/` - 里面有 `accels.scm`（快捷键绑定）和 `uca.xml`（自定义右键菜单）",
+        );
+        assert!(output.contains(&format!("{INLINE_CODE_STYLE}~/.config/Thunar/\x1b[0m")));
+        assert!(output.contains(&format!("{INLINE_CODE_STYLE}accels.scm\x1b[0m")));
+        assert!(output.contains(&format!("{INLINE_CODE_STYLE}uca.xml\x1b[0m")));
+        assert!(!output.contains('`'));
+    }
+
+    #[test]
+    fn renders_inline_code_when_stream_chunks_split_backticks() {
+        let mut renderer = MarkdownStreamRenderer::new();
+        assert_eq!(renderer.push("- `~/.config/Thu"), "");
+        let output = renderer.push("nar/` - 里面有 `accels.scm`\n");
+        assert!(output.contains(&format!("{INLINE_CODE_STYLE}~/.config/Thunar/\x1b[0m")));
+        assert!(output.contains(&format!("{INLINE_CODE_STYLE}accels.scm\x1b[0m")));
+        assert!(!output.contains('`'));
+    }
+
+    #[test]
+    fn tool_status_prefers_running_for_single_active_call() {
+        let stats = ToolStats {
+            calls: 1,
+            ok: 0,
+            error: 0,
+            progress: None,
+        };
+        assert_eq!(
+            tool_status_text("deep_research", &stats),
+            "deep_research×1 运行中"
+        );
+    }
+
+    #[test]
+    fn tool_status_uses_simple_single_success() {
+        let stats = ToolStats {
+            calls: 1,
+            ok: 1,
+            error: 0,
+            progress: None,
+        };
+        assert_eq!(
+            tool_status_text("deep_research", &stats),
+            "deep_research×1 ok"
+        );
+    }
+
+    #[test]
+    fn tool_status_counts_mixed_multiple_calls() {
+        let stats = ToolStats {
+            calls: 3,
+            ok: 1,
+            error: 1,
+            progress: None,
+        };
+        assert_eq!(
+            tool_status_text("grep", &stats),
+            "grep×3 运行中:1 ok:1 err:1"
+        );
+    }
+
+    #[test]
+    fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
+        assert_eq!(readable_tool_name("deep_research"), "深度研究");
+        assert_eq!(readable_tool_name("read_file"), "读取文件");
+        assert_eq!(readable_tool_name("inspect_issue"), "检查问题");
+        assert_eq!(readable_tool_name("check_os_info"), "查看系统信息");
+        assert_eq!(readable_tool_name("get_weather"), "天气查询");
+        assert_eq!(readable_tool_name("get_exchange_rate"), "汇率查询");
+        assert_eq!(readable_tool_name("draw_zhouyi_hexagram"), "周易起卦");
+        assert_eq!(readable_tool_name("draw_tarot_card"), "抽塔罗牌");
+        assert_eq!(readable_tool_name("draw_fortune_lot"), "抽签");
+        assert_eq!(readable_tool_name("vision_analyze"), "分析图片");
+        assert_eq!(readable_tool_name("search_meme"), "搜索表情包");
+        assert_eq!(readable_tool_name("show_meme"), "发送表情");
+        assert_eq!(readable_tool_name("add_meme"), "添加表情包");
+        assert_eq!(readable_tool_name("task_agent"), "创建子任务");
+        assert_eq!(
+            readable_tool_name("upload_text_to_knowledge_base"),
+            "导入知识库"
+        );
+        assert_eq!(readable_tool_name("search_evicted_context"), "搜索旧上下文");
+        assert_eq!(readable_tool_name("recall_past_events"), "回忆往事");
+        assert_eq!(readable_tool_name("install_aur_package"), "安装 AUR 包");
+        assert_eq!(
+            readable_tool_name("search_knowledge_base_by_name"),
+            "按名称搜索知识库"
+        );
+        assert_eq!(readable_tool_name("recall_memories"), "召回记忆");
+        assert_eq!(readable_tool_name("custom_skill"), "custom_skill");
+    }
+
+    #[test]
+    fn summary_styles_distinguish_reasoning_from_tools() {
+        assert_eq!(
+            style_summary_text("工具", SummaryStyle::Tool),
+            "\x1b[2m工具\x1b[0m"
+        );
+        assert_eq!(
+            style_summary_text("思考", SummaryStyle::Reasoning),
+            "\x1b[2m\x1b[36m思考\x1b[0m"
+        );
     }
 
     #[test]
     fn keeps_identifier_underscores_literal() {
         let output = render_inline("GTK_IM_MODULE and _italic_");
         assert!(output.contains("GTK_IM_MODULE"));
-        assert!(output.contains("\x1b[3mitalic\x1b[0m"));
+        assert!(output.contains(&format!("{ITALIC_STYLE}italic{RESET}")));
         assert!(!output.contains("GTK\x1b[3mIM\x1b[0mMODULE"));
         assert_eq!(render_inline("abc_def_ghi"), "abc_def_ghi");
     }
@@ -1173,8 +1972,8 @@ mod tests {
     #[test]
     fn renders_math_formulas_visibly() {
         let output = render_inline("inline $E=mc^2$ and display $$a^2+b^2=c^2$$");
-        assert!(output.contains("\x1b[36m$E=mc^2$\x1b[0m"));
-        assert!(output.contains("\x1b[36m$$ a^2+b^2=c^2 $$\x1b[0m"));
+        assert!(output.contains(&format!("{MATH_STYLE}$E=mc^2${RESET}")));
+        assert!(output.contains(&format!("{MATH_STYLE}$$ a^2+b^2=c^2 $${RESET}")));
     }
 
     #[test]
@@ -1205,11 +2004,9 @@ mod tests {
     #[test]
     fn supports_table_alignment_markers() {
         let mut renderer = MarkdownStreamRenderer::new();
-        assert_eq!(
-            renderer.push("| left | mid | right |\n| :--- | :---: | ---: |\n| a | b | c |\n"),
-            ""
-        );
-        let output = renderer.flush();
+        let output =
+            renderer.push("| left | mid | right |\n| :--- | :---: | ---: |\n| a | b | c |\n");
+        let output = format!("{output}{}", renderer.flush());
         assert!(output.contains("+"));
         assert!(!output.contains(":---"));
         assert!(output.contains("\x1b[1mleft\x1b[0m"));

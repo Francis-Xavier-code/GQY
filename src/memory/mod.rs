@@ -88,8 +88,31 @@ impl MemoryStore {
         Ok(())
     }
 
+    pub fn clear_pending_events(&self) -> Result<()> {
+        self.init()?;
+        let data = self.data_conn()?;
+        data.execute("DELETE FROM pending_events", [])?;
+        data.execute(
+            "DELETE FROM sqlite_sequence WHERE name = 'pending_events'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
     pub fn search_evicted_context(&self, query: &str, limit: usize) -> Result<Value> {
         self.init()?;
+        self.search_evicted_context_existing(query, limit)
+    }
+
+    pub fn search_evicted_context_readonly(&self, query: &str, limit: usize) -> Result<Value> {
+        if !self.state_db.is_file() {
+            return Ok(json!({ "ok": true, "query": query, "results": [] }));
+        }
+        self.search_evicted_context_existing(query, limit)
+    }
+
+    fn search_evicted_context_existing(&self, query: &str, limit: usize) -> Result<Value> {
         let tokens = query_tokens(query);
         let conn = self.state_conn()?;
         let mut stmt = conn.prepare(
@@ -281,6 +304,27 @@ impl MemoryStore {
         include_forgotten: bool,
     ) -> Result<Value> {
         self.init()?;
+        self.recall_memories_existing(query, limit, include_forgotten)
+    }
+
+    pub fn recall_memories_readonly(
+        &self,
+        query: &str,
+        limit: usize,
+        include_forgotten: bool,
+    ) -> Result<Value> {
+        if !self.data_db.is_file() {
+            return Ok(json!({ "ok": true, "query": query, "facts": [], "episodes": [] }));
+        }
+        self.recall_memories_existing(query, limit, include_forgotten)
+    }
+
+    fn recall_memories_existing(
+        &self,
+        query: &str,
+        limit: usize,
+        include_forgotten: bool,
+    ) -> Result<Value> {
         let facts = self.search_facts(query, limit, include_forgotten)?;
         let episodes = self.search_episodes(query, limit, include_forgotten)?;
         Ok(json!({
@@ -291,8 +335,20 @@ impl MemoryStore {
         }))
     }
 
+    #[allow(dead_code)]
     pub fn recall_past_events(&self, query: &str, limit: usize) -> Result<Value> {
         self.init()?;
+        self.recall_past_events_existing(query, limit)
+    }
+
+    pub fn recall_past_events_readonly(&self, query: &str, limit: usize) -> Result<Value> {
+        if !self.data_db.is_file() {
+            return Ok(json!({ "ok": true, "query": query, "episodes": [] }));
+        }
+        self.recall_past_events_existing(query, limit)
+    }
+
+    fn recall_past_events_existing(&self, query: &str, limit: usize) -> Result<Value> {
         let episodes = self.search_episodes(query, limit, true)?;
         Ok(json!({
             "ok": true,
@@ -322,7 +378,7 @@ impl MemoryStore {
         output.push_str("<associative-memory>\n");
         output.push_str("以下是根据当前用户输入联想到的旧记忆，可能相关也可能不相关；必要时使用，不要强行引用。\n");
         if !association.facts.is_empty() {
-            output.push_str("\n值得记住的知识：\n");
+            output.push_str("\n曾经记住的相关知识点：\n");
             for hit in &association.facts {
                 output.push_str("- ");
                 output.push_str(&compact_line(&hit.content));

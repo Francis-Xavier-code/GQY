@@ -179,15 +179,36 @@ async fn analyze_image(args: Value, config: AppConfig, paths: MiyuPaths) -> Resu
     } else {
         local_image_data_url(image)?
     };
+    analyze_image_url_with_prompt(&config, &paths, &image_url, prompt).await
+}
+
+pub async fn analyze_local_image_with_prompt(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    image: &Path,
+    prompt: &str,
+) -> Result<String> {
+    let image_url = local_image_data_url(&image.display().to_string())?;
+    analyze_image_url_with_prompt(config, paths, &image_url, prompt).await
+}
+
+async fn analyze_image_url_with_prompt(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    image_url: &str,
+    prompt: &str,
+) -> Result<String> {
+    let vision = &config.plugins.vision;
+    if !vision.enabled {
+        bail!("vision plugin is disabled")
+    }
     let provider = vision_provider(&config, vision)?;
     let client = OpenAiCompatibleClient::new(&provider, &config, &paths)?;
     let result = client
         .chat_stream(
             vec![
-                ChatMessage::system(
-                    "你是 Miyu 的识图助手。请基于图片内容回答，不要编造看不见的信息。",
-                ),
-                ChatMessage::user_with_image(prompt, image_url),
+                ChatMessage::system("请基于图片内容回答，不要编造看不见的信息。"),
+                ChatMessage::user_with_image(prompt, image_url.to_string()),
             ],
             Vec::new(),
             |_| Ok(()),

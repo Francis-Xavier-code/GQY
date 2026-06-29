@@ -16,9 +16,11 @@ use tokio::process::Command;
 pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
     register_readonly(registry, config.clone(), paths.clone());
     if config.plugins.knowledge_base.upload_tool_enabled {
+        let upload_config = config.clone();
+        let upload_paths = paths.clone();
         registry.register(ToolSpec::new(
-            "upload_text_to_knowledge_base",
-            "Upload text into the local knowledge base. Only use when the user explicitly asks to save/upload specified content into the knowledge base. Never use this for skills, memory, persona, identity, or configuration.",
+                "upload_text_to_knowledge_base",
+            "Create a new knowledge-base file or replace an entire existing file. For updating part of an existing file, first search/read it and prefer edit_knowledge_base_file. Never use this for skills, memory, persona, identity, or configuration.",
             json!({
                 "type": "object",
                 "properties": {
@@ -30,11 +32,52 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths
                 "additionalProperties": false
             }),
             move |args| {
-                let config = config.clone();
-                let paths = paths.clone();
+                let config = upload_config.clone();
+                let paths = upload_paths.clone();
                 async move { tool_upload(args, config, paths).await }
             },
-        ));
+        ).writes());
+        let edit_config = config.clone();
+        let edit_paths = paths.clone();
+        registry.register(ToolSpec::new(
+            "edit_knowledge_base_file",
+            "Edit an existing knowledge-base file by replacing an inclusive 1-based line range. Use after search_knowledge_base/read_knowledge_base_file identifies the exact file and line numbers. This updates metadata and refreshes semantic indexing when embeddings are enabled.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file_name": { "type": "string", "description": "Knowledge base relative path to edit." },
+                    "start_line": { "type": "integer", "description": "1-based first line to replace." },
+                    "end_line": { "type": "integer", "description": "1-based last line to replace, inclusive." },
+                    "replacement": { "type": "string", "description": "Replacement text. May contain multiple lines. Empty text deletes the line range." }
+                },
+                "required": ["file_name", "start_line", "end_line", "replacement"],
+                "additionalProperties": false
+            }),
+            move |args| {
+                let config = edit_config.clone();
+                let paths = edit_paths.clone();
+                async move { tool_edit(args, config, paths).await }
+            },
+        ).writes());
+        let remove_config = config.clone();
+        let remove_paths = paths.clone();
+        registry.register(ToolSpec::new(
+            "remove_knowledge_base_file",
+            "Remove a knowledge-base file by relative path. Use only after the user asks to delete a knowledge-base entry or confirms the exact file. This also removes its metadata and semantic chunks.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file_name": { "type": "string", "description": "Knowledge base relative path to remove." }
+                },
+                "required": ["file_name"],
+                "additionalProperties": false
+            }),
+            move |args| {
+                let config = remove_config.clone();
+                let paths = remove_paths.clone();
+                async move { tool_remove(args, config, paths).await }
+            },
+        ).writes());
     }
 }
 
@@ -57,7 +100,7 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
             move |args| {
                 let config = config.clone();
                 let paths = paths.clone();
-                async move { tool_search(args, config, paths).await }
+                async move { tool_search_readonly(args, config, paths).await }
             }
         },
     ));
@@ -79,7 +122,7 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
             move |args| {
                 let config = config.clone();
                 let paths = paths.clone();
-                async move { tool_find(args, config, paths).await }
+                async move { tool_find_readonly(args, config, paths).await }
             }
         },
     ));
@@ -102,7 +145,7 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
             move |args| {
                 let config = config.clone();
                 let paths = paths.clone();
-                async move { tool_read(args, config, paths).await }
+                async move { tool_read_readonly(args, config, paths).await }
             }
         },
     ));
@@ -140,6 +183,10 @@ impl KnowledgeBase {
         Ok(())
     }
 
+    fn readonly_available(&self) -> bool {
+        self.root.is_dir() && self.files_dir.is_dir() && self.meta_db.is_file()
+    }
+
     pub async fn add_path(&self, source: &Path) -> Result<Vec<String>> {
         self.init()?;
         let mut added = Vec::new();
@@ -172,8 +219,28 @@ impl KnowledgeBase {
         Ok(added)
     }
 
+    pub fn replace_default_files(&self, source: &Path) -> Result<Vec<String>> {
+        self.init()?;
+        self.remove_prefix("default-kb/")?;
+        let mut added = Vec::new();
+        for file in collect_files(source)? {
+            let rel = file.strip_prefix(source).unwrap_or(&file);
+            let rel = rel.display().to_string().replace('\\', "/");
+            let name = normalize_relative_path(&format!("default-kb/{rel}"))?;
+            if let Ok(name) = self.import_file(&file, &name) {
+                added.push(name);
+            }
+        }
+        self.spawn_embedding_reindex()?;
+        Ok(added)
+    }
+
     pub fn list(&self) -> Result<Vec<FileRecord>> {
         self.init()?;
+        self.list_existing()
+    }
+
+    fn list_existing(&self) -> Result<Vec<FileRecord>> {
         let conn = self.meta_conn()?;
         let mut stmt =
             conn.prepare("SELECT name, path, size_bytes, content_sha256 FROM files ORDER BY name")?;
@@ -191,13 +258,33 @@ impl KnowledgeBase {
 
     pub async fn search(&self, query: &str, max_results: Option<usize>) -> Result<Value> {
         self.init()?;
+        self.search_existing(query, max_results, true).await
+    }
+
+    pub async fn search_readonly(&self, query: &str, max_results: Option<usize>) -> Result<Value> {
+        if !self.readonly_available() {
+            return Ok(
+                json!({"ok": true, "query": query, "total_matches": 0, "semantic_used": false, "results": []}),
+            );
+        }
+        self.search_existing(query, max_results, self.semantic_db.is_file())
+            .await
+    }
+
+    async fn search_existing(
+        &self,
+        query: &str,
+        max_results: Option<usize>,
+        allow_semantic: bool,
+    ) -> Result<Value> {
         let limit = max_results
             .unwrap_or(self.config.plugins.knowledge_base.max_search_results)
             .clamp(1, 50);
         let mut results = self.keyword_search(query, limit)?;
         let strongest = results.first().map(|item| item.score).unwrap_or(0.0);
         let mut semantic_used = false;
-        if self.config.plugins.knowledge_base.embedding_enabled
+        if allow_semantic
+            && self.config.plugins.knowledge_base.embedding_enabled
             && strongest
                 < self
                     .config
@@ -221,6 +308,17 @@ impl KnowledgeBase {
 
     pub fn find_by_name(&self, query: &str, max_results: Option<usize>) -> Result<Value> {
         self.init()?;
+        self.find_by_name_existing(query, max_results)
+    }
+
+    pub fn find_by_name_readonly(&self, query: &str, max_results: Option<usize>) -> Result<Value> {
+        if !self.readonly_available() {
+            return Ok(json!({"ok": true, "query": query, "total_matches": 0, "results": []}));
+        }
+        self.find_by_name_existing(query, max_results)
+    }
+
+    fn find_by_name_existing(&self, query: &str, max_results: Option<usize>) -> Result<Value> {
         let limit = max_results
             .unwrap_or(self.config.plugins.knowledge_base.max_search_results)
             .clamp(1, 50);
@@ -262,8 +360,34 @@ impl KnowledgeBase {
         max_lines: Option<usize>,
     ) -> Result<String> {
         self.init()?;
+        self.read_file_existing(name, start_line, max_lines, true)
+    }
+
+    pub fn read_file_readonly(
+        &self,
+        name: &str,
+        start_line: usize,
+        max_lines: Option<usize>,
+    ) -> Result<String> {
+        if !self.readonly_available() {
+            bail!("knowledge base is not initialized")
+        }
+        self.read_file_existing(name, start_line, max_lines, false)
+    }
+
+    fn read_file_existing(
+        &self,
+        name: &str,
+        start_line: usize,
+        max_lines: Option<usize>,
+        create_parent: bool,
+    ) -> Result<String> {
         let rel = normalize_relative_path(name)?;
-        let path = self.safe_file_path(&rel)?;
+        let path = if create_parent {
+            self.safe_file_path(&rel)?
+        } else {
+            self.existing_file_path(&rel)?
+        };
         if !path.exists() {
             bail!("knowledge base file not found: {rel}")
         }
@@ -306,6 +430,75 @@ impl KnowledgeBase {
             "DELETE FROM semantic_chunks WHERE file_name=?1",
             params![rel],
         )?;
+        Ok(())
+    }
+
+    pub fn edit_lines(
+        &self,
+        name: &str,
+        start_line: usize,
+        end_line: usize,
+        replacement: &str,
+    ) -> Result<EditResult> {
+        self.init()?;
+        let rel = normalize_relative_path(name)?;
+        if start_line == 0 || end_line == 0 {
+            bail!("line numbers must be 1-based")
+        }
+        if start_line > end_line {
+            bail!("start_line must be less than or equal to end_line")
+        }
+        let path = self.existing_file_path(&rel)?;
+        if !path.exists() {
+            bail!("knowledge base file not found: {rel}")
+        }
+        let original = std::fs::read_to_string(&path)?;
+        let had_trailing_newline = original.ends_with('\n');
+        let mut lines = original.lines().map(str::to_string).collect::<Vec<_>>();
+        let total_lines = lines.len();
+        if start_line > total_lines || end_line > total_lines {
+            bail!("line range {start_line}-{end_line} out of range: {total_lines} lines")
+        }
+        let replacement = replacement.replace("\r\n", "\n").replace('\r', "\n");
+        let replacement_lines = if replacement.is_empty() {
+            Vec::new()
+        } else {
+            replacement.lines().map(str::to_string).collect::<Vec<_>>()
+        };
+        lines.splice(start_line - 1..end_line, replacement_lines);
+        let mut updated = lines.join("\n");
+        if had_trailing_newline && !updated.is_empty() {
+            updated.push('\n');
+        }
+        let temp = tempfile::NamedTempFile::new()?;
+        std::fs::write(temp.path(), updated.as_bytes())?;
+        self.import_file(temp.path(), &rel)?;
+        let semantic_refreshed = self.refresh_semantic_after_write(&rel)?;
+        Ok(EditResult {
+            path: rel,
+            old_line_count: total_lines,
+            new_line_count: lines.len(),
+            semantic_refreshed,
+        })
+    }
+
+    fn remove_prefix(&self, prefix: &str) -> Result<()> {
+        let conn = self.meta_conn()?;
+        let mut stmt = conn.prepare("SELECT name FROM files WHERE name LIKE ?1")?;
+        let names = stmt
+            .query_map(params![format!("{prefix}%")], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for name in names {
+            let path = self.safe_file_path(&name)?;
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+            conn.execute("DELETE FROM files WHERE name=?1", params![name])?;
+            self.semantic_conn()?.execute(
+                "DELETE FROM semantic_chunks WHERE file_name=?1",
+                params![name],
+            )?;
+        }
         Ok(())
     }
 
@@ -381,6 +574,18 @@ impl KnowledgeBase {
             params![name, dest.display().to_string(), bytes.len() as i64, mtime, hash, now_secs()],
         )?;
         Ok(name.to_string())
+    }
+
+    fn refresh_semantic_after_write(&self, name: &str) -> Result<bool> {
+        if !self.config.plugins.knowledge_base.embedding_enabled {
+            return Ok(false);
+        }
+        self.semantic_conn()?.execute(
+            "DELETE FROM semantic_chunks WHERE file_name=?1",
+            params![name],
+        )?;
+        self.spawn_embedding_reindex()?;
+        Ok(true)
     }
 
     fn keyword_search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -648,6 +853,21 @@ impl KnowledgeBase {
         }
         Ok(path)
     }
+
+    fn existing_file_path(&self, rel: &str) -> Result<PathBuf> {
+        let rel = normalize_relative_path(rel)?;
+        let path = self.files_dir.join(&rel);
+        let base = self
+            .files_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.files_dir.clone());
+        let parent = path.parent().unwrap_or(&self.files_dir);
+        let resolved_parent = parent.canonicalize()?;
+        if !resolved_parent.starts_with(&base) {
+            bail!("knowledge base path escapes files dir")
+        }
+        Ok(path)
+    }
 }
 
 #[derive(Clone)]
@@ -656,6 +876,14 @@ pub struct FileRecord {
     path: String,
     pub size_bytes: i64,
     content_sha256: String,
+}
+
+#[derive(Debug)]
+pub struct EditResult {
+    path: String,
+    old_line_count: usize,
+    new_line_count: usize,
+    semantic_refreshed: bool,
 }
 
 struct SearchResult {
@@ -694,7 +922,7 @@ struct Chunk {
     text: String,
 }
 
-async fn tool_search(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
+async fn tool_search_readonly(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
     ensure_enabled(&config)?;
     let query = args
         .get("query")
@@ -709,12 +937,12 @@ async fn tool_search(args: Value, config: AppConfig, paths: MiyuPaths) -> Result
         .and_then(Value::as_u64)
         .map(|value| value as usize);
     Ok(KnowledgeBase::new(config, paths)?
-        .search(query, max_results)
+        .search_readonly(query, max_results)
         .await?
         .to_string())
 }
 
-async fn tool_find(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
+async fn tool_find_readonly(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
     ensure_enabled(&config)?;
     let query = args
         .get("file_name_query")
@@ -729,11 +957,11 @@ async fn tool_find(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<S
         .and_then(Value::as_u64)
         .map(|value| value as usize);
     Ok(KnowledgeBase::new(config, paths)?
-        .find_by_name(query, max_results)?
+        .find_by_name_readonly(query, max_results)?
         .to_string())
 }
 
-async fn tool_read(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
+async fn tool_read_readonly(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
     ensure_enabled(&config)?;
     let name = args
         .get("file_name")
@@ -748,7 +976,7 @@ async fn tool_read(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<S
         .get("max_lines")
         .and_then(Value::as_u64)
         .map(|value| value as usize);
-    KnowledgeBase::new(config, paths)?.read_file(name, start_line, max_lines)
+    KnowledgeBase::new(config, paths)?.read_file_readonly(name, start_line, max_lines)
 }
 
 async fn tool_upload(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
@@ -806,6 +1034,61 @@ async fn tool_upload(args: Value, config: AppConfig, paths: MiyuPaths) -> Result
     Ok(json!({
         "ok": true,
         "path": saved,
+    })
+    .to_string())
+}
+
+async fn tool_edit(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
+    ensure_enabled(&config)?;
+    let name = args
+        .get("file_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if name.is_empty() {
+        bail!("file_name is required")
+    }
+    let start_line = args
+        .get("start_line")
+        .and_then(Value::as_u64)
+        .context("start_line is required")? as usize;
+    let end_line = args
+        .get("end_line")
+        .and_then(Value::as_u64)
+        .context("end_line is required")? as usize;
+    let replacement = args
+        .get("replacement")
+        .and_then(Value::as_str)
+        .context("replacement is required")?;
+    let result =
+        KnowledgeBase::new(config, paths)?.edit_lines(name, start_line, end_line, replacement)?;
+    Ok(json!({
+        "ok": true,
+        "path": result.path,
+        "old_line_count": result.old_line_count,
+        "new_line_count": result.new_line_count,
+        "semantic_refreshed": result.semantic_refreshed,
+        "warning": if name.starts_with("default-kb/") { Some("default-kb files may be overwritten by miyu update-default-kb") } else { None::<&str> },
+    })
+    .to_string())
+}
+
+async fn tool_remove(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
+    ensure_enabled(&config)?;
+    let name = args
+        .get("file_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if name.is_empty() {
+        bail!("file_name is required")
+    }
+    let rel = normalize_relative_path(name)?;
+    KnowledgeBase::new(config, paths)?.remove(&rel)?;
+    Ok(json!({
+        "ok": true,
+        "path": rel,
+        "warning": if name.starts_with("default-kb/") { Some("default-kb files may be restored by miyu update-default-kb") } else { None::<&str> },
     })
     .to_string())
 }
@@ -896,7 +1179,7 @@ fn init_semantic_db(conn: &Connection) -> Result<()> {
 fn kb_root(config: &KnowledgeBasePluginConfig, paths: &MiyuPaths) -> PathBuf {
     let configured = config.data_dir.trim();
     if configured.is_empty() {
-        paths.data_dir.join("knowledge-base")
+        paths.data_dir.join("kb")
     } else {
         expand_path(configured)
     }
@@ -1225,5 +1508,86 @@ fn slug(value: &str) -> String {
         format!("note-{}", Local::now().format("%H%M%S"))
     } else {
         slug.chars().take(48).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::MiyuPaths;
+
+    fn test_paths(root: &Path) -> MiyuPaths {
+        MiyuPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            secrets_file: root.join("config/secrets.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/conf.d/miyu.fish"),
+            bash_hook_file: root.join("config/shell/bash-hook.sh"),
+            zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
+        }
+    }
+
+    #[test]
+    fn edit_lines_replaces_inclusive_range() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let kb = KnowledgeBase::new(config, paths).unwrap();
+        let source = temp.path().join("note.md");
+        std::fs::write(&source, "one\ntwo\nthree\n").unwrap();
+        kb.import_file(&source, "notes/note.md").unwrap();
+
+        let result = kb.edit_lines("notes/note.md", 2, 2, "TWO\nTWO-B").unwrap();
+
+        assert_eq!(result.old_line_count, 3);
+        assert_eq!(result.new_line_count, 4);
+        assert!(!result.semantic_refreshed);
+        let edited =
+            std::fs::read_to_string(kb.existing_file_path("notes/note.md").unwrap()).unwrap();
+        assert_eq!(edited, "one\nTWO\nTWO-B\nthree\n");
+        let chunks: i64 = kb
+            .semantic_conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM semantic_chunks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(chunks, 0);
+    }
+
+    #[test]
+    fn edit_lines_empty_replacement_deletes_range() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let kb = KnowledgeBase::new(config, paths).unwrap();
+        let source = temp.path().join("note.md");
+        std::fs::write(&source, "one\ntwo\nthree").unwrap();
+        kb.import_file(&source, "note.md").unwrap();
+
+        let result = kb.edit_lines("note.md", 2, 3, "").unwrap();
+
+        assert_eq!(result.old_line_count, 3);
+        assert_eq!(result.new_line_count, 1);
+        let edited = std::fs::read_to_string(kb.existing_file_path("note.md").unwrap()).unwrap();
+        assert_eq!(edited, "one");
+    }
+
+    #[test]
+    fn edit_lines_rejects_out_of_range() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let kb = KnowledgeBase::new(config, paths).unwrap();
+        let source = temp.path().join("note.md");
+        std::fs::write(&source, "one\n").unwrap();
+        kb.import_file(&source, "note.md").unwrap();
+
+        let error = kb.edit_lines("note.md", 2, 2, "two").unwrap_err();
+
+        assert!(error.to_string().contains("out of range"));
     }
 }

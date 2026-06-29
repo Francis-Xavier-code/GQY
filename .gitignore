@@ -1,9 +1,12 @@
 /target/
 /.idea/
 /.vscode/
+.DS_Store
 *.tmp
 *.bak
 *.swp
 *.swo
 *.log
-符号引用一些内容
+*.pkg.tar.zst
+*.part
+*.old

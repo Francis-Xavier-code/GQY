@@ -2,7 +2,7 @@ use crate::default_models::{
     OPENCODE_DEFAULT_CHAT_MODEL, OPENCODE_PROVIDER_ID, OPENCODE_ZEN_BASE_URL,
 };
 use crate::paths::MiyuPaths;
-use crate::prompts::DEFAULT_SYSTEM_PROMPT;
+use crate::prompts::default_system_prompt;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
@@ -38,6 +38,8 @@ pub struct DisplayConfig {
     pub reasoning: String,
     #[serde(default = "default_tool_call_display")]
     pub tool_calls: String,
+    #[serde(default = "default_true")]
+    pub readable_tool_names: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +54,8 @@ struct RawDisplayConfig {
     reasoning_mode: Option<String>,
     #[serde(default)]
     show_tool_details: Option<bool>,
+    #[serde(default)]
+    readable_tool_names: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for DisplayConfig {
@@ -77,6 +81,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
         Ok(Self {
             reasoning,
             tool_calls,
+            readable_tool_names: raw.readable_tool_names.unwrap_or_else(default_true),
         })
     }
 }
@@ -215,6 +220,8 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub print_image: PrintImagePluginConfig,
     #[serde(default)]
+    pub memes: MemesPluginConfig,
+    #[serde(default)]
     pub knowledge_base: KnowledgeBasePluginConfig,
     #[serde(default)]
     pub archlinux: PluginEnabledConfig,
@@ -226,6 +233,12 @@ pub struct PluginsConfig {
     pub hash_codec: PluginEnabledConfig,
     #[serde(default)]
     pub calculator: CalculatorPluginConfig,
+    #[serde(default)]
+    pub package_advisor: PluginEnabledConfig,
+    #[serde(default)]
+    pub linux_game_compatibility: PluginEnabledConfig,
+    #[serde(default)]
+    pub diagnostics: DiagnosticsPluginConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
 }
@@ -349,6 +362,30 @@ pub struct PrintImagePluginConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemesPluginConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub persona_libraries: HashMap<String, String>,
+    #[serde(default = "default_memes_width_percent")]
+    pub width_percent: u8,
+    #[serde(default = "default_memes_height_percent")]
+    pub height_percent: u8,
+    #[serde(default = "default_memes_max_image_mb")]
+    pub max_image_mb: u64,
+    #[serde(default)]
+    pub allow_gif_animation: bool,
+    #[serde(default)]
+    pub auto_send_enabled: bool,
+    #[serde(default = "default_memes_auto_send_probability")]
+    pub auto_send_probability: f32,
+    #[serde(default = "default_memes_auto_send_cooldown_seconds")]
+    pub auto_send_cooldown_seconds: u64,
+    #[serde(default = "default_memes_auto_send_min_confidence")]
+    pub auto_send_min_confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeBasePluginConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -398,6 +435,18 @@ pub struct CalculatorPluginConfig {
     pub backend: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsPluginConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_diagnostics_timeout")]
+    pub command_timeout_seconds: u64,
+    #[serde(default = "default_diagnostics_max_stdout_chars")]
+    pub max_stdout_chars: usize,
+    #[serde(default = "default_diagnostics_max_stderr_chars")]
+    pub max_stderr_chars: usize,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecretsConfig {
     #[serde(default)]
@@ -439,6 +488,7 @@ impl Default for DisplayConfig {
         Self {
             reasoning: default_reasoning_display(),
             tool_calls: default_tool_call_display(),
+            readable_tool_names: default_true(),
         }
     }
 }
@@ -455,12 +505,16 @@ impl Default for PluginsConfig {
             xuanxue: PluginEnabledConfig::default(),
             image_generation: ImageGenerationPluginConfig::default(),
             print_image: PrintImagePluginConfig::default(),
+            memes: MemesPluginConfig::default(),
             knowledge_base: KnowledgeBasePluginConfig::default(),
             archlinux: PluginEnabledConfig::default(),
             man: PluginEnabledConfig::default(),
             moegirl: PluginEnabledConfig::default(),
             hash_codec: PluginEnabledConfig::default(),
             calculator: CalculatorPluginConfig::default(),
+            package_advisor: PluginEnabledConfig::default(),
+            linux_game_compatibility: PluginEnabledConfig::default(),
+            diagnostics: DiagnosticsPluginConfig::default(),
             memory: MemoryConfig::default(),
         }
     }
@@ -565,6 +619,40 @@ impl Default for PrintImagePluginConfig {
     }
 }
 
+impl Default for MemesPluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            persona_libraries: HashMap::new(),
+            width_percent: default_memes_width_percent(),
+            height_percent: default_memes_height_percent(),
+            max_image_mb: default_memes_max_image_mb(),
+            allow_gif_animation: false,
+            auto_send_enabled: true,
+            auto_send_probability: default_memes_auto_send_probability(),
+            auto_send_cooldown_seconds: default_memes_auto_send_cooldown_seconds(),
+            auto_send_min_confidence: default_memes_auto_send_min_confidence(),
+        }
+    }
+}
+
+impl MemesPluginConfig {
+    pub fn library_for_persona(&self, persona: &str) -> String {
+        if persona.trim().is_empty() {
+            return self
+                .persona_libraries
+                .get("default")
+                .cloned()
+                .unwrap_or_else(|| "miyu".to_string());
+        }
+        let persona = persona_scope_name(persona);
+        self.persona_libraries
+            .get(&persona)
+            .cloned()
+            .unwrap_or(persona)
+    }
+}
+
 impl Default for KnowledgeBasePluginConfig {
     fn default() -> Self {
         Self {
@@ -578,7 +666,7 @@ impl Default for KnowledgeBasePluginConfig {
             allowed_extensions: default_kb_allowed_extensions(),
             allowed_filenames: default_kb_allowed_filenames(),
             upload_tool_enabled: default_true(),
-            embedding_enabled: default_true(),
+            embedding_enabled: false,
             embedding_provider_id: String::new(),
             embedding_model: String::new(),
             semantic_chunk_chars: default_kb_semantic_chunk_chars(),
@@ -596,6 +684,17 @@ impl Default for CalculatorPluginConfig {
         Self {
             enabled: false,
             backend: default_calculator_backend(),
+        }
+    }
+}
+
+impl Default for DiagnosticsPluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            command_timeout_seconds: default_diagnostics_timeout(),
+            max_stdout_chars: default_diagnostics_max_stdout_chars(),
+            max_stderr_chars: default_diagnostics_max_stderr_chars(),
         }
     }
 }
@@ -747,16 +846,6 @@ impl AppConfig {
         paths.create_dirs()?;
         if !paths.config_file.exists() {
             Self::default().save(paths)?;
-        }
-        std::fs::create_dir_all(Self::default().prompts_dir_path(paths))?;
-        std::fs::create_dir_all(Self::default().identities_dir_path(paths))?;
-        let prompt_file = Self::default_system_prompt_file(paths);
-        if !prompt_file.exists() {
-            std::fs::write(prompt_file, "")?;
-        }
-        let user_identity_file = Self::default().user_identity_path(paths);
-        if !user_identity_file.exists() {
-            std::fs::write(user_identity_file, "")?;
         }
         if !paths.secrets_file.exists() {
             let raw = "{\n  // Optional provider API keys. Prefer $env:... in config.jsonc.\n  \"api_keys\": {}\n}\n";
@@ -972,7 +1061,7 @@ impl AppConfig {
     pub fn base_system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
         let persona = self.active_persona_prompt(paths)?;
         if persona.trim().is_empty() {
-            Ok(DEFAULT_SYSTEM_PROMPT.to_string())
+            Ok(default_system_prompt())
         } else {
             Ok(persona)
         }
@@ -1098,10 +1187,6 @@ impl AppConfig {
         } else {
             paths.config_dir.join(path)
         }
-    }
-
-    pub fn default_system_prompt_file(paths: &MiyuPaths) -> PathBuf {
-        paths.config_dir.join("system-prompt.md")
     }
 
     pub fn upsert_provider(&mut self, provider: ProviderConfig) {
@@ -1241,6 +1326,30 @@ fn default_print_image_height_percent() -> u8 {
     50
 }
 
+fn default_memes_width_percent() -> u8 {
+    35
+}
+
+fn default_memes_height_percent() -> u8 {
+    25
+}
+
+fn default_memes_max_image_mb() -> u64 {
+    10
+}
+
+fn default_memes_auto_send_probability() -> f32 {
+    0.2
+}
+
+fn default_memes_auto_send_cooldown_seconds() -> u64 {
+    60
+}
+
+fn default_memes_auto_send_min_confidence() -> f32 {
+    0.9
+}
+
 fn default_web_images_max_results() -> usize {
     5
 }
@@ -1367,6 +1476,18 @@ fn default_kb_embedding_timeout_seconds() -> u64 {
     60
 }
 
+fn default_diagnostics_timeout() -> u64 {
+    5
+}
+
+fn default_diagnostics_max_stdout_chars() -> usize {
+    8_000
+}
+
+fn default_diagnostics_max_stderr_chars() -> usize {
+    4_000
+}
+
 fn default_calculator_backend() -> String {
     "rust-simple".to_string()
 }
@@ -1415,5 +1536,24 @@ mod tests {
         config.providers[0].models.clear();
         config.providers[0].default_model.clear();
         assert!(config.provider_model_choices().is_empty());
+    }
+
+    #[test]
+    fn display_readable_tool_names_defaults_enabled() {
+        let display: DisplayConfig = serde_json::from_str(r#"{"tool_calls":"summary"}"#).unwrap();
+        assert!(display.readable_tool_names);
+    }
+
+    #[test]
+    fn meme_library_defaults_follow_persona() {
+        let memes = MemesPluginConfig::default();
+        assert_eq!(memes.library_for_persona(""), "miyu");
+        assert_eq!(
+            memes.library_for_persona("Custom Persona"),
+            "custom-persona"
+        );
+        assert!(memes.auto_send_enabled);
+        assert_eq!(memes.auto_send_cooldown_seconds, 60);
+        assert_eq!(memes.auto_send_min_confidence, 0.9);
     }
 }

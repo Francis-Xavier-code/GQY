@@ -14,7 +14,7 @@ pub fn hook() -> &'static str {
     set -l text (string join ' ' -- $command)
     test (string length -- $text) -le 120; or return 127
     string match -qr '[\n\r]' -- $text; and return 127
-    string match -qr '^\s*([-#./~0-9]|[[:digit:]]+[.)])' -- $text; and return 127
+    string match -qr '^\s*([-#./~0-9<]|[[:digit:]]+[.)])' -- $text; and return 127
     string match -qr '[/\\=|;&<>$`(){}\[\]*]' -- $text; and return 127
 
     miyu --shell-intercept --shell fish -- $command 2>/dev/null
@@ -32,6 +32,20 @@ pub fn install(paths: &MiyuPaths) -> Result<()> {
         "{}: {}",
         t("installed fish hook", "已安装 fish hook"),
         paths.fish_hook_file.display()
+    );
+    super::print_reload_hint("fish", &paths.fish_hook_file);
+    Ok(())
+}
+
+pub fn uninstall(paths: &MiyuPaths) -> Result<()> {
+    match std::fs::remove_file(&paths.fish_hook_file) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    println!(
+        "{}: fish",
+        t("removed Miyu shell hook", "已移除 Miyu shell hook")
     );
     Ok(())
 }

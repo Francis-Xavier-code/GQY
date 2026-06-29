@@ -12,7 +12,7 @@ pub fn hook() -> &'static str {
     [[ -o interactive ]] || return 127
 
     local text="$*"
-    local miyu_leading_pattern='^[[:space:]]*([-#./~0-9]|[[:digit:]]+[.)])'
+    local miyu_leading_pattern='^[[:space:]]*([-#./~0-9<]|[[:digit:]]+[.)])'
     local miyu_shell_syntax_pattern='[/\\=|;&<>$`(){}\[\]*]'
     [[ -n "$text" ]] || return 127
     (( ${#text} <= 120 )) || return 127
@@ -39,6 +39,18 @@ pub fn install(paths: &MiyuPaths) -> Result<()> {
         paths.zsh_hook_file.display()
     );
     println!("{}: {}", t("updated", "已更新"), rc_path.display());
+    super::print_reload_hint("zsh", &paths.zsh_hook_file);
+    Ok(())
+}
+
+pub fn uninstall(paths: &MiyuPaths) -> Result<()> {
+    remove_file_if_exists(&paths.zsh_hook_file)?;
+    let rc_path = home_file(".zshrc");
+    remove_source_block(&rc_path, BEGIN_MARKER, END_MARKER)?;
+    println!(
+        "{}: zsh",
+        t("removed Miyu shell hook", "已移除 Miyu shell hook")
+    );
     Ok(())
 }
 
@@ -67,6 +79,38 @@ fn append_source_block(rc_path: &Path, begin: &str, end: &str, hook_file: &Path)
     writeln!(file, "[ -r {:?} ] && source {:?}", hook_file, hook_file)?;
     writeln!(file, "{end}")?;
     Ok(())
+}
+
+fn remove_source_block(rc_path: &Path, begin: &str, end: &str) -> Result<()> {
+    let Ok(existing) = std::fs::read_to_string(rc_path) else {
+        return Ok(());
+    };
+    let Some(begin_index) = existing.find(begin) else {
+        return Ok(());
+    };
+    let Some(end_relative) = existing[begin_index..].find(end) else {
+        return Ok(());
+    };
+    let mut end_index = begin_index + end_relative + end.len();
+    if existing.as_bytes().get(end_index) == Some(&b'\r') {
+        end_index += 1;
+    }
+    if existing.as_bytes().get(end_index) == Some(&b'\n') {
+        end_index += 1;
+    }
+    let mut updated = String::new();
+    updated.push_str(&existing[..begin_index]);
+    updated.push_str(&existing[end_index..]);
+    std::fs::write(rc_path, updated)?;
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 #[cfg(test)]

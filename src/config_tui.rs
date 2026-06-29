@@ -1,4 +1,5 @@
 use crate::config::{AppConfig, ProviderConfig};
+use crate::default_kb;
 use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
@@ -65,7 +66,12 @@ fn run_main_menu(
             "全局参数设置".to_string(),
             "保存并退出".to_string(),
         ];
-        draw_menu(stdout, " MIYU CONFIG ", &options, selected, "")?;
+        let status = default_kb::status(paths)
+            .ok()
+            .filter(|status| status.has_update_notice)
+            .map(|_| "默认知识库需要更新，运行 miyu update-default-kb")
+            .unwrap_or("");
+        draw_menu(stdout, " MIYU CONFIG ", &options, selected, status)?;
 
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
@@ -164,7 +170,7 @@ fn plugin_row(state: &str, name: &str, description: &str, width: usize) -> Strin
     fixed + &truncate(description, remaining)
 }
 
-fn plugin_names() -> [(&'static str, &'static str, &'static str); 8] {
+fn plugin_names() -> [(&'static str, &'static str, &'static str); 11] {
     [
         ("web", "网络搜索", "搜索 API 与脚本 fallback"),
         ("deep_research", "深度研究", "长任务研究并输出 Markdown"),
@@ -172,8 +178,15 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 8] {
         ("image_generation", "生图", "文本生成图片"),
         ("web_images", "搜图", "网络图片搜索、下载与审核"),
         ("print_image", "打印图片", "终端图片打印尺寸"),
+        ("memes", "表情包", "人格表情库与发送尺寸"),
         ("knowledge_base", "知识库", "本地文件检索与语义索引"),
         ("memory", "记忆", "长期记忆与联想"),
+        ("package_advisor", "AUR 审查", "PKGBUILD/AUR 安全审查"),
+        (
+            "linux_game_compatibility",
+            "Linux 游戏兼容",
+            "Proton/反作弊/兼容性查询",
+        ),
     ]
 }
 
@@ -185,8 +198,11 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
         3 => config.plugins.image_generation.enabled,
         4 => config.plugins.web_images.enabled,
         5 => config.plugins.print_image.enabled,
-        6 => config.plugins.knowledge_base.enabled,
-        7 => config.plugins.memory.enabled,
+        6 => config.plugins.memes.enabled,
+        7 => config.plugins.knowledge_base.enabled,
+        8 => config.plugins.memory.enabled,
+        9 => config.plugins.package_advisor.enabled,
+        10 => config.plugins.linux_game_compatibility.enabled,
         _ => false,
     }
 }
@@ -200,8 +216,11 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
         3 => config.plugins.image_generation.enabled = value,
         4 => config.plugins.web_images.enabled = value,
         5 => config.plugins.print_image.enabled = value,
-        6 => config.plugins.knowledge_base.enabled = value,
-        7 => config.plugins.memory.enabled = value,
+        6 => config.plugins.memes.enabled = value,
+        7 => config.plugins.knowledge_base.enabled = value,
+        8 => config.plugins.memory.enabled = value,
+        9 => config.plugins.package_advisor.enabled = value,
+        10 => config.plugins.linux_game_compatibility.enabled = value,
         _ => {}
     }
 }
@@ -356,6 +375,32 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             ),
         ],
         6 => vec![
+            Field::boolean("启用", config.plugins.memes.enabled),
+            Field::new(
+                "发送宽度百分比",
+                config.plugins.memes.width_percent.to_string(),
+            ),
+            Field::new(
+                "发送高度百分比",
+                config.plugins.memes.height_percent.to_string(),
+            ),
+            Field::new("最大图片 MB", config.plugins.memes.max_image_mb.to_string()),
+            Field::boolean("允许 GIF 动画", config.plugins.memes.allow_gif_animation),
+            Field::boolean("自动发送", config.plugins.memes.auto_send_enabled),
+            Field::new(
+                "自动发送概率",
+                config.plugins.memes.auto_send_probability.to_string(),
+            ),
+            Field::new(
+                "自动发送冷却秒数",
+                config.plugins.memes.auto_send_cooldown_seconds.to_string(),
+            ),
+            Field::new(
+                "自动发送最低置信度",
+                config.plugins.memes.auto_send_min_confidence.to_string(),
+            ),
+        ],
+        7 => vec![
             Field::boolean("启用", config.plugins.knowledge_base.enabled),
             Field::new("知识库目录", config.plugins.knowledge_base.data_dir.clone()),
             Field::new(
@@ -398,7 +443,8 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                 "Embedding Provider/模型",
                 kb_embedding_provider_value(config),
             )
-            .choices_owned(provider_model_choice_values(config, true)),
+            .choices_owned(provider_model_choice_values(config, false))
+            .empty_choice_label("未配置 Embedding"),
             Field::new(
                 "语义块大小",
                 config
@@ -440,7 +486,7 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
         ],
-        7 => vec![
+        8 => vec![
             Field::boolean("启用", config.plugins.memory.enabled),
             Field::boolean(
                 "上下文弹出缓存",
@@ -475,6 +521,14 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                 config.plugins.memory.forgetting_review_boost.to_string(),
             ),
         ],
+        9 => vec![Field::boolean(
+            "启用",
+            config.plugins.package_advisor.enabled,
+        )],
+        10 => vec![Field::boolean(
+            "启用",
+            config.plugins.linux_game_compatibility.enabled,
+        )],
         _ => vec![Field::boolean("启用", plugin_enabled(config, index))],
     }
 }
@@ -544,6 +598,23 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
             config.plugins.print_image.height_percent = fields[2].value.trim().parse::<u8>()?;
         }
         6 => {
+            config.plugins.memes.enabled = parse_bool_field(&fields[0].value)?;
+            config.plugins.memes.width_percent =
+                fields[1].value.trim().parse::<u8>()?.clamp(1, 100);
+            config.plugins.memes.height_percent =
+                fields[2].value.trim().parse::<u8>()?.clamp(1, 100);
+            config.plugins.memes.max_image_mb =
+                fields[3].value.trim().parse::<u64>()?.clamp(1, 100);
+            config.plugins.memes.allow_gif_animation = parse_bool_field(&fields[4].value)?;
+            config.plugins.memes.auto_send_enabled = parse_bool_field(&fields[5].value)?;
+            config.plugins.memes.auto_send_probability =
+                fields[6].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
+            config.plugins.memes.auto_send_cooldown_seconds =
+                fields[7].value.trim().parse::<u64>()?;
+            config.plugins.memes.auto_send_min_confidence =
+                fields[8].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
+        }
+        7 => {
             config.plugins.knowledge_base.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.knowledge_base.data_dir = fields[1].value.trim().to_string();
             config.plugins.knowledge_base.max_search_results = fields[2].value.trim().parse()?;
@@ -567,7 +638,7 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
             config.plugins.knowledge_base.embedding_timeout_seconds =
                 fields[15].value.trim().parse()?;
         }
-        7 => {
+        8 => {
             config.plugins.memory.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memory.evicted_context_enabled = parse_bool_field(&fields[1].value)?;
             config.plugins.memory.association_enabled = parse_bool_field(&fields[2].value)?;
@@ -585,6 +656,12 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[10].value.trim().parse::<f64>()?;
             config.plugins.memory.forgetting_review_boost =
                 fields[11].value.trim().parse::<f64>()?;
+        }
+        9 => {
+            config.plugins.package_advisor.enabled = parse_bool_field(&fields[0].value)?;
+        }
+        10 => {
+            config.plugins.linux_game_compatibility.enabled = parse_bool_field(&fields[0].value)?;
         }
         _ => {
             let value = parse_bool_field(&fields[0].value)?;
@@ -604,7 +681,7 @@ fn edit_custom_prompts(
     let mut selected = 0usize;
     loop {
         let persona = if config.prompt.active_persona.trim().is_empty() {
-            "内置默认".to_string()
+            "Miyu".to_string()
         } else {
             persona_display_name(&config.prompt.active_persona).to_string()
         };
@@ -638,7 +715,7 @@ fn edit_personas(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppCon
         } else {
             "  "
         };
-        options.push(format!("{default_marker}内置默认"));
+        options.push(format!("{default_marker}Miyu"));
         options.extend(personas.iter().map(|name| {
             let display = persona_display_name(name);
             if *name == config.prompt.active_persona {
@@ -1679,6 +1756,7 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
             .choices(&["summary", "full", "hidden"]),
         Field::new("显示工具调用信息", config.display.tool_calls.clone())
             .choices(&["summary", "full", "hidden"]),
+        Field::boolean("工具名可读显示", config.display.readable_tool_names),
     ];
     if run_form(stdout, " GLOBAL SETTINGS ", &mut fields)? {
         config.tools.enabled = parse_bool_field(&fields[0].value)?;
@@ -1687,6 +1765,7 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         config.skills.allow_command_execution = parse_bool_field(&fields[3].value)?;
         config.display.reasoning = fields[4].value.trim().to_string();
         config.display.tool_calls = fields[5].value.trim().to_string();
+        config.display.readable_tool_names = parse_bool_field(&fields[6].value)?;
     }
     Ok(())
 }
@@ -1769,6 +1848,7 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
                     fields[selected].label,
                     &fields[selected].value,
                     &fields[selected].choices,
+                    fields[selected].empty_choice_label,
                 )?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
@@ -1836,12 +1916,13 @@ fn select_choice(
     label: &str,
     current: &str,
     choices: &[String],
+    empty_label: &'static str,
 ) -> Result<String> {
     let mut selected = choices.iter().position(|item| item == current).unwrap_or(0);
     loop {
         let options = choices
             .iter()
-            .map(|choice| choice_label(choice))
+            .map(|choice| choice_label(choice, empty_label))
             .collect::<Vec<_>>();
         draw_menu(stdout, label, &options, selected, "")?;
         match read_key()? {
@@ -1854,9 +1935,9 @@ fn select_choice(
     }
 }
 
-fn choice_label(choice: &str) -> String {
+fn choice_label(choice: &str, empty_label: &str) -> String {
     if choice.is_empty() {
-        "使用当前 Provider".to_string()
+        empty_label.to_string()
     } else if let Some((provider, model)) = choice.split_once('\t') {
         format!("{provider} / {model}")
     } else {
@@ -1865,7 +1946,7 @@ fn choice_label(choice: &str) -> String {
 }
 
 fn provider_model_choice_values(config: &AppConfig, include_current: bool) -> Vec<String> {
-    let mut choices = Vec::new();
+    let mut choices = vec![String::new()];
     if include_current {
         choices.push(format!(
             "{OPENCODE_PROVIDER_ID}\t{OPENCODE_DEFAULT_VISION_MODEL}"
@@ -1974,10 +2055,12 @@ fn draw_menu(
     queue!(
         stdout,
         MoveTo(x + 2, y + height - 1),
+        SetAttribute(Attribute::Dim),
         Print(truncate(
             menu_help(status),
             width.saturating_sub(4) as usize
-        ))
+        )),
+        SetAttribute(Attribute::Reset)
     )?;
     for (index, option) in options.iter().enumerate() {
         queue!(stdout, MoveTo(x + 2, y + index as u16 + 2))?;
@@ -2124,9 +2207,9 @@ fn draw_form(
         let value = if field.textarea && field.value.is_empty() {
             "(Enter 打开 $EDITOR)".to_string()
         } else if !field.choices.is_empty() && field.value.is_empty() {
-            "使用当前 Provider".to_string()
+            field.empty_choice_label.to_string()
         } else if !field.choices.is_empty() {
-            choice_label(&field.value)
+            choice_label(&field.value, field.empty_choice_label)
         } else {
             truncate(&field.value.replace('\n', " "), 70)
         };
@@ -2343,6 +2426,7 @@ struct Field {
     textarea: bool,
     boolean: bool,
     choices: Vec<String>,
+    empty_choice_label: &'static str,
 }
 
 impl Field {
@@ -2353,6 +2437,7 @@ impl Field {
             textarea: false,
             boolean: false,
             choices: Vec::new(),
+            empty_choice_label: "使用当前 Provider",
         }
     }
 
@@ -2363,6 +2448,7 @@ impl Field {
             textarea: false,
             boolean: true,
             choices: Vec::new(),
+            empty_choice_label: "使用当前 Provider",
         }
     }
 
@@ -2373,6 +2459,7 @@ impl Field {
             textarea: true,
             boolean: false,
             choices: Vec::new(),
+            empty_choice_label: "使用当前 Provider",
         }
     }
 
@@ -2383,6 +2470,11 @@ impl Field {
 
     fn choices_owned(mut self, choices: Vec<String>) -> Self {
         self.choices = choices;
+        self
+    }
+
+    fn empty_choice_label(mut self, label: &'static str) -> Self {
+        self.empty_choice_label = label;
         self
     }
 }
