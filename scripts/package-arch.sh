@@ -2,8 +2,8 @@
 set -euo pipefail
 
 pkgname=miyu
-pkgver=0.1.0
-pkgrel="${1:-5}"
+pkgver="$(grep '^version = ' "$(dirname "${BASH_SOURCE[0]}")/../Cargo.toml" | head -n1 | cut -d '"' -f2)"
+pkgrel="${1:-1}"
 arch=x86_64
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pkgdir="${TMPDIR:-/tmp}/miyu-pkg-${pkgver}-${pkgrel}"
