@@ -1,9 +1,11 @@
 use super::{vision, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, MemesPluginConfig};
 use crate::i18n::text as t;
+use crate::llm::{ChatMessage, OpenAiCompatibleClient};
 use crate::paths::MiyuPaths;
 use crate::prompts::MEME_DESCRIPTION_PROMPT;
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -51,6 +53,41 @@ struct LoadedMeme {
     item: MemeItem,
     path: PathBuf,
     source: MemeSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AutoMemeEvent {
+    pub library: String,
+    pub id: String,
+    pub name: Value,
+    pub description: String,
+    pub usage: String,
+    pub reason: String,
+    pub sent_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AutoMemePlan {
+    pub event: AutoMemeEvent,
+    pub reminder: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AutoMemeState {
+    #[serde(default)]
+    last: Option<AutoMemeEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AutoSendDecision {
+    #[serde(default)]
+    send: bool,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    confidence: f32,
+    #[serde(default)]
+    reason: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -114,6 +151,27 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths
                 let config = config.clone();
                 let paths = paths.clone();
                 async move { show_meme(args, &config, &paths).await }
+            }
+        },
+    ));
+    registry.register(ToolSpec::new(
+        "recent_meme",
+        t(
+            "Get the most recent meme automatically sent for the current persona/library.",
+            "查询当前人格/表情库最近一次自动发送的表情。",
+        ),
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }),
+        {
+            let config = config.clone();
+            let paths = paths.clone();
+            move |_| {
+                let config = config.clone();
+                let paths = paths.clone();
+                async move { recent_meme(&config, &paths).await }
             }
         },
     ));
@@ -273,6 +331,117 @@ async fn show_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result
         "animation_note": if meme.item.animated && !config.plugins.memes.allow_gif_animation { Some("GIF was rendered as a normal chafa preview; animation is disabled by default.") } else { None },
     })
     .to_string())
+}
+
+async fn recent_meme(config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
+    let state = load_auto_meme_state(config, paths)?;
+    Ok(match state.last {
+        Some(event) => json!({ "success": true, "recent": event }).to_string(),
+        None => json!({ "success": false, "message": "当前人格/表情库还没有自动发送过表情" })
+            .to_string(),
+    })
+}
+
+pub(crate) async fn plan_auto_meme_before_reply(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    client: &OpenAiCompatibleClient,
+    user_message: &str,
+) -> Result<Option<AutoMemePlan>> {
+    let meme_config = &config.plugins.memes;
+    if !meme_config.enabled
+        || !meme_config.auto_send_enabled
+        || user_message.trim().is_empty()
+        || meme_config.auto_send_probability <= 0.0
+    {
+        return Ok(None);
+    }
+    if rand::random::<f32>() > meme_config.auto_send_probability.clamp(0.0, 1.0) {
+        return Ok(None);
+    }
+    let library = meme_config.library_for_persona(&config.prompt.active_persona);
+    let mut candidates = rank_memes(paths, &library, user_message, &[], 12)?;
+    if candidates.is_empty() {
+        candidates = rank_memes(paths, &library, "", &[], 12)?;
+    }
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let decision = decide_auto_send(client, user_message, &candidates).await?;
+    let Some(decision) = decision else {
+        return Ok(None);
+    };
+    if !decision.send || decision.confidence < meme_config.auto_send_min_confidence.clamp(0.0, 1.0)
+    {
+        return Ok(None);
+    }
+    let Some((_, meme)) = candidates
+        .drain(..)
+        .find(|(_, meme)| ids_match(&meme.item.id, &decision.id))
+    else {
+        return Ok(None);
+    };
+    let event = AutoMemeEvent {
+        library,
+        id: meme.item.id,
+        name: serde_json::to_value(&meme.item.name)?,
+        description: meme.item.description,
+        usage: meme.item.usage,
+        reason: decision.reason,
+        sent_at: Utc::now().to_rfc3339(),
+    };
+    let reminder = format!(
+        "<system-reminder>\n本轮回复发送后，程序会自动发送一张表情包。你在回复文字时应该自然地知道这件事，让语气和表情一致，但不要直白说“我将发送表情包”。\n计划发送表情：{}\n表情描述：{}\n适用场景：{}\n选择原因：{}\n</system-reminder>",
+        display_name(&event.name),
+        event.description,
+        event.usage,
+        event.reason,
+    );
+    Ok(Some(AutoMemePlan { event, reminder }))
+}
+
+pub(crate) async fn render_auto_meme(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    event: &AutoMemeEvent,
+) -> Result<()> {
+    let meme = find_meme(paths, &event.library, &event.id)?
+        .with_context(|| format!("meme not found: {}", event.id))?;
+    vision::print_image_file(&meme.path, configured_meme_size(&config.plugins.memes)).await
+}
+
+pub(crate) fn record_auto_meme_event(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    event: &AutoMemeEvent,
+) -> Result<()> {
+    let state = AutoMemeState {
+        last: Some(event.clone()),
+    };
+    let path = auto_meme_state_path(config, paths);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&state)?))?;
+    Ok(())
+}
+
+pub(crate) fn last_auto_meme_reminder(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Result<Option<String>> {
+    let Some(event) = load_auto_meme_state(config, paths)?.last else {
+        return Ok(None);
+    };
+    Ok(Some(format!(
+        "<system-reminder>\n上一轮回复文字发送后，程序自动补发了一张表情包。你需要自然地记得自己已经发过这张表情；如果用户提到“刚才那张/你发的表情”，按这个信息回答，不要说不知道。\n表情库：{}\n表情名：{}\n表情描述：{}\n适用场景：{}\n发送原因：{}\n发送时间：{}\n</system-reminder>",
+        event.library,
+        display_name(&event.name),
+        event.description,
+        event.usage,
+        event.reason,
+        event.sent_at,
+    )))
 }
 
 async fn add_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
@@ -476,6 +645,65 @@ async fn describe_meme_image(config: &AppConfig, paths: &MiyuPaths, image: &Path
     Ok(serde_json::from_str(&text[start..end])?)
 }
 
+async fn decide_auto_send(
+    client: &OpenAiCompatibleClient,
+    user_message: &str,
+    candidates: &[(f32, LoadedMeme)],
+) -> Result<Option<AutoSendDecision>> {
+    let catalog = candidates
+        .iter()
+        .map(|(score, meme)| {
+            json!({
+                "id": meme.item.id,
+                "local_score": (score * 100.0).round() / 100.0,
+                "name": meme.item.name,
+                "description": meme.item.description,
+                "usage": meme.item.usage,
+                "avoid": meme.item.avoid,
+                "tags": meme.item.tags,
+            })
+        })
+        .collect::<Vec<_>>();
+    let prompt = format!(
+        "你在 Miyu 回复前决定本轮是否应该搭配一张表情包。概率只控制触发频率；这里需要判断候选表情和用户消息、上下文语气的相关程度。请根据用户消息的语气、场景、关系边界和候选表情的 usage/avoid 决定。严肃、道歉、群管理、技术排障、长篇解释、用户明显在求助时不要发表情。轻松闲聊、调侃、打招呼、夸奖、吐槽、玩梗、情绪回应时可以发。只能从候选表情里选。confidence 表示所选表情与本轮消息/上下文的相关程度，0.0 到 1.0。只返回严格 JSON：{{\"send\": false, \"id\": \"\", \"confidence\": 0.0, \"reason\": \"\"}}\n\n用户消息：{}\n\n候选表情：{}",
+        user_message.chars().take(1000).collect::<String>(),
+        serde_json::to_string(&catalog)?,
+    );
+    let result = client
+        .chat_stream(
+            vec![
+                ChatMessage::system("你是表情包发送决策器，只输出 JSON，不输出解释。"),
+                ChatMessage::plain("user", prompt),
+            ],
+            Vec::new(),
+            |_| Ok(()),
+        )
+        .await?;
+    let Some(json_text) = json_slice(&result.content) else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str::<AutoSendDecision>(json_text).ok())
+}
+
+fn rank_memes(
+    paths: &MiyuPaths,
+    library: &str,
+    query: &str,
+    tags: &[String],
+    limit: usize,
+) -> Result<Vec<(f32, LoadedMeme)>> {
+    let mut scored = load_library(paths, library)?
+        .into_iter()
+        .filter_map(|meme| {
+            let score = score_meme(&meme.item, query, tags);
+            (score > 0.0).then_some((score, meme))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit.max(1));
+    Ok(scored)
+}
+
 fn load_library(paths: &MiyuPaths, library: &str) -> Result<Vec<LoadedMeme>> {
     let builtin_dir = builtin_library_dir(library);
     let user_dir = user_library_dir(paths, library);
@@ -554,6 +782,44 @@ fn selected_library(args: &Value, config: &AppConfig) -> String {
                 .memes
                 .library_for_persona(&config.prompt.active_persona)
         })
+}
+
+fn load_auto_meme_state(config: &AppConfig, paths: &MiyuPaths) -> Result<AutoMemeState> {
+    let path = auto_meme_state_path(config, paths);
+    if !path.is_file() {
+        return Ok(AutoMemeState::default());
+    }
+    Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+}
+
+fn auto_meme_state_path(config: &AppConfig, paths: &MiyuPaths) -> PathBuf {
+    let library = config
+        .plugins
+        .memes
+        .library_for_persona(&config.prompt.active_persona);
+    paths
+        .state_dir
+        .join("memes")
+        .join(sanitize_library(&library))
+        .join("auto-send.json")
+}
+
+fn display_name(name: &Value) -> String {
+    let zh = name.get("zh").and_then(Value::as_str).unwrap_or_default();
+    let en = name.get("en").and_then(Value::as_str).unwrap_or_default();
+    if !zh.trim().is_empty() {
+        zh.to_string()
+    } else if !en.trim().is_empty() {
+        en.to_string()
+    } else {
+        "未命名表情".to_string()
+    }
+}
+
+fn json_slice(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    (end >= start).then_some(&text[start..=end])
 }
 
 fn sanitize_library(value: &str) -> String {

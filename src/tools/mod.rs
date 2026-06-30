@@ -12,7 +12,7 @@ mod image_generation;
 pub mod knowledge_base;
 mod linux_game;
 mod man;
-mod memes;
+pub(crate) mod memes;
 mod memory;
 mod moegirl;
 mod package_advisor;

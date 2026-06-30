@@ -2464,5 +2464,6 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
             renderer.write_tool_result(&name, ok, &output)
         }
         AgentEvent::ToolProgress { name, message } => renderer.write_tool_progress(&name, &message),
+        AgentEvent::ExternalOutput => renderer.prepare_for_external_output(),
     }
 }

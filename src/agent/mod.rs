@@ -7,7 +7,7 @@ use crate::llm::{
 use crate::memory::{EvictedTurn, MemoryStore};
 use crate::paths::MiyuPaths;
 use crate::state::StateStore;
-use crate::tools::{self, ToolPermission, ToolRegistry};
+use crate::tools::{self, memes, ToolPermission, ToolRegistry};
 use anyhow::{bail, Result};
 use chrono::Local;
 use tokio::sync::mpsc;
@@ -50,6 +50,7 @@ pub enum AgentEvent {
         name: String,
         message: String,
     },
+    ExternalOutput,
 }
 
 pub struct Agent {
@@ -64,6 +65,8 @@ pub struct Agent {
     tools: ToolRegistry,
     memory: MemoryStore,
     mode: AgentMode,
+    config: AppConfig,
+    paths: MiyuPaths,
 }
 
 impl Agent {
@@ -104,6 +107,8 @@ impl Agent {
             tools,
             memory,
             mode,
+            config,
+            paths: paths.clone(),
         })
     }
 
@@ -126,21 +131,34 @@ impl Agent {
             })
             .collect::<Vec<_>>();
         self.memory.remember_evicted_turns(&evicted)?;
-        self.state.append_message("user", input)?;
+        let input = clean_user_visible_text(input);
+        self.state.append_message("user", &input)?;
         let mut messages = self.chat_messages()?;
-        if let Some(association) = self.memory.association(input)? {
+        if let Some(association) = self.memory.association(&input)? {
             messages.insert(
                 1,
                 ChatMessage::system(self.memory.format_association(&association)),
             );
         }
+        let auto_meme_plan =
+            memes::plan_auto_meme_before_reply(&self.config, &self.paths, &self.client, &input)
+                .await?;
+        if let Some(plan) = &auto_meme_plan {
+            messages.push(ChatMessage::system(plan.reminder.clone()));
+        }
+        let mut on_event = on_event;
         let mut used_tools = Vec::new();
         let result = self
-            .chat_with_tools(&mut messages, &mut used_tools, on_event)
+            .chat_with_tools(&mut messages, &mut used_tools, &mut on_event)
             .await?;
+        if let Some(plan) = auto_meme_plan {
+            on_event(AgentEvent::ExternalOutput)?;
+            memes::render_auto_meme(&self.config, &self.paths, &plan.event).await?;
+            memes::record_auto_meme_event(&self.config, &self.paths, &plan.event)?;
+        }
         self.state
             .append_assistant_message(&result.content, result.reasoning.as_deref())?;
-        self.memory.process_after_turn(input, &result.content)?;
+        self.memory.process_after_turn(&input, &result.content)?;
         if let Some(usage) = &result.usage {
             self.state.add_usage(usage)?;
         }
@@ -151,7 +169,7 @@ impl Agent {
         &self,
         messages: &mut Vec<ChatMessage>,
         used_tools: &mut Vec<String>,
-        mut on_event: F,
+        on_event: &mut F,
     ) -> Result<ChatResult>
     where
         F: FnMut(AgentEvent) -> Result<()>,
@@ -280,6 +298,9 @@ impl Agent {
 
     fn chat_messages(&self) -> Result<Vec<ChatMessage>> {
         let mut messages = vec![ChatMessage::system(self.system_prompt.clone())];
+        if let Some(summary) = memes::last_auto_meme_reminder(&self.config, &self.paths)? {
+            messages.push(ChatMessage::system(summary));
+        }
         for entry in self.state.load_conversation()? {
             if entry.role == "user" || entry.role == "assistant" {
                 messages.push(ChatMessage::plain(entry.role, entry.content));
@@ -298,4 +319,45 @@ fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
         Local::now().format("%Y年%m月%d日 %H:%M"),
         mode.reminder()
     )
+}
+
+fn clean_user_visible_text(input: &str) -> String {
+    let mut output = input.to_string();
+    for tag in ["system-reminder", "system_reminder"] {
+        output = strip_tagged_sections(output, tag);
+    }
+    output
+}
+
+fn strip_tagged_sections(mut text: String, tag: &str) -> String {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    while let Some(start) = text.find(&open) {
+        let Some(relative_end) = text[start..].find(&close) else {
+            text.replace_range(start.., "");
+            break;
+        };
+        let end = start + relative_end + close.len();
+        text.replace_range(start..end, "");
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_pasted_system_reminder_from_user_input() {
+        let input = "继续<system-reminder>hidden</system-reminder> ok";
+
+        assert_eq!(clean_user_visible_text(input), "继续 ok");
+    }
+
+    #[test]
+    fn strips_unclosed_system_reminder_from_user_input() {
+        let input = "继续<system_reminder>hidden";
+
+        assert_eq!(clean_user_visible_text(input), "继续");
+    }
 }

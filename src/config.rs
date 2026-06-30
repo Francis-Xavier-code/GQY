@@ -391,8 +391,6 @@ pub struct MemesPluginConfig {
     pub auto_send_enabled: bool,
     #[serde(default = "default_memes_auto_send_probability")]
     pub auto_send_probability: f32,
-    #[serde(default = "default_memes_auto_send_cooldown_seconds")]
-    pub auto_send_cooldown_seconds: u64,
     #[serde(default = "default_memes_auto_send_min_confidence")]
     pub auto_send_min_confidence: f32,
 }
@@ -642,7 +640,6 @@ impl Default for MemesPluginConfig {
             allow_gif_animation: false,
             auto_send_enabled: true,
             auto_send_probability: default_memes_auto_send_probability(),
-            auto_send_cooldown_seconds: default_memes_auto_send_cooldown_seconds(),
             auto_send_min_confidence: default_memes_auto_send_min_confidence(),
         }
     }
@@ -1418,12 +1415,8 @@ fn default_memes_auto_send_probability() -> f32 {
     0.2
 }
 
-fn default_memes_auto_send_cooldown_seconds() -> u64 {
-    60
-}
-
 fn default_memes_auto_send_min_confidence() -> f32 {
-    0.9
+    0.8
 }
 
 fn default_web_images_max_results() -> usize {
@@ -1637,7 +1630,7 @@ mod tests {
             "custom-persona"
         );
         assert!(memes.auto_send_enabled);
-        assert_eq!(memes.auto_send_cooldown_seconds, 60);
-        assert_eq!(memes.auto_send_min_confidence, 0.9);
+        assert_eq!(memes.auto_send_probability, 0.2);
+        assert_eq!(memes.auto_send_min_confidence, 0.8);
     }
 }
