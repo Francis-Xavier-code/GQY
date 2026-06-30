@@ -290,10 +290,6 @@ impl StreamRenderer {
 
     pub fn finish(&mut self) -> Result<()> {
         self.stop_waiting()?;
-        if self.summary_line_active {
-            self.clear_summary_lines()?;
-            self.summary_line_active = false;
-        }
         if self.mode == Some(ChatStreamKind::Content) && !self.plain {
             let mut stdout = io::stdout();
             write!(stdout, "{}", self.markdown.flush())?;
@@ -307,6 +303,9 @@ impl StreamRenderer {
         }
         self.finalize_reasoning_summary()?;
         self.finalize_tools_summary()?;
+        if self.summary_line_active {
+            self.clear_summary_lines()?;
+        }
         self.mode = None;
         self.show_cursor()?;
         Ok(())
@@ -744,32 +743,42 @@ impl MarkdownLineRenderer {
         if let Some(table) = &self.active_table {
             if looks_like_table_row(line) {
                 let row = parse_table_row(line);
-                return render_table_row(&row, &table.widths, &table.alignments, false);
+                let mut output = middle_table_border(&table.widths);
+                output.push_str(&render_table_row(
+                    &row,
+                    &table.widths,
+                    &table.alignments,
+                    false,
+                ));
+                return output;
             }
-            let mut output = table_border(&table.widths, '+', '+', '+');
+            let mut output = bottom_table_border(&table.widths);
             self.active_table = None;
             output.push_str(&self.render_line(line));
             return output;
         }
         if looks_like_table_row(line) {
             self.table_buffer.push(line.to_string());
-            if self.table_buffer.len() < 2 {
+            if self.table_buffer.len() < 3 {
                 return String::new();
             }
-            let first = self.table_buffer.first().cloned().unwrap_or_default();
             let second = self.table_buffer.get(1).cloned().unwrap_or_default();
             if is_table_separator(&second) {
-                let header = parse_table_row(&first);
+                let header =
+                    parse_table_row(self.table_buffer.first().map(String::as_str).unwrap_or(""));
                 let alignments = parse_table_alignments(&second);
-                let widths = bounded_table_widths_for_cols(header.len().max(alignments.len()));
+                let first_row =
+                    parse_table_row(self.table_buffer.get(2).map(String::as_str).unwrap_or(""));
+                let widths = table_widths_for_rows(&[header.clone(), first_row.clone()]);
                 self.table_buffer.clear();
                 self.active_table = Some(ActiveTable {
                     widths: widths.clone(),
                     alignments: alignments.clone(),
                 });
-                let mut output = table_border(&widths, '+', '+', '+');
+                let mut output = top_table_border(&widths);
                 output.push_str(&render_table_row(&header, &widths, &alignments, true));
-                output.push_str(&table_border(&widths, '+', '+', '+'));
+                output.push_str(&middle_table_border(&widths));
+                output.push_str(&render_table_row(&first_row, &widths, &alignments, false));
                 return output;
             }
             return self.flush();
@@ -789,7 +798,7 @@ impl MarkdownLineRenderer {
             return output;
         }
         if let Some(table) = self.active_table.take() {
-            return table_border(&table.widths, '+', '+', '+');
+            return bottom_table_border(&table.widths);
         }
         if self.table_buffer.is_empty() {
             return String::new();
@@ -1023,7 +1032,7 @@ const CODE_KEYWORD_STYLE: &str = "\x1b[38;2;196;167;231m";
 const CODE_FUNCTION_STYLE: &str = "\x1b[38;2;156;207;216m";
 const CODE_STRING_STYLE: &str = "\x1b[38;2;166;214;160m";
 const CODE_NUMBER_STYLE: &str = "\x1b[38;2;246;193;119m";
-const CODE_COMMENT_STYLE: &str = "\x1b[2m\x1b[38;2;110;106;134m";
+const CODE_COMMENT_STYLE: &str = "\x1b[32m";
 
 fn render_url(url: &str) -> String {
     format!("{URL_STYLE}{url}{RESET}")
@@ -1071,55 +1080,16 @@ fn render_table(lines: &[String]) -> String {
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let mut widths = vec![0usize; cols];
-    for row in &rows {
-        for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(visible_width(cell));
-        }
-    }
-    widths = bounded_table_widths(widths);
+    let widths = table_widths_for_rows(&rows);
     let mut output = String::new();
-    output.push_str(&table_border(&widths, '+', '+', '+'));
+    output.push_str(&top_table_border(&widths));
     for (row_index, row) in rows.iter().enumerate() {
-        let wrapped = widths
-            .iter()
-            .enumerate()
-            .map(|(index, width)| {
-                let cell = row.get(index).map(String::as_str).unwrap_or("");
-                wrap_ansi_text(cell, *width)
-            })
-            .collect::<Vec<_>>();
-        let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
-        for line_index in 0..row_height {
-            output.push('|');
-            for (index, width) in widths.iter().enumerate() {
-                let cell = wrapped
-                    .get(index)
-                    .and_then(|lines| lines.get(line_index))
-                    .map(String::as_str)
-                    .unwrap_or("");
-                let cell = if row_index == 0 && !cell.is_empty() {
-                    format!("\x1b[1m{cell}\x1b[0m")
-                } else {
-                    cell.to_string()
-                };
-                output.push(' ');
-                output.push_str(&aligned_cell(
-                    &cell,
-                    *width,
-                    alignments.get(index).copied().unwrap_or(TableAlign::Left),
-                ));
-                output.push(' ');
-                output.push('|');
-            }
-            output.push('\n');
-        }
-        if row_index == 0 {
-            output.push_str(&table_border(&widths, '+', '+', '+'));
+        output.push_str(&render_table_row(row, &widths, &alignments, row_index == 0));
+        if row_index + 1 < rows.len() {
+            output.push_str(&middle_table_border(&widths));
         }
     }
-    output.push_str(&table_border(&widths, '+', '+', '+'));
+    output.push_str(&bottom_table_border(&widths));
     output
 }
 
@@ -1129,6 +1099,31 @@ fn parse_table_row(line: &str) -> Vec<String> {
         .split('|')
         .map(|cell| render_inline(cell.trim()))
         .collect()
+}
+
+fn table_widths_for_rows(rows: &[Vec<String>]) -> Vec<usize> {
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![0usize; cols];
+    for row in rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(visible_width(cell));
+        }
+    }
+    let readable_min = readable_table_min_width(cols);
+    for width in &mut widths {
+        *width = (*width).max(readable_min);
+    }
+    bounded_table_widths(widths)
+}
+
+fn readable_table_min_width(cols: usize) -> usize {
+    match cols {
+        0 => 0,
+        1 => 16,
+        2 => 14,
+        3 | 4 => 10,
+        _ => 8,
+    }
 }
 
 fn render_table_row(
@@ -1148,7 +1143,7 @@ fn render_table_row(
     let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
     let mut output = String::new();
     for line_index in 0..row_height {
-        output.push('|');
+        push_table_vertical(&mut output);
         for (index, width) in widths.iter().enumerate() {
             let cell = wrapped
                 .get(index)
@@ -1156,7 +1151,7 @@ fn render_table_row(
                 .map(String::as_str)
                 .unwrap_or("");
             let cell = if header && !cell.is_empty() {
-                format!("\x1b[1m{cell}\x1b[0m")
+                format!("{BOLD_STYLE}{cell}{RESET}")
             } else {
                 cell.to_string()
             };
@@ -1167,30 +1162,23 @@ fn render_table_row(
                 alignments.get(index).copied().unwrap_or(TableAlign::Left),
             ));
             output.push(' ');
-            output.push('|');
+            push_table_vertical(&mut output);
         }
         output.push('\n');
     }
     output
 }
 
-fn bounded_table_widths_for_cols(cols: usize) -> Vec<usize> {
-    if cols == 0 {
-        return Vec::new();
-    }
-    let terminal_width = terminal::size()
-        .map(|(width, _)| usize::from(width))
-        .unwrap_or(100)
-        .saturating_sub(1)
-        .max(20);
-    let border_overhead = cols.saturating_mul(3).saturating_add(1);
-    let available = terminal_width.saturating_sub(border_overhead).max(cols);
-    let base = (available / cols).max(1);
-    let mut widths = vec![base; cols];
-    for width in widths.iter_mut().take(available % cols) {
-        *width += 1;
-    }
-    widths
+fn top_table_border(widths: &[usize]) -> String {
+    table_border(widths, '┌', '┬', '┐')
+}
+
+fn middle_table_border(widths: &[usize]) -> String {
+    table_border(widths, '├', '┼', '┤')
+}
+
+fn bottom_table_border(widths: &[usize]) -> String {
+    table_border(widths, '└', '┴', '┘')
 }
 
 fn bounded_table_widths(mut widths: Vec<usize>) -> Vec<usize> {
@@ -1215,7 +1203,7 @@ fn bounded_table_widths(mut widths: Vec<usize>) -> Vec<usize> {
         else {
             break;
         };
-        if width <= 8 {
+        if width <= 1 {
             break;
         }
         widths[index] -= 1;
@@ -1304,7 +1292,7 @@ fn table_border(widths: &[usize], left: char, mid: char, right: char) -> String 
     output.push_str("\x1b[2m");
     output.push(left);
     for (index, width) in widths.iter().enumerate() {
-        output.push_str(&"-".repeat(width + 2));
+        output.push_str(&"─".repeat(width + 2));
         output.push(if index + 1 == widths.len() {
             right
         } else {
@@ -1313,6 +1301,10 @@ fn table_border(widths: &[usize], left: char, mid: char, right: char) -> String 
     }
     output.push_str("\x1b[0m\n");
     output
+}
+
+fn push_table_vertical(output: &mut String) {
+    output.push_str("\x1b[2m│\x1b[0m");
 }
 
 fn highlight_code_line(lang: &str, line: &str) -> String {
@@ -1446,12 +1438,13 @@ fn render_code_block(lang: &str, lines: &[String]) -> String {
 
 fn render_code_block_frame(text: &str, width: usize) -> String {
     if text == "--" {
-        return format!("{CODE_BLOCK_FRAME_STYLE}{}{RESET}", "-".repeat(width));
+        return format!("{CODE_BLOCK_FRAME_STYLE}{}{RESET}", "─".repeat(width));
     }
-    let prefix = format!("{text} ");
+    let label = text.strip_prefix("-- ").unwrap_or(text);
+    let prefix = format!("╭─ {label} ");
     format!(
         "{CODE_BLOCK_FRAME_STYLE}{prefix}{}{RESET}",
-        "-".repeat(width.saturating_sub(prefix.chars().count()))
+        "─".repeat(width.saturating_sub(prefix.chars().count()))
     )
 }
 
@@ -1803,13 +1796,35 @@ mod tests {
     fn buffers_tables_until_non_table_line() {
         let mut renderer = MarkdownStreamRenderer::new();
         assert_eq!(renderer.push("| a | b |\n"), "");
-        let header = renderer.push("| - | - |\n");
-        assert!(header.contains("\x1b[1ma\x1b[0m"));
-        let row = renderer.push("| 1 | 2 |\n");
-        assert!(row.contains("1"));
+        assert_eq!(renderer.push("| - | - |\n"), "");
+        let output = renderer.push("| 1 | 2 |\n");
+        assert!(output.contains(&format!("{BOLD_STYLE}a{RESET}")));
+        assert!(output.contains("1"));
+        assert!(output.contains('┌'));
+        assert!(output.contains('┬'));
+        assert!(output.contains('├'));
+        assert!(output.contains('┼'));
+        assert!(output.contains("\x1b[2m│\x1b[0m"));
+        assert!(output.contains('─'));
+        assert!(!output.contains('+'));
         let output = renderer.push("done\n");
-        assert!(output.contains('+'));
+        assert!(output.contains('└'));
         assert!(output.ends_with("done\n"));
+    }
+
+    #[test]
+    fn short_tables_use_content_width() {
+        let output = render_table(&[
+            "| 项目 | 内容 |".to_string(),
+            "|---|---|".to_string(),
+            "| 名字 | 未有 / Miyu |".to_string(),
+            "| 年龄 | 18 |".to_string(),
+        ]);
+        let terminal_width = terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(100);
+        let widest = output.lines().map(visible_width).max().unwrap_or(0);
+        assert!(widest < terminal_width / 2, "table too wide: {widest}");
     }
 
     #[test]
@@ -1832,6 +1847,24 @@ mod tests {
     }
 
     #[test]
+    fn many_column_tables_stay_within_terminal_width() {
+        let output = render_table(&[
+            "| 参数名 | 参数类型 | 默认值 | 是否必填 | 说明 | 取值范围 | 示例值 | 适用版本 | 更新日志 | 备注 |".to_string(),
+            "|---|---|---|---|---|---|---|---|---|---|".to_string(),
+            "| database_host | string | localhost | 否 | 数据库主机地址 | 合法IP或域名 | 192.168.1.100 | v1.0+ | 无 | 支持IPv6 |".to_string(),
+        ]);
+        let terminal_width = terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(100);
+        for line in output.lines() {
+            assert!(
+                visible_width(line) < terminal_width,
+                "line too wide: {line}"
+            );
+        }
+    }
+
+    #[test]
     fn blockquote_is_visually_distinct() {
         let mut renderer = MarkdownStreamRenderer::new();
         let output = renderer.push(">> quoted\n");
@@ -1844,17 +1877,17 @@ mod tests {
     fn code_block_has_label_and_readable_content() {
         let mut renderer = MarkdownStreamRenderer::new();
         let output = renderer.push("```rust\nfn main() {}\n```\n");
-        assert!(output.contains("-- code rust"));
+        assert!(output.contains("╭─ code rust"));
         assert!(!output.contains(",-- code rust"));
         assert!(!output.contains("\x1b[2m|\x1b[0m"));
         assert!(output.contains(&format!(
             "{CODE_BLOCK_BG}{CODE_KEYWORD_STYLE}fn{CODE_TOKEN_RESET}"
         )));
         assert!(output.contains(&format!("{CODE_FUNCTION_STYLE}main{CODE_TOKEN_RESET}")));
-        assert!(output.contains(&format!("{CODE_BLOCK_FRAME_STYLE}-- code rust -")));
+        assert!(output.contains(&format!("{CODE_BLOCK_FRAME_STYLE}╭─ code rust ─")));
         assert!(output.contains(&format!(
             "{CODE_BLOCK_FRAME_STYLE}{}{RESET}",
-            "-".repeat(24)
+            "─".repeat(24)
         )));
         assert!(!output.contains("`--"));
     }
@@ -1888,7 +1921,7 @@ mod tests {
         )));
         assert!(output.contains(&format!(
             "{CODE_BLOCK_FRAME_STYLE}{}{RESET}",
-            "-".repeat(24)
+            "─".repeat(24)
         )));
         assert!(!output.contains("48;5;236"));
     }
@@ -2037,6 +2070,22 @@ mod tests {
     }
 
     #[test]
+    fn finish_keeps_pending_reasoning_summary_state() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+        );
+        renderer.reasoning_chars = 12;
+        renderer.reasoning_lines = 1;
+        renderer.finish().unwrap();
+        assert_eq!(renderer.reasoning_chars, 0);
+        assert_eq!(renderer.reasoning_lines, 0);
+        assert!(!renderer.summary_line_active);
+    }
+
+    #[test]
     fn keeps_identifier_underscores_literal() {
         let output = render_inline("GTK_IM_MODULE and _italic_");
         assert!(output.contains("GTK_IM_MODULE"));
@@ -2083,9 +2132,11 @@ mod tests {
         let output =
             renderer.push("| left | mid | right |\n| :--- | :---: | ---: |\n| a | b | c |\n");
         let output = format!("{output}{}", renderer.flush());
-        assert!(output.contains("+"));
+        assert!(output.contains('┌'));
+        assert!(output.contains('│'));
+        assert!(!output.contains('+'));
         assert!(!output.contains(":---"));
-        assert!(output.contains("\x1b[1mleft\x1b[0m"));
+        assert!(output.contains(&format!("{BOLD_STYLE}left{RESET}")));
     }
 
     #[test]
