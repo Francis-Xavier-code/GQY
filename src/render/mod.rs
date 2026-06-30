@@ -166,6 +166,12 @@ impl StreamRenderer {
         self.stop_waiting()?;
         self.end_active_stream_line()?;
         self.finalize_reasoning_summary()?;
+        if is_silent_tool(name) {
+            if self.summary_line_active {
+                self.clear_summary_lines()?;
+            }
+            return Ok(());
+        }
         if name == "run_command" {
             let mut stdout = io::stdout();
             write_command_block(&mut stdout, arguments)?;
@@ -192,6 +198,9 @@ impl StreamRenderer {
             return Ok(());
         }
         self.stop_waiting()?;
+        if is_silent_tool(name) && ok {
+            return Ok(());
+        }
         let status = if ok { "ok" } else { "err" };
         if name == "run_command" {
             if self.tool_call_mode == ToolCallDisplayMode::Summary {
@@ -238,6 +247,9 @@ impl StreamRenderer {
         }
         if message == "__external_output__" {
             self.prepare_for_external_output()?;
+            return Ok(());
+        }
+        if is_silent_tool(name) {
             return Ok(());
         }
         self.stop_waiting()?;
@@ -556,6 +568,10 @@ fn tool_status_text(name: &str, stats: &ToolStats) -> String {
     } else {
         format!("{name}×{calls} ok:{}", stats.ok)
     }
+}
+
+fn is_silent_tool(name: &str) -> bool {
+    matches!(name, "show_meme")
 }
 
 fn readable_tool_name(name: &str) -> &str {
@@ -1962,6 +1978,12 @@ mod tests {
             tool_status_text("grep", &stats),
             "grep×3 运行中:1 ok:1 err:1"
         );
+    }
+
+    #[test]
+    fn show_meme_is_a_silent_tool() {
+        assert!(is_silent_tool("show_meme"));
+        assert!(!is_silent_tool("search_meme"));
     }
 
     #[test]

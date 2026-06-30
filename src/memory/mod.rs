@@ -766,6 +766,29 @@ mod tests {
     }
 
     #[test]
+    fn reset_all_clears_facts_and_episodes() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = AppConfig::default();
+        let paths = test_paths(&temp);
+        let store = MemoryStore::new(&config, &paths);
+        store
+            .remember_fact("Niri 输入法需要 XMODIFIERS", "test")
+            .unwrap();
+        store.remember_pending_event("你好", "在呢").unwrap();
+        store.flush_pending_events().unwrap();
+
+        let before = store.recall_memories("你好 XMODIFIERS", 5, false).unwrap();
+        assert!(!before["facts"].as_array().unwrap().is_empty());
+        assert!(!before["episodes"].as_array().unwrap().is_empty());
+
+        store.reset_all(false).unwrap();
+
+        let after = store.recall_memories("你好 XMODIFIERS", 5, false).unwrap();
+        assert!(after["facts"].as_array().unwrap().is_empty());
+        assert!(after["episodes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn evicted_context_can_be_cleared() {
         let temp = tempfile::tempdir().unwrap();
         let config = AppConfig::default();
