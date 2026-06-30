@@ -74,6 +74,7 @@ pub struct StreamRenderer {
     markdown: MarkdownStreamRenderer,
     reasoning_chars: usize,
     reasoning_lines: usize,
+    reasoning_line_open: bool,
     tool_stats: BTreeMap<String, ToolStats>,
     readable_tool_names: bool,
     summary_line_active: bool,
@@ -98,6 +99,7 @@ impl StreamRenderer {
             markdown: MarkdownStreamRenderer::new(),
             reasoning_chars: 0,
             reasoning_lines: 0,
+            reasoning_line_open: false,
             tool_stats: BTreeMap::new(),
             readable_tool_names,
             summary_line_active: false,
@@ -131,8 +133,7 @@ impl StreamRenderer {
             && chunk.kind == ChatStreamKind::Reasoning
         {
             self.finalize_tools_summary()?;
-            self.reasoning_chars += text.chars().count();
-            self.reasoning_lines += text.matches('\n').count();
+            self.record_reasoning_text(&text);
             self.mode = Some(ChatStreamKind::Reasoning);
             if self.wait_spinner.is_some() {
                 self.set_waiting_phase(self.reasoning_summary_text());
@@ -375,6 +376,7 @@ impl StreamRenderer {
             }
             self.reasoning_chars = 0;
             self.reasoning_lines = 0;
+            self.reasoning_line_open = false;
             self.mode = None;
         }
         Ok(())
@@ -446,11 +448,29 @@ impl StreamRenderer {
         format!(
             "{} · {} {} · {} {}",
             t("thinking", "思考"),
-            self.reasoning_lines.max(1),
+            self.reasoning_line_count(),
             t("lines", "行"),
             self.reasoning_chars,
             t("chars", "字符")
         )
+    }
+
+    fn record_reasoning_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.reasoning_chars += 1;
+            if ch == '\n' {
+                if self.reasoning_line_open {
+                    self.reasoning_lines += 1;
+                    self.reasoning_line_open = false;
+                }
+            } else {
+                self.reasoning_line_open = true;
+            }
+        }
+    }
+
+    fn reasoning_line_count(&self) -> usize {
+        self.reasoning_lines + usize::from(self.reasoning_line_open)
     }
 
     fn tool_summary_text(&self) -> String {
@@ -1018,9 +1038,9 @@ const SECONDARY_STYLE: &str = "\x1b[36m";
 const TERTIARY_STYLE: &str = "\x1b[35m";
 const HEADER_STYLE: &str = "\x1b[1m\x1b[35m";
 const INLINE_CODE_STYLE: &str = SECONDARY_STYLE;
-const LINK_LABEL_STYLE: &str = "\x1b[4m\x1b[38;5;81m";
+const LINK_LABEL_STYLE: &str = "\x1b[38;5;117m";
 const URL_STYLE: &str = "\x1b[2m\x1b[38;5;75m";
-const IMAGE_STYLE: &str = "\x1b[1m\x1b[38;5;213m";
+const IMAGE_STYLE: &str = "\x1b[38;5;183m";
 const MATH_STYLE: &str = "\x1b[38;5;117m";
 const BOLD_STYLE: &str = "\x1b[1m\x1b[34m";
 const ITALIC_STYLE: &str = "\x1b[3m\x1b[38;5;250m";
@@ -2079,10 +2099,27 @@ mod tests {
         );
         renderer.reasoning_chars = 12;
         renderer.reasoning_lines = 1;
+        renderer.reasoning_line_open = true;
         renderer.finish().unwrap();
         assert_eq!(renderer.reasoning_chars, 0);
         assert_eq!(renderer.reasoning_lines, 0);
+        assert!(!renderer.reasoning_line_open);
         assert!(!renderer.summary_line_active);
+    }
+
+    #[test]
+    fn reasoning_summary_counts_streamed_lines() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+        );
+        renderer.record_reasoning_text("one\nt");
+        renderer.record_reasoning_text("wo\nthree");
+        assert_eq!(renderer.reasoning_chars, 13);
+        assert_eq!(renderer.reasoning_line_count(), 3);
+        assert!(renderer.reasoning_summary_text().contains("3 行"));
     }
 
     #[test]
