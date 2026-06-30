@@ -503,15 +503,20 @@ fn tool_status_text(name: &str, stats: &ToolStats) -> String {
         }
     }
     if running > 0 {
-        format!(
-            "{name}×{calls} {}:{} ok:{} err:{}",
+        let mut text = format!(
+            "{name}×{calls} {}:{} ok:{}",
             t("running", "运行中"),
             running,
             stats.ok,
-            stats.error
-        )
-    } else {
+        );
+        if stats.error > 0 {
+            text.push_str(&format!(" err:{}", stats.error));
+        }
+        text
+    } else if stats.error > 0 {
         format!("{name}×{calls} ok:{} err:{}", stats.ok, stats.error)
+    } else {
+        format!("{name}×{calls} ok:{}", stats.ok)
     }
 }
 
