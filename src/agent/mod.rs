@@ -290,8 +290,11 @@ impl Agent {
 }
 
 fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
+    let cwd = std::env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     format!(
-        "{system_prompt}\n\n<system-reminder>\n当前系统时间：{}。用户询问当前时间时，优先使用这里的时间，不需要调用命令查询。\n</system-reminder>\n\n{}",
+        "{system_prompt}\n\n<system-reminder>\n当前系统时间：{}。用户询问当前时间时，优先使用这里的时间，不需要调用命令查询。\n当前工作目录：{cwd}。涉及相对路径、当前项目、文件操作时优先以此为准。\n</system-reminder>\n\n{}",
         Local::now().format("%Y年%m月%d日 %H:%M"),
         mode.reminder()
     )
