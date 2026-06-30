@@ -1,5 +1,8 @@
+mod wait_spinner;
+
 use crate::i18n::text as t;
 use crate::llm::{ChatResult, ChatStreamChunk, ChatStreamKind};
+use crate::render::wait_spinner::WaitSpinner;
 use anyhow::Result;
 use crossterm::cursor::{Hide, MoveToColumn, Show};
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
@@ -76,6 +79,7 @@ pub struct StreamRenderer {
     summary_line_active: bool,
     summary_lines_active: u16,
     live_summary: bool,
+    wait_spinner: Option<WaitSpinner>,
 }
 
 impl StreamRenderer {
@@ -99,7 +103,17 @@ impl StreamRenderer {
             summary_line_active: false,
             summary_lines_active: 0,
             live_summary: io::stdout().is_terminal(),
+            wait_spinner: None,
         }
+    }
+
+    pub fn start_waiting(&mut self) -> Result<()> {
+        if self.plain || self.wait_spinner.is_some() || !WaitSpinner::supported() {
+            return Ok(());
+        }
+        self.hide_cursor()?;
+        self.wait_spinner = Some(WaitSpinner::start(t("thinking", "思考").to_string()));
+        Ok(())
     }
 
     pub fn write_chunk(&mut self, chunk: ChatStreamChunk) -> Result<()> {
@@ -120,9 +134,14 @@ impl StreamRenderer {
             self.reasoning_chars += text.chars().count();
             self.reasoning_lines += text.matches('\n').count();
             self.mode = Some(ChatStreamKind::Reasoning);
-            self.render_summary_line(&self.reasoning_summary_text(), SummaryStyle::Reasoning)?;
+            if self.wait_spinner.is_some() {
+                self.set_waiting_phase(self.reasoning_summary_text());
+            } else {
+                self.render_summary_line(&self.reasoning_summary_text(), SummaryStyle::Reasoning)?;
+            }
             return Ok(());
         }
+        self.stop_waiting()?;
         if self.mode != Some(chunk.kind) {
             if chunk.kind == ChatStreamKind::Content {
                 self.finalize_reasoning_summary()?;
@@ -144,6 +163,7 @@ impl StreamRenderer {
         if self.plain {
             return Ok(());
         }
+        self.stop_waiting()?;
         self.end_active_stream_line()?;
         self.finalize_reasoning_summary()?;
         if name == "run_command" {
@@ -171,6 +191,7 @@ impl StreamRenderer {
         if self.plain {
             return Ok(());
         }
+        self.stop_waiting()?;
         let status = if ok { "ok" } else { "err" };
         if name == "run_command" {
             if self.tool_call_mode == ToolCallDisplayMode::Summary {
@@ -219,6 +240,7 @@ impl StreamRenderer {
             self.prepare_for_external_output()?;
             return Ok(());
         }
+        self.stop_waiting()?;
         self.end_active_stream_line()?;
         self.finalize_reasoning_summary()?;
         if self.tool_call_mode == ToolCallDisplayMode::Full {
@@ -240,6 +262,7 @@ impl StreamRenderer {
     }
 
     pub fn prepare_for_external_output(&mut self) -> Result<()> {
+        self.stop_waiting()?;
         if self.summary_line_active {
             let mut stdout = io::stdout();
             execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
@@ -254,6 +277,7 @@ impl StreamRenderer {
     }
 
     pub fn finish(&mut self) -> Result<()> {
+        self.stop_waiting()?;
         if self.summary_line_active {
             self.clear_summary_lines()?;
             self.summary_line_active = false;
@@ -370,6 +394,7 @@ impl StreamRenderer {
     }
 
     fn render_summary_line(&mut self, text: &str, style: SummaryStyle) -> Result<()> {
+        self.stop_waiting()?;
         if !self.live_summary {
             return Ok(());
         }
@@ -462,6 +487,19 @@ impl StreamRenderer {
         if self.cursor_hidden {
             execute!(io::stdout(), Show)?;
             self.cursor_hidden = false;
+        }
+        Ok(())
+    }
+
+    fn set_waiting_phase(&mut self, phase: String) {
+        if let Some(spinner) = &self.wait_spinner {
+            spinner.set_phase(phase);
+        }
+    }
+
+    fn stop_waiting(&mut self) -> Result<()> {
+        if let Some(mut spinner) = self.wait_spinner.take() {
+            spinner.stop()?;
         }
         Ok(())
     }
@@ -1670,6 +1708,7 @@ fn clip_progress_line(text: &str, max_chars: usize) -> String {
 
 impl Drop for StreamRenderer {
     fn drop(&mut self) {
+        let _ = self.stop_waiting();
         if self.summary_line_active {
             let _ = self.clear_summary_lines();
             eprintln!();

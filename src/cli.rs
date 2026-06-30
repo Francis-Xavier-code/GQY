@@ -1275,6 +1275,7 @@ async fn run_chat_with_options(
     let mut agent = Agent::new(config, paths, state, client, registry, mode)?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain, readable_tool_names);
+    renderer.start_waiting()?;
     let result = agent
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
         .await;
@@ -1377,6 +1378,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             false,
             config.display.readable_tool_names,
         );
+        renderer.start_waiting()?;
         let chat_result = {
             let chat = agent.chat_stream(input, |event| handle_agent_event(&mut renderer, event));
             tokio::pin!(chat);
