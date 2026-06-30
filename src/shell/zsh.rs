@@ -12,13 +12,8 @@ pub fn hook() -> &'static str {
     [[ -o interactive ]] || return 127
 
     local text="$*"
-    local miyu_leading_pattern='^[[:space:]]*([-#./~0-9<]|[[:digit:]]+[.)])'
-    local miyu_shell_syntax_pattern='[/\\=|;&<>$`(){}\[\]*]'
     [[ -n "$text" ]] || return 127
-    (( ${#text} <= 120 )) || return 127
     [[ "$text" != *$'\n'* && "$text" != *$'\r'* ]] || return 127
-    [[ ! "$text" =~ $miyu_leading_pattern ]] || return 127
-    [[ ! "$text" =~ $miyu_shell_syntax_pattern ]] || return 127
 
     miyu --shell-intercept --shell zsh -- "$@" 2>/dev/null
     return 127
@@ -123,5 +118,13 @@ mod tests {
         assert!(hook.contains("command_not_found_handler"));
         assert!(hook.contains("--shell zsh"));
         assert!(hook.contains("return 127"));
+    }
+
+    #[test]
+    fn zsh_hook_does_not_filter_natural_language_symbols() {
+        let hook = hook();
+        assert!(!hook.contains("${#text} <= 120"));
+        assert!(!hook.contains("miyu_shell_syntax_pattern"));
+        assert!(!hook.contains("miyu_leading_pattern"));
     }
 }

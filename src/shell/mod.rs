@@ -76,48 +76,7 @@ pub fn looks_like_natural_language(input: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    if trimmed.chars().count() > 120 || trimmed.contains('\n') || trimmed.contains('\r') {
-        return false;
-    }
-    if starts_like_shell_fragment(trimmed) || contains_shell_syntax(trimmed) {
-        return false;
-    }
-    trimmed.chars().any(|char| !char.is_ascii()) || trimmed.split_whitespace().count() > 1
-}
-
-fn starts_like_shell_fragment(input: &str) -> bool {
-    let mut chars = input.chars();
-    let Some(first) = chars.next() else {
-        return true;
-    };
-    if matches!(first, '-' | '#' | '.' | '/' | '~') || first.is_ascii_digit() {
-        return true;
-    }
-    false
-}
-
-fn contains_shell_syntax(input: &str) -> bool {
-    input.chars().any(|ch| {
-        matches!(
-            ch,
-            '/' | '\\'
-                | '='
-                | '|'
-                | ';'
-                | '&'
-                | '<'
-                | '>'
-                | '$'
-                | '`'
-                | '('
-                | ')'
-                | '{'
-                | '}'
-                | '['
-                | ']'
-                | '*'
-        )
-    })
+    !trimmed.contains('\n') && !trimmed.contains('\r')
 }
 
 #[cfg(test)]
@@ -133,12 +92,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pasted_list_and_shell_syntax() {
-        assert!(!looks_like_natural_language(
-            "- archlinux zen内核怎么安装驱动"
+    fn accepts_command_not_found_text_without_syntax_filtering() {
+        assert!(looks_like_natural_language(
+            "这样写可以吗？假设我们输入一个字母`x`"
         ));
-        assert!(!looks_like_natural_language("1. 我家离洗车店只有50M"));
-        assert!(!looks_like_natural_language("GTK_IM_MODULE=fcitx"));
-        assert!(!looks_like_natural_language("./target/release/miyu 查询"));
+        assert!(looks_like_natural_language("我好像在输入里加一个左斜杠就会导致输入不被传给miyu/对吗？"));
+        assert!(looks_like_natural_language(
+            "软件需要适配 Wayland 的 `text-input` 协议，输入法要支持 $GTK_IM_MODULE 吗？"
+        ));
+        assert!(looks_like_natural_language("GTK_IM_MODULE=fcitx 是什么意思？"));
+        assert!(looks_like_natural_language("./target/release/miyu 查询为什么失败？"));
+    }
+
+    #[test]
+    fn rejects_empty_or_multiline_text() {
+        assert!(!looks_like_natural_language(""));
+        assert!(!looks_like_natural_language("   "));
+        assert!(!looks_like_natural_language("第一行\n第二行"));
     }
 }

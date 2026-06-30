@@ -12,10 +12,7 @@ pub fn hook() -> &'static str {
     end
 
     set -l text (string join ' ' -- $command)
-    test (string length -- $text) -le 120; or return 127
     string match -qr '[\n\r]' -- $text; and return 127
-    string match -qr '^\s*([-#./~0-9<]|[[:digit:]]+[.)])' -- $text; and return 127
-    string match -qr '[/\\=|;&<>$`(){}\[\]*]' -- $text; and return 127
 
     miyu --shell-intercept --shell fish -- $command 2>/dev/null
     return 127
@@ -48,4 +45,25 @@ pub fn uninstall(paths: &MiyuPaths) -> Result<()> {
         t("removed Miyu shell hook", "已移除 Miyu shell hook")
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fish_hook_defines_command_not_found_handler() {
+        let hook = hook();
+        assert!(hook.contains("fish_command_not_found"));
+        assert!(hook.contains("--shell fish"));
+        assert!(hook.contains("return 127"));
+    }
+
+    #[test]
+    fn fish_hook_does_not_filter_natural_language_symbols() {
+        let hook = hook();
+        assert!(!hook.contains("length -- $text) -le 120"));
+        assert!(!hook.contains("[/\\"));
+        assert!(!hook.contains("=|;&<>"));
+    }
 }
