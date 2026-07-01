@@ -287,11 +287,6 @@ impl Agent {
                     }
                 };
                 messages.push(ChatMessage::tool(call.id, output));
-                if call.function.name == "inspect_issue" {
-                    messages.push(ChatMessage::system(
-                        "inspect_issue 只提供本机问题相关信息，不是诊断结论，也不是最终答案。接下来应结合相关知识库或记忆；若问题涉及当前外部事实、版本变化、网页资料，再使用网络搜索/抓取。最终回复要给用户可执行结论，并说明关键证据。",
-                    ));
-                }
             }
         }
     }

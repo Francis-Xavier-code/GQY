@@ -10,7 +10,7 @@ const MAX_EXCERPT_CHARS: usize = 12_000;
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new(
         "fcitx5_input_method_wiki_qurey",
-        "Query official Fcitx 5 Wiki guidance for Linux input method diagnosis. Returns bilingual structured claims from a small official-page whitelist; use after inspect_issue for Fcitx/XIM/GTK/Qt/Wayland questions. This is not general web search.",
+        "Query official Fcitx 5 Wiki guidance for Linux input method diagnosis. Returns bilingual structured claims from a small official-page whitelist; use after check_issue for Fcitx/XIM/GTK/Qt/Wayland questions. This is not general web search.",
         json!({
             "type": "object",
             "properties": {
@@ -191,6 +191,13 @@ fn claims_for_topic(topic: &str, language: Language) -> Vec<WikiClaim> {
                 "Modern GTK3/GTK4 Wayland applications can use text-input-v3; the ideal setup usually does not globally force `GTK_IM_MODULE`.",
                 "gtk-wayland",
                 "Legacy, XWayland, compositor-specific, or per-app cases may still need module overrides.",
+            ),
+            claim(
+                language,
+                "text-input-v3 是 Wayland 原生输入法协议，对 GTK/Qt/SDL/Electron Wayland 原生应用都有效。可通过 `wayland-info` 命令检查 compositor 是否支持 `zwp_text_input_manager_v3` 接口，并检查 fcitx5 是否加载了 `libwaylandim.so`（Wayland 前端模块）。",
+                "text-input-v3 is the Wayland native input method protocol, effective for GTK/Qt/SDL/Electron Wayland-native applications. Use `wayland-info` to check if the compositor advertises `zwp_text_input_manager_v3`, and check whether fcitx5 has loaded `libwaylandim.so` (Wayland frontend module).",
+                "text-input-v3",
+                "Both conditions (compositor support + fcitx5 frontend) must be met; either alone is insufficient.",
             ),
         ],
         "xim" => vec![

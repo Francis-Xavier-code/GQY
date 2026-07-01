@@ -79,6 +79,7 @@ pub struct StreamRenderer {
     readable_tool_names: bool,
     summary_line_active: bool,
     summary_lines_active: u16,
+    last_tool_summary: String,
     live_summary: bool,
     wait_spinner: Option<WaitSpinner>,
 }
@@ -104,6 +105,7 @@ impl StreamRenderer {
             readable_tool_names,
             summary_line_active: false,
             summary_lines_active: 0,
+            last_tool_summary: String::new(),
             live_summary: io::stdout().is_terminal(),
             wait_spinner: None,
         }
@@ -135,11 +137,7 @@ impl StreamRenderer {
             self.finalize_tools_summary()?;
             self.record_reasoning_text(&text);
             self.mode = Some(ChatStreamKind::Reasoning);
-            if self.wait_spinner.is_some() {
-                self.set_waiting_phase(self.reasoning_summary_text());
-            } else {
-                self.render_summary_line(&self.reasoning_summary_text(), SummaryStyle::Reasoning)?;
-            }
+            self.ensure_waiting_phase(self.reasoning_summary_text())?;
             return Ok(());
         }
         self.stop_waiting()?;
@@ -164,7 +162,12 @@ impl StreamRenderer {
         if self.plain {
             return Ok(());
         }
-        self.stop_waiting()?;
+        let use_tool_spinner = self.tool_call_mode == ToolCallDisplayMode::Summary
+            && !is_silent_tool(name)
+            && name != "run_command";
+        if !use_tool_spinner {
+            self.stop_waiting()?;
+        }
         self.end_active_stream_line()?;
         self.finalize_reasoning_summary()?;
         if is_silent_tool(name) {
@@ -189,7 +192,7 @@ impl StreamRenderer {
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
             self.tool_stats.entry(name.to_string()).or_default().calls += 1;
-            self.render_summary_line(&self.tool_summary_text(), SummaryStyle::Tool)?;
+            self.ensure_tool_waiting_phase()?;
         }
         Ok(())
     }
@@ -237,7 +240,9 @@ impl StreamRenderer {
                 stats.error += 1;
                 stats.progress = None;
             }
-            self.render_summary_line(&self.tool_summary_text(), SummaryStyle::Tool)?;
+            let summary = self.tool_summary_text();
+            self.last_tool_summary = summary.clone();
+            self.render_summary_line(&summary, SummaryStyle::Tool)?;
         }
         Ok(())
     }
@@ -253,10 +258,10 @@ impl StreamRenderer {
         if is_silent_tool(name) {
             return Ok(());
         }
-        self.stop_waiting()?;
-        self.end_active_stream_line()?;
-        self.finalize_reasoning_summary()?;
         if self.tool_call_mode == ToolCallDisplayMode::Full {
+            self.stop_waiting()?;
+            self.end_active_stream_line()?;
+            self.finalize_reasoning_summary()?;
             let mut stdout = io::stdout();
             writeln!(
                 stdout,
@@ -269,7 +274,20 @@ impl StreamRenderer {
                 .entry(name.to_string())
                 .or_default()
                 .progress = Some(message.to_string());
-            self.render_summary_line(&self.tool_summary_text(), SummaryStyle::Tool)?;
+            if self.wait_spinner.is_some() {
+                let header = self.tool_summary_header();
+                let sub = self.tool_summary_progress();
+                self.set_tool_waiting_phase(&header, sub.as_deref());
+            } else {
+                self.end_active_stream_line()?;
+                self.finalize_reasoning_summary()?;
+                let new_summary = self.tool_summary_text();
+                if self.summary_line_active && new_summary == self.last_tool_summary {
+                    return Ok(());
+                }
+                self.last_tool_summary = new_summary.clone();
+                self.render_summary_line(&new_summary, SummaryStyle::Tool)?;
+            }
         }
         Ok(())
     }
@@ -357,6 +375,7 @@ impl StreamRenderer {
 
     fn finalize_reasoning_summary(&mut self) -> Result<()> {
         if self.reasoning_mode == ReasoningDisplayMode::Summary && self.reasoning_chars > 0 {
+            self.stop_waiting()?;
             if self.summary_line_active {
                 let mut stdout = io::stdout();
                 self.clear_summary_lines()?;
@@ -402,6 +421,7 @@ impl StreamRenderer {
                 );
             }
             self.tool_stats.clear();
+            self.last_tool_summary.clear();
         }
         Ok(())
     }
@@ -498,6 +518,33 @@ impl StreamRenderer {
         format!("{}: {parts}", t("tools", "工具"))
     }
 
+    fn tool_summary_header(&self) -> String {
+        let parts = self
+            .tool_stats
+            .iter()
+            .map(|(name, stats)| tool_status_text(&self.display_tool_name(name), stats))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}: {parts}", t("tools", "工具"))
+    }
+
+    fn tool_summary_progress(&self) -> Option<String> {
+        for (_name, stats) in &self.tool_stats {
+            if let Some(message) = &stats.progress {
+                let progress = message
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| format!("· {}", clip_progress_line(line, 120)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !progress.is_empty() {
+                    return Some(progress);
+                }
+            }
+        }
+        None
+    }
+
     fn display_tool_name<'a>(&self, name: &'a str) -> &'a str {
         if self.readable_tool_names {
             readable_tool_name(name)
@@ -525,6 +572,58 @@ impl StreamRenderer {
     fn set_waiting_phase(&mut self, phase: String) {
         if let Some(spinner) = &self.wait_spinner {
             spinner.set_phase(phase);
+        }
+    }
+
+    fn ensure_waiting_phase(&mut self, phase: String) -> Result<()> {
+        if self.plain || !WaitSpinner::supported() {
+            if self.summary_line_active {
+                self.clear_summary_lines()?;
+            }
+            self.render_summary_line(&phase, SummaryStyle::Reasoning)?;
+            return Ok(());
+        }
+        if self.wait_spinner.is_none() {
+            self.wait_spinner = Some(WaitSpinner::start(phase));
+        } else {
+            self.set_waiting_phase(phase);
+        }
+        Ok(())
+    }
+
+    fn ensure_tool_waiting_phase(&mut self) -> Result<()> {
+        let header = self.tool_summary_header();
+        let sub = self.tool_summary_progress();
+        if self.plain || !WaitSpinner::supported() {
+            let summary = match &sub {
+                Some(s) => format!("{header}\n{s}"),
+                None => header,
+            };
+            if self.summary_line_active {
+                self.clear_summary_lines()?;
+            }
+            self.last_tool_summary = summary.clone();
+            self.render_summary_line(&summary, SummaryStyle::Tool)?;
+            return Ok(());
+        }
+        if self.summary_line_active {
+            self.clear_summary_lines()?;
+        }
+        if self.wait_spinner.is_none() {
+            self.wait_spinner = Some(WaitSpinner::start(header));
+        } else {
+            self.set_waiting_phase(header);
+        }
+        if let Some(spinner) = &self.wait_spinner {
+            spinner.set_sub_phase(sub);
+        }
+        Ok(())
+    }
+
+    fn set_tool_waiting_phase(&mut self, header: &str, sub: Option<&str>) {
+        if let Some(spinner) = &self.wait_spinner {
+            spinner.set_phase(header.to_string());
+            spinner.set_sub_phase(sub.map(|s| s.to_string()));
         }
     }
 
@@ -594,76 +693,7 @@ fn is_silent_tool(name: &str) -> bool {
 }
 
 fn readable_tool_name(name: &str) -> &str {
-    match name {
-        "run_command" => "运行命令",
-        "task_agent" => "创建子任务",
-        "read_file" => "读取文件",
-        "write_file" => "写入文件",
-        "edit_file" => "编辑文件",
-        "list_directory" => "列目录",
-        "create_directory" => "创建目录",
-        "trash_path" => "移入回收站",
-        "find_files" | "glob" => "查找文件",
-        "search_text" | "grep" => "搜索文本",
-        "get_current_directory" => "当前目录",
-        "get_current_time" => "当前时间",
-        "inspect_issue" => "检查问题",
-        "check_os_info" => "查看系统信息",
-        "web_search" => "网页搜索",
-        "web_fetch" => "读取网页",
-        "fcitx5_input_method_wiki_qurey" => "查询 Fcitx5 Wiki",
-        "search_web_images" => "搜索图片",
-        "analyze_image" | "vision_analyze" => "分析图片",
-        "print_image" => "显示图片",
-        "generate_image" => "生成图片",
-        "search_meme" => "搜索表情包",
-        "show_meme" => "发送表情",
-        "add_meme" => "添加表情包",
-        "update_meme" => "更新表情包",
-        "delete_meme" => "删除表情包",
-        "deep_research" => "深度研究",
-        "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => "导入知识库",
-        "read_knowledge_base_file" => "读取知识库",
-        "search_knowledge_base" => "搜索知识库",
-        "search_knowledge_base_by_name" => "按名称搜索知识库",
-        "edit_knowledge_base_file" => "编辑知识库",
-        "remove_knowledge_base_file" => "移除知识库",
-        "list_knowledge_base_files" => "列出知识库",
-        "set_alarm" => "设置闹钟",
-        "list_alarms" => "列出闹钟",
-        "cancel_alarm" => "取消闹钟",
-        "remember_fact" => "记录记忆",
-        "search_evicted_context" => "搜索旧上下文",
-        "recall_past_events" => "回忆往事",
-        "recall_memory" | "recall_memories" => "召回记忆",
-        "forget_memory" | "forget_memories" => "删除记忆",
-        "list_memory" | "list_memories" => "列出记忆",
-        "aur_search_packages" => "搜索 AUR",
-        "aur_get_package_info" => "查看 AUR 包",
-        "aur_check_status" => "查询 AUR 状态",
-        "query_deepseek_status" => "查询 DeepSeek 状态",
-        "pacman_search" => "搜索软件包",
-        "archwiki_query" => "查询 ArchWiki",
-        "online_man_search" | "man_search" => "搜索在线手册",
-        "online_man_get_page" | "man_read" => "读取在线手册",
-        "moegirl_query" => "查询萌娘百科",
-        "calculate" | "calculator" => "计算",
-        "calculate_hash" => "计算哈希",
-        "decode_encoded_text" => "解码文本",
-        "exchange_rate" | "get_exchange_rate" => "汇率查询",
-        "weather" | "get_weather" => "天气查询",
-        "xuanxue_pick" => "玄学选择",
-        "xuanxue_divine" => "玄学占卜",
-        "draw_zhouyi_hexagram" => "周易起卦",
-        "draw_tarot_card" => "抽塔罗牌",
-        "draw_fortune_lot" => "抽签",
-        "load_skill" => "加载技能",
-        "review_aur_package" => "审查 AUR 包",
-        "install_aur_package" => "安装 AUR 包",
-        "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
-        "linux_game_compatibility" => "查询 Linux 游戏兼容性",
-        _ => name,
-    }
+    crate::tools::readable_tool_name(name)
 }
 
 struct MarkdownStreamRenderer {
@@ -2043,7 +2073,8 @@ mod tests {
     fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
         assert_eq!(readable_tool_name("deep_research"), "深度研究");
         assert_eq!(readable_tool_name("read_file"), "读取文件");
-        assert_eq!(readable_tool_name("inspect_issue"), "检查问题");
+        assert_eq!(readable_tool_name("check_issue"), "检查问题");
+        assert_eq!(readable_tool_name("deep_diagnose"), "深度诊断");
         assert_eq!(readable_tool_name("check_os_info"), "查看系统信息");
         assert_eq!(readable_tool_name("get_weather"), "天气查询");
         assert_eq!(readable_tool_name("get_exchange_rate"), "汇率查询");
