@@ -73,17 +73,19 @@ miyu config
 
   >这个游戏 Linux 能玩吗？
 
+  这是桌面端使用 Linux 的日经问题，Miyu 会去 [ProtonDB](https://www.protondb.com/)、[Are We Anti-Cheat Yet?](https://areweanticheatyet.com/)、[Can I Play On Linux](https://caniplayonlinux.com/)等 Linux游戏兼容性资讯网站获取主要信息，辅以社区玩家的声音，综合判断一款游戏的兼容性并提出建议和注意事项。
+
   ![](./pics/gaming.png)
 
 - 网络搜索
 
-  即使不配置网络搜索 API，Miyu 也仍然拥有基础的网络搜索和网页读取能力。可以在插件配置中设置网络搜索 API 以获得更佳的搜索效果。
+  即使不配置网络搜索 API，Miyu 也仍然拥有基础的网络搜索和网页读取能力。可以在插件配置中设置 Tavily、Firecrawl 、AnySearch、SearXNG 等网络搜索 API 以获得更佳的搜索效果。
 
   ![](./pics/web-search-config.png)
 
 - 搜图
 
-  miyu 还能帮你找图片喔！
+  Miyu 还能帮你找图片喔！图片会默认保存至`XDG图片目录/Miyu`。
 
   >NSFW 禁止！
 
@@ -91,7 +93,7 @@ miyu config
 
 - 生图
 
-  支持 OpenAI 的画图服务喔。
+  支持 OpenAI 的画图服务喔。图片会默认保存至`XDG图片目录/Miyu`。
 
   >这个功能默认用不了，要自己在插件设置里开启并配置 API
 
@@ -111,7 +113,9 @@ miyu config
 
 - Man 手册查询
 
-  >Man！如果 AI 运行命令前能查询 Man 就好了
+  >Man！
+
+  专门的手册查询工具，虽然网络搜索也能做到，但这值得做成单独的插件。
   
   ![](./pics/man.png)
 
@@ -121,8 +125,10 @@ miyu config
 
   - AUR 状态查询
 
-    >AUR还在被 DDos 吗！
-    
+    >AUR 还在被 DDos 吗！
+
+    AUR 的状态是日用 Arch 时的重要信息之一，不访问网站就能查询的话，在 AUR 安装出现异常时查起来会方便很多。
+
     ![](./pics/aur-status.png)
 
   - Arch Wiki 查询
@@ -133,7 +139,7 @@ miyu config
 
   - PKGBUILD 审查
 
-    AUR 投毒的事件搞的人心惶惶，但现在，Miyu 可以帮我审查 PKGBUILD 啦！
+    AUR 投毒的事件搞得人心惶惶，但现在，Miyu 可以帮忙审查 PKGBUILD 啦！
 
     ![](./pics/pkgbuild审核.png)
 
@@ -151,7 +157,7 @@ miyu config
 
 - 记忆系统
 
-  Miyu 的记忆由两部分组成，其一是“曾经发生的事”，其二是“信息中的知识点”。
+  Miyu 的记忆由两部分组成，其一是“曾经发生的事”，其二是“信息中的知识点”。对话时会根据用户消息自动召回条目，这是联想功能。
 
   ![](./pics/记忆.png)
 
