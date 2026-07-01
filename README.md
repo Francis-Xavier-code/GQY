@@ -36,6 +36,32 @@ miyu config
   yay -S miyu
   ```
 
+- 从源码构建
+
+  需要安装 Rust 1.96 或更新版本、C 编译工具链、`pkg-config` 和 ALSA 开发库。Arch Linux、Fedora 和 Ubuntu 24.04 均已验证可构建。
+
+  ```
+  git clone https://github.com/SHORiN-KiWATA/Miyu.git
+  cd Miyu
+  cargo build --release --locked
+  ./target/release/miyu --version
+  ```
+
+  各发行版依赖示例：
+
+  ```
+  # Arch Linux
+  sudo pacman -S --needed rust cargo pkgconf alsa-lib gcc
+
+  # Fedora
+  sudo dnf install cargo rust rust-std-static pkgconf-pkg-config alsa-lib-devel gcc
+
+  # Ubuntu 24.04
+  sudo apt install curl build-essential pkg-config libasound2-dev ca-certificates
+  curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+  . "$HOME/.cargo/env"
+  ```
+
 ### 内置插件
 
 <details><summary>[展开/收起] 具体介绍</summary>
