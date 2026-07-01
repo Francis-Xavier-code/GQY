@@ -51,8 +51,8 @@ Only review the investigator's report; do not answer the user. Output strict JSO
 }
 "#;
 
-const MAX_REVIEW_ROUNDS: usize = 12;
-const MAX_TOOL_STEPS_PER_ROUND: usize = 40;
+const MAX_REVIEW_ROUNDS: usize = 4;
+const MAX_TOOL_STEPS_PER_ROUND: usize = 16;
 const TOOL_TIMEOUT_SECONDS: u64 = 45;
 
 #[derive(Clone)]
@@ -134,6 +134,7 @@ async fn linux_game_compatibility(
         game
     ));
 
+    let mut last_error = None;
     for iteration in 1..=MAX_REVIEW_ROUNDS {
         iterations = iteration;
         progress.report(if is_zh() {
@@ -143,7 +144,7 @@ async fn linux_game_compatibility(
         });
         let tools = compatibility_tool_registry(&context, Arc::clone(&state));
         let prompt = investigator_prompt(&game, &issue, iteration, &draft, &review, &state)?;
-        let result = chat_with_tools(
+        let result = match chat_with_tools(
             &client,
             vec![
                 ChatMessage::system(INVESTIGATOR_SYSTEM_PROMPT),
@@ -152,7 +153,15 @@ async fn linux_game_compatibility(
             tools,
             &progress,
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                last_error = Some(err.to_string());
+                stop_reason = "investigator_error".to_string();
+                break;
+            }
+        };
         if !result.content.trim().is_empty() {
             draft = result.content.trim().to_string();
         }
@@ -166,7 +175,7 @@ async fn linux_game_compatibility(
             format!("round {iteration}: reviewer checking")
         });
         let review_prompt = reviewer_prompt(&game, &issue, iteration, &draft, &state)?;
-        let review_result = client
+        let review_result = match client
             .chat_stream(
                 vec![
                     ChatMessage::system(REVIEWER_SYSTEM_PROMPT),
@@ -175,7 +184,15 @@ async fn linux_game_compatibility(
                 Vec::new(),
                 |_| Ok(()),
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                last_error = Some(err.to_string());
+                stop_reason = "reviewer_error".to_string();
+                break;
+            }
+        };
         review = parse_review(&review_result.content);
         if review
             .get("accepted")
@@ -203,7 +220,11 @@ async fn linux_game_compatibility(
         ));
     }
 
-    let final_report = normalize_final_report(&draft, &state);
+    let final_report = if draft.trim().is_empty() {
+        fallback_report(&game, &issue, last_error.as_deref(), &state)
+    } else {
+        normalize_final_report(&draft, &state)
+    };
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,
         "kind": "linux_game_compatibility",
@@ -213,6 +234,7 @@ async fn linux_game_compatibility(
         "stop_reason": stop_reason,
         "final_report": final_report,
         "review": review,
+        "last_error": last_error,
         "evidence": public_evidence(&state),
     }))?)
 }
@@ -398,6 +420,25 @@ fn normalize_final_report(draft: &str, state: &Arc<Mutex<GameCompatibilityState>
         }
     }
     report
+}
+
+fn fallback_report(
+    game: &str,
+    issue: &str,
+    error: Option<&str>,
+    state: &Arc<Mutex<GameCompatibilityState>>,
+) -> String {
+    let evidence = evidence_registry_json(state).unwrap_or_else(|_| "[]".to_string());
+    let issue_note = if issue.trim().is_empty() {
+        String::new()
+    } else {
+        format!("当前关注点：{issue}")
+    };
+    format!(
+        "## 调查结果\n🟡 {game} 需要继续确认\n\n## 依据\n兼容性调查循环未能生成完整报告，不能把结论说死。内部错误：{}。\n\n已登记证据：\n```json\n{evidence}\n```\n\n## 怎么玩\n暂无可靠玩法。建议先补充查询官方公告、ProtonDB、AreWeAntiCheatYet、Can I Play on Linux 和近期玩家反馈后再决定。{}\n\n## 注意事项\n本次结果是失败保护输出，不代表游戏不可玩；只代表 Miyu 没有拿到足够可靠证据。",
+        error.unwrap_or("unknown"),
+        issue_note
+    )
 }
 
 fn evidence_warnings(draft: &str, state: &Arc<Mutex<GameCompatibilityState>>) -> Vec<String> {

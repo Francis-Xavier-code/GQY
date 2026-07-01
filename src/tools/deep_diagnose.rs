@@ -313,7 +313,7 @@ async fn run_deep_diagnose(
         });
         let tools = diagnosis_tool_registry(&context, Arc::clone(&state));
         let prompt = diagnoser_prompt(&issue, iteration, &draft, &review, &state)?;
-        let result = chat_with_tools(
+        let result = match chat_with_tools(
             &client,
             vec![
                 ChatMessage::system(DIAGNOSER_SYSTEM_PROMPT),
@@ -325,7 +325,17 @@ async fn run_deep_diagnose(
             &progress,
             Arc::clone(&state),
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                stop_reason = "diagnoser_error".to_string();
+                draft = format!(
+                    "## 问题模型\n暂无。\n## 已确认事实\n深度诊断循环中断：{err}\n## 候选根因\n暂无，证据不足。\n## 下一步最小验证\n请改用 check_issue、check_os_info 和相关官方文档工具继续收集证据。\n## 推荐修复\n暂无可靠修复建议。"
+                );
+                break;
+            }
+        };
         state
             .lock()
             .expect("deep diagnose state lock")
@@ -347,7 +357,7 @@ async fn run_deep_diagnose(
             format!("round {iteration}: reviewer checking")
         });
         let review_prompt = reviewer_prompt(&issue, iteration, &draft, &state)?;
-        let review_result = client
+        let review_result = match client
             .chat_stream(
                 vec![
                     ChatMessage::system(REVIEWER_SYSTEM_PROMPT),
@@ -356,7 +366,15 @@ async fn run_deep_diagnose(
                 Vec::new(),
                 |_| Ok(()),
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                stop_reason = "reviewer_error".to_string();
+                draft.push_str(&format!("\n\n## 审查状态\n审查者中断：{err}"));
+                break;
+            }
+        };
         state
             .lock()
             .expect("deep diagnose state lock")
