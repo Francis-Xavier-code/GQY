@@ -337,7 +337,7 @@ impl StreamRenderer {
                 if self.mode.is_some() {
                     writeln!(stdout)?;
                 }
-                execute!(stdout, SetForegroundColor(Color::DarkCyan))?;
+                execute!(stdout, SetForegroundColor(Color::Green))?;
                 writeln!(stdout, "{}", t("thinking", "思考"))?;
             }
             ChatStreamKind::Content => {
@@ -1783,7 +1783,7 @@ fn normalize_stream_text(text: &str) -> String {
 
 fn print_reasoning(reasoning: &str) -> Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, SetForegroundColor(Color::DarkCyan))?;
+    execute!(stdout, SetForegroundColor(Color::Green))?;
     writeln!(stdout, "{}", t("thinking", "思考"))?;
     for line in reasoning.trim().lines() {
         writeln!(stdout, "  {line}")?;
