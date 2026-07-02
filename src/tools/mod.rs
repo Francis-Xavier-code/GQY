@@ -17,6 +17,7 @@ pub(crate) mod memes;
 mod memory;
 mod moegirl;
 mod package_advisor;
+mod protondb_query;
 mod registry;
 mod skills;
 mod vision;
@@ -93,6 +94,7 @@ pub fn readable_tool_name(name: &str) -> &str {
         "decode_encoded_text" => "解码文本",
         "exchange_rate" | "get_exchange_rate" => "汇率查询",
         "weather" | "get_weather" => "天气查询",
+        "protondb_query" => "查询 ProtonDB",
         "xuanxue_pick" => "玄学选择",
         "xuanxue_divine" => "玄学占卜",
         "draw_zhouyi_hexagram" => "周易起卦",
@@ -106,6 +108,9 @@ pub fn readable_tool_name(name: &str) -> &str {
         "linux_game_compatibility" => "查询 Linux 游戏兼容性",
         "gather_linux_game_compatibility_signals" => "收集游戏兼容性",
         "register_linux_game_evidence" => "登记兼容性证据",
+        "register_deep_research_topic_title" => "注册研究标题",
+        "register_deep_research_reference" => "注册引用来源",
+        "remove_deep_research_reference" => "移除引用来源",
         _ => name,
     }
 }
@@ -121,6 +126,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
     weather::register(&mut registry);
+    protondb_query::register(&mut registry);
     exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     xuanxue::register(&mut registry);
     if config.plugins.archlinux.enabled {
@@ -186,6 +192,7 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     default_tools::register_readonly(&mut registry);
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
+    protondb_query::register(&mut registry);
     if config.plugins.archlinux.enabled {
         archlinux::register(&mut registry);
     }
