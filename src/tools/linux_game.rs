@@ -1,90 +1,172 @@
-use super::{readable_tool_name, ToolProgress, ToolRegistry, ToolSpec};
+use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
-use crate::i18n::{is_zh, text as t};
 use crate::llm::{ChatMessage, ChatResult, OpenAiCompatibleClient};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const INVESTIGATOR_SYSTEM_PROMPT: &str = r#"你是 Miyu Linux 游戏兼容性调查系统中的“深思者”。
-You are the investigator in Miyu's Linux game compatibility investigation system.
-你的任务是调查用户询问的游戏在 Linux / Proton / Steam Deck 下是否可玩，并输出可交给 Miyu 回复用户的报告。
-Your task is to investigate whether the requested game is playable on Linux / Proton / Steam Deck, then produce a report Miyu can use to answer the user.
+const GAME_COMPATIBILITY_PROMPT: &str = r#"你是Linux 游戏兼容性调查子代理。
 
-工作原则：
-1. 第一轮必须先调用 gather_linux_game_compatibility_signals 收集 Steam、ProtonDB、Can I Play on Linux、AreWeAntiCheatYet 的基础信号。
-2. 关键判断必须注册证据，使用 register_linux_game_evidence 获得 [S1]/[P1]/[C1]/[A1]/[W1] 等标记，并在报告正文中引用。
-3. 红绿灯是灵魂，最终必须给出且只能给出：🟢 可玩、🟡 需要继续确认、🟡 不一定能玩、🔴 不可玩。
-4. 区分单机可玩、多人/反作弊可玩、Steam Deck 验证、性能表现、崩溃/Mod 等不同维度。
-5. 不把 Can I Play on Linux 的历史 recommended Proton 误称为当前最新推荐。优先建议 Steam 当前默认/最新稳定 Proton；出问题再试 Proton Experimental 或来源列出的历史版本。
-6. 证据不足、来源冲突、用户问到性能/崩溃/Mod/反作弊细节时，继续调用 web_search / web_fetch 补查，直到报告可信。
-7. 不编造来源；资料冲突时说明冲突和取舍；没有证据的点明确说不确定。
-8. 最终报告用中文，且必须包含 ## 调查结果、## 依据、## 怎么玩、## 注意事项。只有存在明确 FPS、性能、Steam Deck 体验或 Windows 对比数据时，才额外输出 ## 性能表现。
-9. ## 怎么玩 必须给出可执行路线：例如 Steam Proton 版本选择、启动参数、第三方启动器、发行版/Flatpak/AUR 安装方式、反作弊限制和风险。若没有可靠玩法，也必须写“暂无可靠玩法”。
+你的任务是调查用户询问的游戏能否在 Linux 上运行、怎么玩、是否有反作弊阻断、需要什么 Proton 版本或启动方式，并输出一份可以直接交给主智能体回复用户的最终调查报告。
+
+## 核心流程
+
+你必须按以下流程工作：
+
+1. 首先调用 Linux 游戏兼容性基础信号采集工具，查询：
+   - Steam / AppID / 游戏名匹配情况
+   - ProtonDB 概览
+   - Can I Play on Linux
+   - AreWeAntiCheatYet
+
+2. 根据基础信号做第一轮判断后进行如下操作：
+   - 如果 ProtonDB 有该游戏记录，就优先查看 ProtonDB 的玩家报告/评论，因为评论通常包含：
+     - 能不能启动
+     - 用什么 Proton / GE-Proton
+     - 是否需要启动参数
+     - 性能表现
+     - 崩溃、黑屏、启动器、音频、视频、手柄等问题
+     - Steam Deck 体验
+   - 如果 ProtonDB 没有该游戏，或者 ProtonDB 信息明显不足，使用网络搜索、知识库等其他信息搜集工具补查。
+
+3. 在以下情况必须进行额外网络搜索：
+   - 三个兼容性来源缺失或冲突；
+   - 反作弊状态不明确；
+   - 用户明确问性能、崩溃、Mod、启动器、Steam Deck、多人/联机；
+   - ProtonDB 没有该游戏；
+   - 近期有重大更新，旧信息可能过期。
+
+4. 搜索必须克制：
+   - 优先官方页面、ProtonDB、AreWeAntiCheatYet、Can I Play on Linux、PCGamingWiki、GitHub issue、Steam 社区、玩家社区、各平台近期玩家讨论。
+   - 不要为了补全所有细节反复搜索。
+   - 查不到就明确说不确定，不要编造。
+
+## 判断规则
+
+最终必须给出红绿灯结论：
+
+- 🟢 可玩
+- 🟡 不一定能玩
+- 🔴 不可玩
+
+以下是可以参考的判断规则：
+
+1. ProtonDB Gold / Platinum 且没有反作弊阻断，通常可以倾向 🟢。
+2. Can I Play on Linux 标记 Works，且 ProtonDB/玩家报告一致，通常可以倾向 🟢。
+3. AreWeAntiCheatYet 标记 Running，说明反作弊目前社区层面可运行，但不等于承诺 Linux 支持。
+4. AreWeAntiCheatYet 标记 Broken / Denied，且通常应为 🔴。
+5. 来源冲突、反作弊状态不明、近期变化多、玩家报告分裂时，用 🟡表示不确定。
+6. 单机可玩但多人不可玩，必须拆开说，不要笼统说“可玩”。
+7. Steam Deck Playable 不等于桌面 Linux 完全没问题。
+8. Can I Play on Linux 的 recommended Proton 是该来源记录的历史验证版本，不要说成“当前最新推荐 Proton”。
+9. 如果用户问“怎么玩”，必须给出实际可执行路线，而不是只回答能不能玩。
+
+## 必须区分的维度
+
+调查时尽量区分：
+
+- Steam 版 / 非 Steam 版
+- 桌面 Linux / Steam Deck
+- 单机 / 多人 / 在线
+- 反作弊是否阻断
+- Proton/Wine 版本
+- 启动器问题
+- 性能表现
+- 崩溃、黑屏、音频、视频、手柄、Mod 等常见问题
+- 官方支持、社区经验、玩家临时绕过方案之间的区别
+
+## 禁止事项
+
+- 不要编造来源。
+- 不要编造 Proton 版本。
+- 不要编造 FPS。
+- 不要编造官方声明。
+- 不要编造封号案例。
+- 不要把社区经验说成官方保证。
+- 不要把“目前能玩”说成“永远稳定可玩”。
+- 不要把“Steam Deck Playable”说成“Valve Verified”。
+- 不要因为某个来源缺失就直接断言不可玩。
+
+## 输出格式
+
+最终只输出调查报告，不输出内部思考，不输出工具调用过程，不输出“以下是最终报告”这类元话语，不要在开头加分割线。
+
+报告必须包含以下章节：
+
+## 调查结果
+
+第一行必须是红绿灯结论，例如：
+
+🟢 Wuthering Waves 可玩
+
+或：
+
+🟡 Apex Legends 不一定能玩
+
+然后用 1-3 句话说明总体判断。
+
+## 依据
+
+列出关键证据。可以使用项目符号或表格。
+
+每条证据要说明：
+- 来源
+- 关键信息
+- 支撑了什么判断
+- 如果能确认时间或时效性，也要写出来
+
+如果来源冲突，必须单独说明冲突点和你的取舍。
+
+## 怎么玩
+
+必须给出可执行路线。
+
+根据实际情况可能包含：
+
+- Steam 安装方式
+- Proton/Wine 版本选择
+- 是否需要启动参数
+- 是否需要第三方启动器
+- 是否需要 Flatpak / AUR / Heroic / Lutris
+- 第一次启动要注意什么
+
+## 注意事项
+
+必须说明风险：
+
+- 反作弊更新风险
+- 官方未承诺 Linux 支持
+- 账号/ToS 风险
+- Steam Deck 与桌面 Linux 差异
+- 非 Steam 版本差异
+- 性能不确定性
+- 来源过期风险
+
+只有在有明确证据时，才额外添加：
+
+## 性能表现
+
+不要编造 FPS。没有 FPS、硬件、画质、Steam Deck 或 Windows 对比数据时，不要写这个章节。
 "#;
 
-const REVIEWER_SYSTEM_PROMPT: &str = r#"你是 Miyu Linux 游戏兼容性调查系统中的“审视者”。
-You are the reviewer in Miyu's Linux game compatibility investigation system.
-你只审查深思者报告，不替用户回答。请严格输出 JSON。
-Only review the investigator's report; do not answer the user. Output strict JSON.
+const OUTPUT_INSTRUCTION: &str = r#"这是 Linux 游戏兼容性调查子代理返回的最终报告。
 
-审查重点：
-1. 红绿灯结论是否有证据支撑，是否保留了 🟢/🟡/🔴 设计。
-2. 是否至少检查了 Steam/ProtonDB/Can I Play on Linux/AreWeAntiCheatYet 中和问题相关的来源；缺失时是否补查或说明原因。
-3. 是否区分单机、多人、反作弊、Steam Deck、性能、崩溃、Mod 等不同维度。
-4. 是否存在来源冲突、过期信息、低置信度信号，却被写成确定结论。
-5. 是否混淆历史 recommended Proton 与当前推荐 Proton。
-6. 正文引用的 [S/P/C/A/W数字] 是否都在证据注册表中。
-7. 是否有足够时效性：近期状态、官方/社区最近资料、网页来源时间或无法确认时间的说明。
-8. 是否包含必需章节：## 调查结果、## 依据、## 怎么玩、## 注意事项；缺少任何一个都不接受。
-9. ## 怎么玩 是否给出了可执行路线，而不是只有结论；没有可靠玩法时是否明确写出“暂无可靠玩法”。
+请把 final_report 当作主要依据回复用户。不要重新编造兼容性结论。
 
-输出格式：
-{
-  "accepted": true/false,
-  "challenge": "主要质疑或通过理由",
-  "revision_instructions": ["需要补查或修正的事项"],
-  "missing_evidence": ["仍缺的关键证据"],
-  "risk_flags": ["过度确定/来源冲突/时效性不足/反作弊遗漏等"]
-}
-"#;
+回复时保留以下核心信息：
+- 红绿灯结论，能不能玩
+- 怎么玩
+- 注意事项
 
-const MAX_REVIEW_ROUNDS: usize = 4;
-const MAX_TOOL_STEPS_PER_ROUND: usize = 16;
-const TOOL_TIMEOUT_SECONDS: u64 = 45;
+如果用户问“怎么玩”，必须给出可执行步骤。
+如果用户追问“刚才完整报告”，直接复述 final_report。"#;
 
 #[derive(Clone)]
 struct GameCompatibilityContext {
     config: AppConfig,
     paths: MiyuPaths,
     tools: ToolRegistry,
-}
-
-#[derive(Default)]
-struct GameCompatibilityState {
-    evidence: Vec<GameEvidence>,
-    counters: GameEvidenceCounters,
-}
-
-#[derive(Default)]
-struct GameEvidenceCounters {
-    steam: usize,
-    protondb: usize,
-    can_i_play: usize,
-    anticheat: usize,
-    web: usize,
-}
-
-#[derive(Clone)]
-struct GameEvidence {
-    marker: String,
-    kind: String,
-    title: String,
-    source: String,
-    snippet: String,
-    freshness: String,
 }
 
 pub fn register(
@@ -100,8 +182,8 @@ pub fn register(
     };
     registry.register(ToolSpec::new_with_progress(
         "linux_game_compatibility",
-        t("Run a reviewed Linux game compatibility investigation with evidence and traffic-light verdict. Use for Linux gaming compatibility, Proton, Steam Deck, performance, crash, mods, and anti-cheat questions.", "进行带证据审视的 Linux 游戏兼容性调查，输出红绿灯结论。适用于 Linux 游戏兼容性、Proton、Steam Deck、性能、崩溃、Mod、反作弊等问题。"),
-        json!({"type":"object","properties":{"game":{"type":"string","description":"Game title."},"issue":{"type":"string","description":"Optional issue such as crash, multiplayer, anti-cheat, performance, mods."}},"required":["game"],"additionalProperties":false}),
+        "Run the Linux game compatibility investigation sub-agent and return its final report. / 运行 Linux 游戏兼容性调查子代理并返回最终报告。",
+        json!({"type":"object","properties":{"game":{"type":"string","description":"Game title. / 游戏名称。"},"issue":{"type":"string","description":"Optional issue such as crash, multiplayer, anti-cheat, performance, mods. / 可选关注点，例如崩溃、多人、反作弊、性能、Mod。"}},"required":["game"],"additionalProperties":false}),
         move |args, progress| {
             let context = context.clone();
             async move { linux_game_compatibility(args, context, progress).await }
@@ -121,169 +203,42 @@ async fn linux_game_compatibility(
         .unwrap_or_default()
         .trim()
         .to_string();
+    progress.report(format!("{}: {}", "Linux 游戏兼容性", game));
     let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?;
-    let state = Arc::new(Mutex::new(GameCompatibilityState::default()));
-    let mut draft = String::new();
-    let mut review =
-        json!({"accepted": false, "challenge": "首轮暂无审视意见", "revision_instructions": []});
-    let mut iterations = 0usize;
-    let mut stop_reason = "max_review_rounds_reached".to_string();
-    progress.report(format!(
-        "{}: {}",
-        t("Linux game compatibility", "Linux 游戏兼容性"),
-        game
-    ));
-
-    let mut last_error = None;
-    for iteration in 1..=MAX_REVIEW_ROUNDS {
-        iterations = iteration;
-        progress.report(if is_zh() {
-            format!("第 {iteration} 轮：兼容性调查中")
-        } else {
-            format!("round {iteration}: investigating compatibility")
-        });
-        let tools = compatibility_tool_registry(&context, Arc::clone(&state));
-        let prompt = investigator_prompt(&game, &issue, iteration, &draft, &review, &state)?;
-        let result = match chat_with_tools(
-            &client,
-            vec![
-                ChatMessage::system(INVESTIGATOR_SYSTEM_PROMPT),
-                ChatMessage::plain("user", prompt),
-            ],
-            tools,
-            &progress,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                last_error = Some(err.to_string());
-                stop_reason = "investigator_error".to_string();
-                break;
-            }
-        };
-        if !result.content.trim().is_empty() {
-            draft = result.content.trim().to_string();
-        }
-        if draft.is_empty() {
-            stop_reason = "investigator_failed".to_string();
-            break;
-        }
-        progress.report(if is_zh() {
-            format!("第 {iteration} 轮：审视中")
-        } else {
-            format!("round {iteration}: reviewer checking")
-        });
-        let review_prompt = reviewer_prompt(&game, &issue, iteration, &draft, &state)?;
-        let review_result = match client
-            .chat_stream(
-                vec![
-                    ChatMessage::system(REVIEWER_SYSTEM_PROMPT),
-                    ChatMessage::plain("user", review_prompt),
-                ],
-                Vec::new(),
-                |_| Ok(()),
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                last_error = Some(err.to_string());
-                stop_reason = "reviewer_error".to_string();
-                break;
-            }
-        };
-        review = parse_review(&review_result.content);
-        if review
-            .get("accepted")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            stop_reason = "accepted".to_string();
-            progress.report(if is_zh() {
-                format!("第 {iteration} 轮：通过")
-            } else {
-                format!("round {iteration}: accepted")
-            });
-            break;
-        }
-        progress.report(format!(
-            "{}: {}",
-            t("revision requested", "需要修订"),
-            clip_inline(
-                review
-                    .get("challenge")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reviewer requested more evidence"),
-                100
-            )
-        ));
-    }
-
-    let final_report = if draft.trim().is_empty() {
-        fallback_report(&game, &issue, last_error.as_deref(), &state)
-    } else {
-        normalize_final_report(&draft, &state)
-    };
+    let prompt = format!(
+        "用户问题：\n游戏：{game}\n关注点：{}\n\n请按系统提示词流程完成调查。第一步必须调用 gather_linux_game_compatibility_signals。最终只输出调查报告。",
+        if issue.trim().is_empty() { "未明确" } else { &issue }
+    );
+    let report = chat_with_tools(
+        &client,
+        vec![
+            ChatMessage::system(GAME_COMPATIBILITY_PROMPT),
+            ChatMessage::plain("user", prompt),
+        ],
+        game_tool_registry(&context),
+        &progress,
+    )
+    .await?
+    .content;
+    let report = strip_report_preamble(&report);
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,
         "kind": "linux_game_compatibility",
         "game_query": game,
-        "issue": issue,
-        "iterations_used": iterations,
-        "stop_reason": stop_reason,
-        "final_report": final_report,
-        "review": review,
-        "last_error": last_error,
-        "evidence": public_evidence(&state),
+        "final_report": report,
+        "output_instruction": OUTPUT_INSTRUCTION,
     }))?)
 }
 
-fn compatibility_tool_registry(
-    context: &GameCompatibilityContext,
-    state: Arc<Mutex<GameCompatibilityState>>,
-) -> ToolRegistry {
+fn game_tool_registry(context: &GameCompatibilityContext) -> ToolRegistry {
     let mut registry = context.tools.clone();
     registry.register(ToolSpec::new(
         "gather_linux_game_compatibility_signals",
-        t("Gather Steam, ProtonDB, Can I Play on Linux, and AreWeAntiCheatYet compatibility signals for one game.", "收集单个游戏在 Steam、ProtonDB、Can I Play on Linux、AreWeAntiCheatYet 上的兼容性信号。"),
-        json!({"type":"object","properties":{"game":{"type":"string","description":"Game title."},"issue":{"type":"string","description":"Optional issue such as crash, multiplayer, anti-cheat, performance, mods."}},"required":["game"],"additionalProperties":false}),
+        "Gather Steam, ProtonDB, Can I Play on Linux, and AreWeAntiCheatYet compatibility signals for one game. / 收集单个游戏在 Steam、ProtonDB、Can I Play on Linux、AreWeAntiCheatYet 上的兼容性信号。",
+        json!({"type":"object","properties":{"game":{"type":"string","description":"Game title. / 游戏名称。"},"issue":{"type":"string","description":"Optional issue such as crash, multiplayer, anti-cheat, performance, mods. / 可选关注点，例如崩溃、多人、反作弊、性能、Mod。"}},"required":["game"],"additionalProperties":false}),
         |args| async move { gather_linux_game_compatibility_signals(args).await },
     ));
-    register_game_evidence_tool(&mut registry, state);
     registry
-}
-
-fn register_game_evidence_tool(
-    registry: &mut ToolRegistry,
-    state: Arc<Mutex<GameCompatibilityState>>,
-) {
-    registry.register(ToolSpec::new(
-        "register_linux_game_evidence",
-        t("Register Linux game compatibility evidence and receive a stable marker such as [S1], [P1], [C1], [A1], or [W1].", "登记 Linux 游戏兼容性证据，并返回 [S1]、[P1]、[C1]、[A1] 或 [W1] 这类稳定标记。"),
-        json!({"type":"object","properties":{"evidence_type":{"type":"string","enum":["S","P","C","A","W","steam","protondb","can_i_play_on_linux","anti_cheat","web"]},"title":{"type":"string"},"source":{"type":"string"},"snippet":{"type":"string"},"freshness":{"type":"string"}},"required":["evidence_type","title"],"additionalProperties":false}),
-        move |args| {
-            let state = Arc::clone(&state);
-            async move {
-                let kind = normalized_evidence_kind(args.get("evidence_type").and_then(Value::as_str).unwrap_or("W"));
-                let title = args.get("title").and_then(Value::as_str).unwrap_or("Untitled").trim().to_string();
-                let source = args.get("source").and_then(Value::as_str).unwrap_or_default().trim().to_string();
-                let snippet = args.get("snippet").and_then(Value::as_str).unwrap_or_default().trim().to_string();
-                let freshness = args.get("freshness").and_then(Value::as_str).unwrap_or_default().trim().to_string();
-                let mut state = state.lock().expect("linux game state lock");
-                let number = match kind.as_str() {
-                    "S" => { state.counters.steam += 1; state.counters.steam }
-                    "P" => { state.counters.protondb += 1; state.counters.protondb }
-                    "C" => { state.counters.can_i_play += 1; state.counters.can_i_play }
-                    "A" => { state.counters.anticheat += 1; state.counters.anticheat }
-                    _ => { state.counters.web += 1; state.counters.web }
-                };
-                let marker = format!("{kind}{number}");
-                state.evidence.push(GameEvidence { marker: marker.clone(), kind, title, source, snippet, freshness });
-                Ok(json!({"ok": true, "evidence": marker, "marker": format!("[{marker}]")}).to_string())
-            }
-        },
-    ));
 }
 
 async fn chat_with_tools(
@@ -292,9 +247,7 @@ async fn chat_with_tools(
     tools: ToolRegistry,
     progress: &ToolProgress,
 ) -> Result<ChatResult> {
-    let definitions =
-        tools.definitions_except(&["linux_game_compatibility", "deep_research", "deep_diagnose"]);
-    let mut steps = 0usize;
+    let definitions = tools.definitions_except(&["linux_game_compatibility", "deep_research"]);
     loop {
         let result = client
             .chat_stream(messages.clone(), definitions.clone(), |_| Ok(()))
@@ -307,184 +260,48 @@ async fn chat_with_tools(
             Some(result.tool_calls.clone()),
         ));
         for call in result.tool_calls {
-            if steps >= MAX_TOOL_STEPS_PER_ROUND {
-                messages.push(ChatMessage::tool(
-                    call.id,
-                    "tool budget reached for this compatibility round",
-                ));
-                continue;
-            }
-            steps += 1;
-            progress.report(if is_zh() {
-                format!(
-                    "工具 #{steps}：{} 运行中",
-                    readable_tool_name(&call.function.name)
-                )
-            } else {
-                format!("tool #{steps}: {} running", call.function.name)
-            });
-            let output = match tokio::time::timeout(
-                Duration::from_secs(TOOL_TIMEOUT_SECONDS),
-                tools.call(&call.function.name, &call.function.arguments),
-            )
-            .await
-            {
-                Ok(Ok(output)) => output,
-                Ok(Err(err)) => format!("tool error: {err}"),
-                Err(_) => format!(
-                    "tool error: {} timed out after {TOOL_TIMEOUT_SECONDS}s",
-                    call.function.name
-                ),
+            progress.report(format!(
+                "__subtool_call__{}",
+                json!({
+                    "name": call.function.name,
+                    "args": call.function.arguments,
+                })
+            ));
+            let (output, ok) = match tools.call(&call.function.name, &call.function.arguments).await {
+                Ok(output) => (output, true),
+                Err(err) => (format!("tool error: {err}"), false),
             };
-            progress.report(if is_zh() {
-                format!(
-                    "工具 #{steps}：{} 完成",
-                    readable_tool_name(&call.function.name)
-                )
-            } else {
-                format!("tool #{steps}: {} done", call.function.name)
-            });
+            progress.report(format!(
+                "__subtool_result__{}",
+                json!({
+                    "name": call.function.name,
+                    "ok": ok,
+                    "output": output,
+                })
+            ));
             messages.push(ChatMessage::tool(call.id, output));
         }
     }
 }
 
-fn investigator_prompt(
-    game: &str,
-    issue: &str,
-    iteration: usize,
-    draft: &str,
-    review: &Value,
-    state: &Arc<Mutex<GameCompatibilityState>>,
-) -> Result<String> {
-    let draft_display = if draft.trim().is_empty() {
-        "（无）"
-    } else {
-        draft
-    };
-    Ok(if is_zh() {
-        format!(
-            "这是第 {iteration} 轮 Linux 游戏兼容性调查。\n\n游戏：{game}\n关注点：{}\n\n上一轮报告：\n{draft_display}\n\n上一轮审视意见：\n{}\n\n当前证据注册表：\n{}\n\n要求：第一轮先调用 gather_linux_game_compatibility_signals。必要时继续搜索和读取网页，直到红绿灯结论、反作弊、Proton 建议和时效性都有证据支撑。输出可直接交给 Miyu 回复用户的中文报告。",
-            if issue.trim().is_empty() { "（无）" } else { issue },
-            serde_json::to_string_pretty(review)?,
-            evidence_registry_json(state)?,
-        )
-    } else {
-        format!(
-            "This is Linux game compatibility investigation round {iteration}.\n\nGame: {game}\nFocus: {}\n\nPrevious report:\n{draft_display}\n\nPrevious review:\n{}\n\nCurrent evidence registry:\n{}\n\nRequirements: in the first round, call gather_linux_game_compatibility_signals first. Continue searching and fetching pages when needed until the traffic-light verdict, anti-cheat status, Proton recommendation, and freshness are evidence-backed. Output a report Miyu can use directly to answer the user.",
-            if issue.trim().is_empty() { "none" } else { issue },
-            serde_json::to_string_pretty(review)?,
-            evidence_registry_json(state)?,
-        )
-    })
-}
-
-fn reviewer_prompt(
-    game: &str,
-    issue: &str,
-    iteration: usize,
-    draft: &str,
-    state: &Arc<Mutex<GameCompatibilityState>>,
-) -> Result<String> {
-    Ok(if is_zh() {
-        format!(
-            "请审查第 {iteration} 轮 Linux 游戏兼容性报告。\n\n游戏：{game}\n关注点：{}\n\n报告：\n{draft}\n\n证据注册表：\n{}\n\n若报告可信且可交给 Miyu 回复用户，accepted=true；否则列出需要继续补查或修正的事项。",
-            if issue.trim().is_empty() { "（无）" } else { issue },
-            evidence_registry_json(state)?,
-        )
-    } else {
-        format!(
-            "Review Linux game compatibility report round {iteration}.\n\nGame: {game}\nFocus: {}\n\nReport:\n{draft}\n\nEvidence registry:\n{}\n\nIf the report is trustworthy and ready for Miyu to answer the user, set accepted=true; otherwise list concrete evidence gaps or revisions.",
-            if issue.trim().is_empty() { "none" } else { issue },
-            evidence_registry_json(state)?,
-        )
-    })
-}
-
-fn evidence_registry_json(state: &Arc<Mutex<GameCompatibilityState>>) -> Result<String> {
-    let state = state.lock().expect("linux game state lock");
-    Ok(serde_json::to_string_pretty(&state.evidence.iter().map(|item| json!({"marker": item.marker, "type": item.kind, "title": item.title, "source": item.source, "snippet": item.snippet, "freshness": item.freshness})).collect::<Vec<_>>())?)
-}
-
-fn parse_review(content: &str) -> Value {
-    serde_json::from_str(content.trim()).unwrap_or_else(|_| json!({"accepted": false, "challenge": "reviewer returned non-JSON feedback", "revision_instructions": [content.trim()]}))
-}
-
-fn normalize_final_report(draft: &str, state: &Arc<Mutex<GameCompatibilityState>>) -> String {
-    let mut report = draft.trim().to_string();
-    let warnings = evidence_warnings(&report, state);
-    if !warnings.is_empty() {
-        report.push_str("\n\n## 证据校验提示\n");
-        for warning in warnings {
-            report.push_str(&format!("- {warning}\n"));
+fn strip_report_preamble(content: &str) -> String {
+    let trimmed = content.trim();
+    for heading in ["## 调查结果", "# 调查结果"] {
+        if let Some(index) = trimmed.find(heading) {
+            return trimmed[index..].trim().to_string();
         }
     }
-    report
-}
-
-fn fallback_report(
-    game: &str,
-    issue: &str,
-    error: Option<&str>,
-    state: &Arc<Mutex<GameCompatibilityState>>,
-) -> String {
-    let evidence = evidence_registry_json(state).unwrap_or_else(|_| "[]".to_string());
-    let issue_note = if issue.trim().is_empty() {
-        String::new()
-    } else {
-        format!("当前关注点：{issue}")
-    };
-    format!(
-        "## 调查结果\n🟡 {game} 需要继续确认\n\n## 依据\n兼容性调查循环未能生成完整报告，不能把结论说死。内部错误：{}。\n\n已登记证据：\n```json\n{evidence}\n```\n\n## 怎么玩\n暂无可靠玩法。建议先补充查询官方公告、ProtonDB、AreWeAntiCheatYet、Can I Play on Linux 和近期玩家反馈后再决定。{}\n\n## 注意事项\n本次结果是失败保护输出，不代表游戏不可玩；只代表 Miyu 没有拿到足够可靠证据。",
-        error.unwrap_or("unknown"),
-        issue_note
-    )
-}
-
-fn evidence_warnings(draft: &str, state: &Arc<Mutex<GameCompatibilityState>>) -> Vec<String> {
-    let state = state.lock().expect("linux game state lock");
-    let known = state
-        .evidence
-        .iter()
-        .map(|item| item.marker.as_str())
-        .collect::<Vec<_>>();
-    let mut warnings = Vec::new();
-    for marker in extract_markers(draft) {
-        if !known.iter().any(|item| *item == marker) {
-            warnings.push(format!("正文引用了未注册证据 [{marker}]。"));
-        }
-    }
-    warnings
-}
-
-fn extract_markers(value: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for part in value.split('[').skip(1) {
-        let Some(end) = part.find(']') else { continue };
-        let marker = &part[..end];
-        if marker.len() >= 2
-            && matches!(marker.as_bytes()[0], b'S' | b'P' | b'C' | b'A' | b'W')
-            && marker[1..].chars().all(|ch| ch.is_ascii_digit())
-        {
-            out.push(marker.to_string());
-        }
-    }
-    out
-}
-
-fn normalized_evidence_kind(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "s" | "steam" => "S".to_string(),
-        "p" | "protondb" => "P".to_string(),
-        "c" | "can_i_play_on_linux" | "can-i-play-on-linux" => "C".to_string(),
-        "a" | "anti_cheat" | "anticheat" | "areweanticheatyet" => "A".to_string(),
-        _ => "W".to_string(),
-    }
-}
-
-fn public_evidence(state: &Arc<Mutex<GameCompatibilityState>>) -> Vec<Value> {
-    let state = state.lock().expect("linux game state lock");
-    state.evidence.iter().map(|item| json!({"marker": item.marker, "type": item.kind, "title": item.title, "source": item.source, "freshness": item.freshness})).collect()
+    trimmed
+        .lines()
+        .skip_while(|line| {
+            let line = line.trim();
+            line.is_empty()
+                || line == "---"
+                || line.contains("以下是")
+                || line.contains("最终报告") && line.len() < 30
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn gather_linux_game_compatibility_signals(args: Value) -> Result<String> {
@@ -552,11 +369,12 @@ async fn gather_linux_game_compatibility_signals(args: Value) -> Result<String> 
         "can_i_play_on_linux": can_i_play.map(extract_can_i_play_summary),
         "are_we_anticheat_yet": anticheat.map(extract_anticheat_summary),
         "sources": {
+            "steam": appid.map(|id| format!("https://store.steampowered.com/app/{id}/")),
             "protondb": appid.map(|id| format!("https://www.protondb.com/app/{id}")),
             "can_i_play_on_linux": can_i_play_result.url,
             "are_we_anticheat_yet": anticheat_result.url,
         },
-        "output_instruction": "These are collected source signals for the investigator. Register evidence before citing them, continue web_search/web_fetch when sources conflict or lack freshness, and keep the final traffic-light verdict evidence-backed."
+        "methodology": "If ProtonDB exists, use ProtonDB reports/comments as the primary practical playability signal. If ProtonDB is missing or insufficient, continue with web_search/web_fetch outside this tool. Keep final answer concise and include 调查结果, 依据, 怎么玩, 注意事项.",
     }))?)
 }
 
@@ -731,7 +549,7 @@ fn verdict(
     {
         return json!({"traffic_light":"🟡", "label":"不一定能玩", "reason":"partial or lower confidence compatibility"});
     }
-    json!({"traffic_light":"🟡", "label":"需要继续确认", "reason":"insufficient compatibility data"})
+    json!({"traffic_light":"🟡", "label":"不一定能玩", "reason":"insufficient compatibility data"})
 }
 
 fn compatibility_confidence(
@@ -885,21 +703,6 @@ fn required(args: &Value, key: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
-fn clip_inline(value: &str, max_chars: usize) -> String {
-    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if value.chars().count() <= max_chars {
-        value
-    } else {
-        format!(
-            "{}...",
-            value
-                .chars()
-                .take(max_chars.saturating_sub(3))
-                .collect::<String>()
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,19 +739,16 @@ mod tests {
     }
 
     #[test]
-    fn output_instruction_keeps_sections_flexible() {
-        assert!(INVESTIGATOR_SYSTEM_PROMPT.contains("红绿灯"));
-        assert!(INVESTIGATOR_SYSTEM_PROMPT.contains("web_search"));
-        assert!(INVESTIGATOR_SYSTEM_PROMPT.contains("## 怎么玩 必须给出可执行路线"));
-        assert!(INVESTIGATOR_SYSTEM_PROMPT.contains("暂无可靠玩法"));
-        assert!(REVIEWER_SYSTEM_PROMPT.contains("时效性"));
-        assert!(REVIEWER_SYSTEM_PROMPT.contains("缺少任何一个都不接受"));
+    fn output_instruction_mentions_final_report() {
+        assert!(OUTPUT_INSTRUCTION.contains("final_report"));
+        assert!(OUTPUT_INSTRUCTION.contains("红绿灯"));
+        assert!(OUTPUT_INSTRUCTION.contains("怎么"));
     }
 
     #[test]
     fn insufficient_data_requires_followup() {
         let result = verdict(&None, None, None, "");
-        assert_eq!(result["label"], "需要继续确认");
+        assert_eq!(result["label"], "不一定能玩");
         let confidence = compatibility_confidence(None, &None, None, None, &result);
         assert_eq!(confidence["level"], "low");
         assert_eq!(confidence["needs_followup"], true);

@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn render_frame_with_sub_phase_produces_two_lines() {
         let state = WaitSpinnerState {
-            phase: "工具: 深度诊断×1 运行中".to_string(),
+            phase: "工具: 输入法诊断×1 运行中".to_string(),
             sub_phase: Some("第 1 轮：诊断中".to_string()),
             start: Instant::now(),
             lines_rendered: 0,
@@ -325,7 +325,7 @@ mod tests {
 
         let (frame, lines) = render_frame(0, &state);
 
-        assert!(frame.contains("深度诊断"));
+        assert!(frame.contains("输入法诊断"));
         assert!(frame.contains("第 1 轮"));
         assert_eq!(lines, 2);
     }

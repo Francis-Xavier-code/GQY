@@ -61,7 +61,7 @@ pub fn readable_tool_name(name: &str) -> &str {
         "update_meme" => "更新表情包",
         "delete_meme" => "删除表情包",
         "deep_research" => "深度研究",
-        "deep_diagnose" => "深度诊断",
+        "deep_diagnose" | "linux_input_method_diagnose" => "输入法诊断",
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => "导入知识库",
         "read_knowledge_base_file" => "读取知识库",
         "search_knowledge_base" => "搜索知识库",

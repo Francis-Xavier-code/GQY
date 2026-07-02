@@ -87,14 +87,14 @@ impl ResearchProgress {
         }
     }
 
-    fn detail(&self, message: impl Into<String>) {
-        if self.enabled && self.mode == ResearchProgressMode::Full {
+    fn tool(&self, message: impl Into<String>) {
+        if self.enabled && self.mode != ResearchProgressMode::Hidden {
             self.progress.report(message.into());
         }
     }
 
-    fn tool(&self, message: impl Into<String>) {
-        if self.enabled && self.mode != ResearchProgressMode::Hidden {
+    fn subtool(&self, message: impl Into<String>) {
+        if self.enabled && self.mode == ResearchProgressMode::Full {
             self.progress.report(message.into());
         }
     }
@@ -496,11 +496,12 @@ async fn chat_with_tools(
                 let mut state = state.lock().expect("deep research state lock");
                 state.stats.tool_calls += 1;
             }
-            progress.tool(format!("tool #{steps}: {} running", call.function.name));
-            progress.detail(&format!(
-                "→{} {}",
-                call.function.name,
-                compact_arguments(&call.function.arguments)
+            progress.subtool(format!(
+                "__subtool_call__{}",
+                json!({
+                    "name": call.function.name,
+                    "args": call.function.arguments,
+                })
             ));
             let (output, ok) = match tokio::time::timeout(
                 Duration::from_secs(timeout_seconds.max(5)),
@@ -526,15 +527,13 @@ async fn chat_with_tools(
                     state.stats.tool_errors += 1;
                 }
             }
-            progress.tool(format!(
-                "tool #{steps}: {} {}",
-                call.function.name,
-                if ok { "ok" } else { "error" }
-            ));
-            progress.detail(&format!(
-                "←{} {}",
-                call.function.name,
-                if ok { "ok" } else { "error" }
+            progress.subtool(format!(
+                "__subtool_result__{}",
+                json!({
+                    "name": call.function.name,
+                    "ok": ok,
+                    "output": output,
+                })
             ));
             messages.push(ChatMessage::tool(call.id, output));
         }
@@ -575,7 +574,52 @@ fn reference_registry_json(state: &Arc<Mutex<ResearchState>>) -> Result<String> 
 }
 
 fn parse_review(content: &str) -> Value {
-    serde_json::from_str(content.trim()).unwrap_or_else(|_| json!({"accepted": false, "challenge": "reviewer returned non-JSON feedback", "revision_instructions": [content.trim()]}))
+    parse_json_object(content).unwrap_or_else(|| {
+        json!({"accepted": true, "challenge": "reviewer returned non-JSON feedback; accept current draft to avoid repeated research", "revision_instructions": [], "review_text": content.trim()})
+    })
+}
+
+fn parse_json_object(content: &str) -> Option<Value> {
+    let trimmed = content.trim();
+    serde_json::from_str(trimmed)
+        .ok()
+        .or_else(|| extract_json_object(trimmed).and_then(|json| serde_json::from_str(json).ok()))
+}
+
+fn extract_json_object(content: &str) -> Option<&str> {
+    let start = content.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, ch) in content[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = start + offset + ch.len_utf8();
+                    return Some(&content[start..end]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn normalize_final_answer(draft: &str, state: &Arc<Mutex<ResearchState>>) -> Result<String> {
@@ -786,10 +830,6 @@ fn clip_inline(value: &str, max_chars: usize) -> String {
                 .collect::<String>()
         )
     }
-}
-
-fn compact_arguments(arguments: &str) -> String {
-    clip_inline(arguments, 160)
 }
 
 fn sanitize_title(value: &str, max_chars: usize) -> String {

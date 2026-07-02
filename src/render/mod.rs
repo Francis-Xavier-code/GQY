@@ -255,6 +255,48 @@ impl StreamRenderer {
             self.prepare_for_external_output()?;
             return Ok(());
         }
+        if let Some(json) = message.strip_prefix("__subtool_call__") {
+            if self.tool_call_mode == ToolCallDisplayMode::Full {
+                if let Ok(value) = serde_json::from_str::<Value>(json) {
+                    let tool_name = value.get("name").and_then(Value::as_str).unwrap_or("unknown");
+                    let args = value.get("args").and_then(Value::as_str).unwrap_or("");
+                    self.stop_waiting()?;
+                    self.end_active_stream_line()?;
+                    self.finalize_reasoning_summary()?;
+                    let mut stdout = io::stdout();
+                    if tool_name == "run_command" {
+                        write_command_block(&mut stdout, args)?;
+                    } else {
+                        writeln!(stdout, "tool {}", self.display_tool_name(tool_name))?;
+                        write_tool_payload(&mut stdout, t("args", "参数"), args)?;
+                    }
+                    stdout.flush()?;
+                }
+            }
+            return Ok(());
+        }
+        if let Some(json) = message.strip_prefix("__subtool_result__") {
+            if self.tool_call_mode == ToolCallDisplayMode::Full {
+                if let Ok(value) = serde_json::from_str::<Value>(json) {
+                    let tool_name = value.get("name").and_then(Value::as_str).unwrap_or("unknown");
+                    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(true);
+                    let output = value.get("output").and_then(Value::as_str).unwrap_or("");
+                    let status = if ok { "ok" } else { "err" };
+                    self.stop_waiting()?;
+                    self.end_active_stream_line()?;
+                    self.finalize_reasoning_summary()?;
+                    let mut stdout = io::stdout();
+                    if tool_name == "run_command" {
+                        write_command_result_blocks(&mut stdout, output)?;
+                    } else {
+                        writeln!(stdout, "result {} {status}", self.display_tool_name(tool_name))?;
+                        write_tool_payload(&mut stdout, t("output", "输出"), output)?;
+                    }
+                    stdout.flush()?;
+                }
+            }
+            return Ok(());
+        }
         if is_silent_tool(name) {
             return Ok(());
         }
@@ -338,11 +380,12 @@ impl StreamRenderer {
                     writeln!(stdout)?;
                 }
                 execute!(stdout, SetForegroundColor(Color::Green))?;
-                writeln!(stdout, "{}", t("thinking", "思考"))?;
+                writeln!(stdout)?;
             }
             ChatStreamKind::Content => {
                 if self.mode == Some(ChatStreamKind::Reasoning) {
                     execute!(stdout, ResetColor)?;
+                    writeln!(stdout)?;
                     writeln!(stdout)?;
                 }
             }
@@ -359,7 +402,8 @@ impl StreamRenderer {
             self.mode = None;
             return Ok(());
         }
-        if self.mode == Some(ChatStreamKind::Reasoning) {
+        let was_reasoning = self.mode == Some(ChatStreamKind::Reasoning);
+        if was_reasoning {
             execute!(io::stdout(), ResetColor)?;
         } else if self.mode == Some(ChatStreamKind::Content) && !self.plain {
             let mut stdout = io::stdout();
@@ -368,6 +412,9 @@ impl StreamRenderer {
         }
         if self.mode.is_some() {
             println!();
+            if was_reasoning {
+                println!();
+            }
             self.mode = None;
         }
         Ok(())
@@ -397,6 +444,7 @@ impl StreamRenderer {
             self.reasoning_lines = 0;
             self.reasoning_line_open = false;
             self.mode = None;
+            println!();
         }
         Ok(())
     }
@@ -502,8 +550,13 @@ impl StreamRenderer {
                 stats.progress.as_ref().map_or(header.clone(), |message| {
                     let progress = message
                         .lines()
-                        .filter(|line| !line.trim().is_empty())
-                        .map(|line| format!("· {}", clip_progress_line(line, 120)))
+                        .filter(|line| {
+                            let l = line.trim();
+                            !l.is_empty()
+                                && !l.starts_with("__subtool_call__")
+                                && !l.starts_with("__subtool_result__")
+                        })
+                        .map(|line| format!("↳ {}", clip_progress_line(line, 120)))
                         .collect::<Vec<_>>()
                         .join("\n");
                     if progress.is_empty() {
@@ -533,8 +586,13 @@ impl StreamRenderer {
             if let Some(message) = &stats.progress {
                 let progress = message
                     .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| format!("· {}", clip_progress_line(line, 120)))
+                    .filter(|line| {
+                        let l = line.trim();
+                        !l.is_empty()
+                            && !l.starts_with("__subtool_call__")
+                            && !l.starts_with("__subtool_result__")
+                    })
+                    .map(|line| format!("↳ {}", clip_progress_line(line, 120)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !progress.is_empty() {
@@ -1784,7 +1842,6 @@ fn normalize_stream_text(text: &str) -> String {
 fn print_reasoning(reasoning: &str) -> Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, SetForegroundColor(Color::Green))?;
-    writeln!(stdout, "{}", t("thinking", "思考"))?;
     for line in reasoning.trim().lines() {
         writeln!(stdout, "  {line}")?;
     }
@@ -2074,7 +2131,10 @@ mod tests {
         assert_eq!(readable_tool_name("deep_research"), "深度研究");
         assert_eq!(readable_tool_name("read_file"), "读取文件");
         assert_eq!(readable_tool_name("check_issue"), "检查问题");
-        assert_eq!(readable_tool_name("deep_diagnose"), "深度诊断");
+        assert_eq!(
+            readable_tool_name("linux_input_method_diagnose"),
+            "输入法诊断"
+        );
         assert_eq!(readable_tool_name("check_os_info"), "查看系统信息");
         assert_eq!(readable_tool_name("get_weather"), "天气查询");
         assert_eq!(readable_tool_name("get_exchange_rate"), "汇率查询");
