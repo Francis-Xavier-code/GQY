@@ -17,7 +17,7 @@ pub fn register(registry: &mut ToolRegistry) {
                 "query": { "type": "string", "description": "Natural language question, e.g. XWayland XIM, Electron input method, GTK_IM_MODULE, LC_CTYPE." },
                 "topic": { "type": "string", "enum": ["auto", "home", "for_users", "setup", "wayland", "environment_variables", "xim", "gtk", "qt", "electron_chromium", "locale"], "description": "Focused Fcitx Wiki topic. Defaults to auto." },
                 "language": { "type": "string", "enum": ["bilingual", "zh", "en"], "description": "Output language wrapper. Defaults to bilingual." },
-                "include_page_excerpt": { "type": "boolean", "description": "Fetch and include a clipped excerpt from the official wiki page. Defaults to false for stable compact output." }
+                "include_page_excerpt": { "type": "boolean", "description": "Fetch and include a clipped excerpt from the official wiki page. Defaults to true." }
             },
             "required": [],
             "additionalProperties": false
@@ -45,7 +45,7 @@ async fn query(args: Value) -> Result<String> {
     let include_page_excerpt = args
         .get("include_page_excerpt")
         .and_then(Value::as_bool)
-        .unwrap_or(false);
+        .unwrap_or(true);
     let topic = select_topic(topic, query)?;
     let page = page_for_topic(topic);
     let claims = claims_for_topic(topic, language);
@@ -65,7 +65,10 @@ async fn query(args: Value) -> Result<String> {
         page_excerpt: None,
     };
     if include_page_excerpt {
-        response.page_excerpt = Some(fetch_page_excerpt(page.url).await?);
+        response.page_excerpt = match fetch_page_excerpt(page.url).await {
+            Ok(text) => Some(text),
+            Err(e) => Some(format!("[fetch failed: {e}]")),
+        };
     }
     Ok(match language {
         Language::En => serde_json::to_string_pretty(&response)?,
@@ -339,7 +342,35 @@ async fn fetch_page_excerpt(url: &str) -> Result<String> {
     if bytes.len() > MAX_PAGE_BYTES {
         bail!("Fcitx Wiki page too large")
     }
-    Ok(clip(&html2md::parse_html(&String::from_utf8_lossy(&bytes))))
+    let html = String::from_utf8_lossy(&bytes);
+    let body = extract_mw_parser_output(&html).unwrap_or(&html);
+    Ok(clip(&html2md::parse_html(body)))
+}
+
+fn extract_mw_parser_output(html: &str) -> Option<&str> {
+    let marker = "mw-parser-output";
+    let start_idx = html.find(marker)?;
+    let after = &html[start_idx..];
+    let open_angle = after.find('>')?;
+    let content_start = start_idx + open_angle + 1;
+    let rest = &html[content_start..];
+    let mut depth: i32 = 1;
+    let mut pos = 0;
+    let bytes = rest.as_bytes();
+    while pos < bytes.len() && depth > 0 {
+        if bytes[pos] == b'<' {
+            if rest[pos..].starts_with("</div") {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[..pos]);
+                }
+            } else if rest[pos..].starts_with("<div") {
+                depth += 1;
+            }
+        }
+        pos += 1;
+    }
+    None
 }
 
 fn clip(value: &str) -> String {
@@ -464,10 +495,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_returns_bilingual_source_without_network_by_default() {
+    async fn fetch_page_excerpt_returns_real_content() {
+        let url = "https://fcitx-im.org/wiki/Special:MyLanguage/Input_method_related_environment_variables";
+        let excerpt = fetch_page_excerpt(url).await;
+        assert!(excerpt.is_ok(), "fetch failed: {:?}", excerpt.err());
+        let text = excerpt.unwrap();
+        assert!(text.chars().count() > 100, "excerpt too short: {} chars", text.chars().count());
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            lower.contains("xmodifiers") || lower.contains("gtk_im_module") || lower.contains("qt_im_module"),
+            "excerpt does not contain expected wiki keywords"
+        );
+        assert!(
+            !lower.contains("rlconf"),
+            "excerpt should not contain MediaWiki JS noise"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_with_include_page_excerpt_returns_content() {
+        let output = query(json!({
+            "topic": "xim",
+            "language": "bilingual",
+            "include_page_excerpt": true
+        }))
+        .await
+        .unwrap();
+
+        assert!(output.contains("页面摘录"));
+        assert!(!output.contains("\"页面摘录\": null"), "page_excerpt should not be null when include_page_excerpt is true");
+    }
+
+    #[tokio::test]
+    async fn query_returns_bilingual_source_without_network() {
         let output = query(json!({
             "topic": "electron_chromium",
-            "language": "bilingual"
+            "language": "bilingual",
+            "include_page_excerpt": false
         }))
         .await
         .unwrap();
@@ -484,7 +548,8 @@ mod tests {
     async fn zh_query_uses_chinese_wrapper_without_english_reference() {
         let output = query(json!({
             "topic": "xim",
-            "language": "zh"
+            "language": "zh",
+            "include_page_excerpt": false
         }))
         .await
         .unwrap();
