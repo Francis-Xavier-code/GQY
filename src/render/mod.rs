@@ -177,12 +177,7 @@ impl StreamRenderer {
         if self.plain {
             return Ok(());
         }
-        let use_tool_spinner = self.tool_call_mode == ToolCallDisplayMode::Summary
-            && !is_silent_tool(name)
-            && name != "run_command";
-        if !use_tool_spinner {
-            self.stop_waiting()?;
-        }
+        self.stop_waiting()?;
         self.end_active_stream_line()?;
         self.finalize_reasoning_summary()?;
         if is_silent_tool(name) {
@@ -595,6 +590,7 @@ impl StreamRenderer {
 
     fn finalize_tools_summary(&mut self) -> Result<()> {
         if self.tool_call_mode == ToolCallDisplayMode::Summary && !self.tool_stats.is_empty() {
+            self.stop_waiting()?;
             execute!(io::stdout(), ResetColor)?;
             if self.summary_line_active {
                 let mut stdout = io::stdout();
@@ -763,7 +759,7 @@ impl StreamRenderer {
     }
 
     fn hide_cursor(&mut self) -> Result<()> {
-        if !self.cursor_hidden && !self.plain {
+        if !self.cursor_hidden && !self.plain && self.wait_spinner.is_none() {
             execute!(io::stdout(), Hide)?;
             self.cursor_hidden = true;
         }
