@@ -6,6 +6,7 @@ mod deep_research;
 mod deepseek_status;
 mod default_tools;
 mod diagnostics;
+mod edit_replace;
 mod exchange_rate;
 mod fcitx_wiki;
 mod hash_codec;
@@ -19,11 +20,16 @@ mod moegirl;
 mod package_advisor;
 mod protondb_query;
 mod registry;
+mod scripts;
 mod skills;
+mod subagent_runner;
+mod task;
+mod todowrite;
 mod vision;
 mod weather;
 mod web;
 mod web_images;
+mod write;
 mod xuanxue;
 
 use crate::config::AppConfig;
@@ -32,14 +38,16 @@ use crate::paths::MiyuPaths;
 #[allow(unused_imports)]
 pub use registry::{empty_parameters, ToolPermission, ToolProgress, ToolRegistry, ToolSpec};
 pub use skills::{register_skills, skills_prompt};
+pub(crate) use scripts::rescan_scripts;
 
 pub fn readable_tool_name(name: &str) -> &str {
     match name {
         "run_command" => "运行命令",
-        "task_agent" => "创建子任务",
+        "task" => "子代理任务",
         "read_file" => "读取文件",
         "write_file" => "写入文件",
         "edit_file" => "编辑文件",
+        "edit_string" => "字符串编辑",
         "list_directory" => "列目录",
         "create_directory" => "创建目录",
         "trash_path" => "移入回收站",
@@ -86,10 +94,11 @@ pub fn readable_tool_name(name: &str) -> &str {
         "query_deepseek_status" => "查询 DeepSeek 状态",
         "pacman_search" => "搜索软件包",
         "archwiki_query" => "查询 ArchWiki",
+        "archlinux_news" => "Arch 新闻",
         "online_man_search" | "man_search" => "搜索在线手册",
         "online_man_get_page" | "man_read" => "读取在线手册",
         "moegirl_query" => "查询萌娘百科",
-        "calculate" | "calculator" => "计算",
+        "calculate" | "calculator" | "scientific_calculator" => "科学计算",
         "calculate_hash" => "计算哈希",
         "decode_encoded_text" => "解码文本",
         "exchange_rate" | "get_exchange_rate" => "汇率查询",
@@ -102,6 +111,8 @@ pub fn readable_tool_name(name: &str) -> &str {
         "draw_fortune_lot" => "吉凶占",
         "roll_dice" => "掷骰子",
         "load_skill" => "加载技能",
+        "register_script" => "注册脚本",
+        "todowrite" => "任务列表",
         "review_aur_package" => "审查 AUR 包",
         "install_aur_package" => "安装 AUR 包",
         "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
@@ -122,6 +133,9 @@ pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
 pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     default_tools::register(&mut registry, true);
+    write::register(&mut registry);
+    edit_replace::register(&mut registry);
+    todowrite::register(&mut registry);
     alarm::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
@@ -130,7 +144,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     xuanxue::register(&mut registry);
     if config.plugins.archlinux.enabled {
-        archlinux::register(&mut registry);
+        archlinux::register(&mut registry, paths);
     }
     if config.plugins.man.enabled {
         man::register(&mut registry);
@@ -184,6 +198,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.memory_config().enabled {
         memory::register(&mut registry, config.clone(), paths.clone());
     }
+    let task_tools = registry.clone();
+    task::register(&mut registry, config.clone(), paths.clone(), task_tools);
+    scripts::register(&mut registry, paths);
     registry
 }
 
@@ -194,7 +211,7 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     fcitx_wiki::register(&mut registry);
     protondb_query::register(&mut registry);
     if config.plugins.archlinux.enabled {
-        archlinux::register(&mut registry);
+        archlinux::register(&mut registry, paths);
     }
     if config.plugins.man.enabled {
         man::register(&mut registry);
