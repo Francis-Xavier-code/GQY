@@ -185,7 +185,7 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
         ("memory", "记忆", "长期记忆与联想"),
         ("package_advisor", "AUR 审查", "PKGBUILD/AUR 安全审查"),
         (
-            "linux_game_compatibility",
+            "deep_research_linux_game_compatibility",
             "Linux 游戏兼容",
             "Proton/反作弊/兼容性查询",
         ),
@@ -206,7 +206,7 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
         9 => config.plugins.man.enabled,
         10 => config.plugins.memory.enabled,
         11 => config.plugins.package_advisor.enabled,
-        12 => config.plugins.linux_game_compatibility.enabled,
+        12 => config.plugins.deep_research_linux_game_compatibility.enabled,
         _ => false,
     }
 }
@@ -226,7 +226,7 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
         9 => config.plugins.man.enabled = value,
         10 => config.plugins.memory.enabled = value,
         11 => config.plugins.package_advisor.enabled = value,
-        12 => config.plugins.linux_game_compatibility.enabled = value,
+        12 => config.plugins.deep_research_linux_game_compatibility.enabled = value,
         _ => {}
     }
 }
@@ -530,12 +530,12 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             config.plugins.package_advisor.enabled,
         )],
         12 => vec![
-            Field::boolean("启用", config.plugins.linux_game_compatibility.enabled),
+            Field::boolean("启用", config.plugins.deep_research_linux_game_compatibility.enabled),
             Field::new(
                 "子代理最大工具次数",
                 config
                     .plugins
-                    .linux_game_compatibility
+                    .deep_research_linux_game_compatibility
                     .max_tool_steps
                     .to_string(),
             ),
@@ -676,8 +676,8 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
             config.plugins.package_advisor.enabled = parse_bool_field(&fields[0].value)?;
         }
         12 => {
-            config.plugins.linux_game_compatibility.enabled = parse_bool_field(&fields[0].value)?;
-            config.plugins.linux_game_compatibility.max_tool_steps =
+            config.plugins.deep_research_linux_game_compatibility.enabled = parse_bool_field(&fields[0].value)?;
+            config.plugins.deep_research_linux_game_compatibility.max_tool_steps =
                 fields[1].value.trim().parse::<usize>()?.clamp(1, 500);
         }
         _ => {

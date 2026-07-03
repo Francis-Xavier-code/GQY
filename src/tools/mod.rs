@@ -1,6 +1,7 @@
 mod alarm;
 mod archlinux;
 mod calculator;
+mod caniplayonlinux_query;
 mod deep_diagnose;
 mod deep_research;
 mod deepseek_status;
@@ -128,6 +129,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "decode_encoded_text" => "解码文本",
         "exchange_rate" | "get_exchange_rate" => "汇率查询",
         "weather" | "get_weather" => "天气查询",
+        "query_caniplayonlinux" => "查询是否能在Linux上玩",
         "protondb_query" => "查询 ProtonDB",
         "xuanxue_pick" => "玄学选择",
         "xuanxue_divine" => "玄学占卜",
@@ -143,7 +145,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "review_aur_package" => "审查 AUR 包",
         "install_aur_package" => "安装 AUR 包",
         "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
-        "linux_game_compatibility" => "Linux 游戏兼容性调查",
+        "deep_research_linux_game_compatibility" => "Linux 游戏兼容性调查",
         "gather_linux_game_compatibility_signals" => "收集游戏兼容性",
         "register_linux_game_evidence" => "登记兼容性证据",
         "register_deep_research_topic_title" => "注册研究标题",
@@ -168,6 +170,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
     weather::register(&mut registry);
+    caniplayonlinux_query::register(&mut registry);
     protondb_query::register(&mut registry);
     exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     xuanxue::register(&mut registry);
@@ -216,7 +219,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.plugins.package_advisor.enabled {
         package_advisor::register(&mut registry, paths.clone());
     }
-    if config.plugins.linux_game_compatibility.enabled {
+    if config.plugins.deep_research_linux_game_compatibility.enabled {
         let game_tools = registry.clone();
         linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }
@@ -237,6 +240,7 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     default_tools::register_readonly(&mut registry);
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
+    caniplayonlinux_query::register(&mut registry);
     protondb_query::register(&mut registry);
     if config.plugins.archlinux.enabled {
         archlinux::register(&mut registry, paths);
@@ -256,7 +260,7 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     if config.plugins.package_advisor.enabled {
         package_advisor::register(&mut registry, paths.clone());
     }
-    if config.plugins.linux_game_compatibility.enabled {
+    if config.plugins.deep_research_linux_game_compatibility.enabled {
         let game_tools = registry.clone();
         linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }

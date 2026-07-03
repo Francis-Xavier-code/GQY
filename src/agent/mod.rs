@@ -340,7 +340,7 @@ impl Agent {
 
 fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {
     let field = match tool_name {
-        "linux_game_compatibility" => "final_report",
+        "deep_research_linux_game_compatibility" => "final_report",
         "linux_input_method_diagnose" | "deep_diagnose" | "deep_research" => "final_answer",
         "task" => "result",
         _ => return None,

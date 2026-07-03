@@ -249,8 +249,8 @@ pub struct PluginsConfig {
     pub calculator: CalculatorPluginConfig,
     #[serde(default)]
     pub package_advisor: PluginEnabledConfig,
-    #[serde(default)]
-    pub linux_game_compatibility: LinuxGameCompatibilityConfig,
+    #[serde(default, alias = "linux_game_compatibility")]
+    pub deep_research_linux_game_compatibility: LinuxGameCompatibilityConfig,
     #[serde(default)]
     pub diagnostics: DiagnosticsPluginConfig,
     #[serde(default)]
@@ -554,7 +554,7 @@ impl Default for PluginsConfig {
             hash_codec: PluginEnabledConfig::default(),
             calculator: CalculatorPluginConfig::default(),
             package_advisor: PluginEnabledConfig::default(),
-            linux_game_compatibility: LinuxGameCompatibilityConfig::default(),
+            deep_research_linux_game_compatibility: LinuxGameCompatibilityConfig::default(),
             diagnostics: DiagnosticsPluginConfig::default(),
             memory: MemoryConfig::default(),
         }

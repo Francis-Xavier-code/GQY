@@ -906,7 +906,7 @@ fn is_silent_tool(name: &str) -> bool {
 fn is_subagent_tool(name: &str) -> bool {
     matches!(
         name,
-        "linux_input_method_diagnose" | "linux_game_compatibility" | "deep_research" | "task"
+        "linux_input_method_diagnose" | "deep_research_linux_game_compatibility" | "deep_research" | "task"
     )
 }
 
@@ -2466,7 +2466,7 @@ mod tests {
             true,
         );
         renderer.tool_stats.insert(
-            "linux_game_compatibility".to_string(),
+            "deep_research_linux_game_compatibility".to_string(),
             ToolStats {
                 calls: 1,
                 ok: 1,

@@ -163,17 +163,17 @@ pub fn register(
         tools,
     };
     registry.register(ToolSpec::new_with_progress(
-        "linux_game_compatibility",
+        "deep_research_linux_game_compatibility",
         "Run the Linux game compatibility investigation sub-agent and return its final report. / 运行 Linux 游戏兼容性调查子代理并返回最终报告。",
         json!({"type":"object","properties":{"game":{"type":"string","description":"Game title. / 游戏名称。"},"issue":{"type":"string","description":"Optional issue such as crash, multiplayer, anti-cheat, performance, mods. / 可选关注点，例如崩溃、多人、反作弊、性能、Mod。"}},"required":["game"],"additionalProperties":false}),
         move |args, progress| {
             let context = context.clone();
-            async move { linux_game_compatibility(args, context, progress).await }
+            async move { deep_research_linux_game_compatibility(args, context, progress).await }
         },
     ));
 }
 
-async fn linux_game_compatibility(
+async fn deep_research_linux_game_compatibility(
     args: Value,
     context: GameCompatibilityContext,
     progress: ToolProgress,
@@ -204,7 +204,7 @@ async fn linux_game_compatibility(
         context
             .config
             .plugins
-            .linux_game_compatibility
+            .deep_research_linux_game_compatibility
             .max_tool_steps,
         &progress,
         &mut stats,
@@ -217,7 +217,7 @@ async fn linux_game_compatibility(
     let report = strip_report_preamble(&result.content);
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,
-        "kind": "linux_game_compatibility",
+        "kind": "deep_research_linux_game_compatibility",
         "game_query": game,
         "final_report": report,
         "stats": stats.public(),
@@ -244,7 +244,7 @@ async fn chat_with_tools(
     progress: &GameProgress,
     stats: &mut GameStats,
 ) -> Result<ChatResult> {
-    let definitions = tools.definitions_except(&["linux_game_compatibility", "deep_research"]);
+    let definitions = tools.definitions_except(&["deep_research_linux_game_compatibility", "deep_research"]);
     let mut steps = 0usize;
     loop {
         if max_tool_steps > 0 && steps >= max_tool_steps {

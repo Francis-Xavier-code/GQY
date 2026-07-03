@@ -239,7 +239,7 @@ async fn chat_with_tools(
     let definitions = tools.definitions_except(&[
         "linux_input_method_diagnose",
         "deep_research",
-        "linux_game_compatibility",
+        "deep_research_linux_game_compatibility",
     ]);
     let mut steps = 0usize;
     loop {
