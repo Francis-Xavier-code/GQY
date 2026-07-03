@@ -587,6 +587,7 @@ impl StreamRenderer {
             if self.summary_line_active {
                 let mut stdout = io::stdout();
                 self.clear_summary_lines()?;
+                writeln!(stdout)?;
                 writeln!(
                     stdout,
                     "{}",
@@ -596,6 +597,7 @@ impl StreamRenderer {
                 self.summary_line_active = false;
                 self.summary_lines_active = 0;
             } else {
+                println!();
                 println!(
                     "{}",
                     style_summary_text(&self.tool_summary_text(), SummaryStyle::Tool)
@@ -683,11 +685,19 @@ impl StreamRenderer {
                 let header = tool_status_text(&display, stats, is_subagent_tool(name));
                 let progress_text = stats.final_progress.as_ref().or(stats.progress.as_ref());
                 let progress_prefix = if stats.final_progress.is_some() { "✓" } else { "↳" };
+                let is_final_progress = stats.final_progress.is_some();
                 progress_text.map_or(header.clone(), |message| {
                     let progress = message
                         .lines()
                         .filter(|line| !line.trim().is_empty())
-                        .map(|line| format!("{progress_prefix} {}", clip_progress_line(line, 120)))
+                        .map(|line| {
+                            let line = if is_final_progress {
+                                clip_progress_line_preserving_spaces(line, 120)
+                            } else {
+                                clip_progress_line(line, 120)
+                            };
+                            format!("{progress_prefix} {line}")
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
                     if progress.is_empty() {
@@ -1961,6 +1971,20 @@ fn clip_progress_line(text: &str, max_chars: usize) -> String {
     }
 }
 
+fn clip_progress_line_preserving_spaces(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max_chars {
+        text.to_string()
+    } else {
+        format!(
+            "{}...",
+            text.chars()
+                .take(max_chars.saturating_sub(3))
+                .collect::<String>()
+        )
+    }
+}
+
 impl Drop for StreamRenderer {
     fn drop(&mut self) {
         let _ = self.stop_waiting();
@@ -2271,6 +2295,31 @@ mod tests {
         assert_eq!(
             tool_status_text("deep_research", &stats, true),
             "deep_research ok"
+        );
+    }
+
+    #[test]
+    fn tool_summary_keeps_final_subagent_stats() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+        );
+        renderer.tool_stats.insert(
+            "linux_game_compatibility".to_string(),
+            ToolStats {
+                calls: 1,
+                ok: 1,
+                error: 0,
+                progress: None,
+                final_progress: Some("工具调用 1 次　消耗 Token 2.3K".to_string()),
+            },
+        );
+
+        assert_eq!(
+            renderer.tool_summary_text(),
+            "工具: Linux 游戏兼容性调查 ok\n✓ 工具调用 1 次　消耗 Token 2.3K"
         );
     }
 
