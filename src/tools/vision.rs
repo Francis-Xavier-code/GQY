@@ -192,7 +192,7 @@ pub async fn analyze_local_image_with_prompt(
     analyze_image_url_with_prompt(config, paths, &image_url, prompt).await
 }
 
-async fn analyze_image_url_with_prompt(
+pub async fn analyze_image_url_with_prompt(
     config: &AppConfig,
     paths: &MiyuPaths,
     image_url: &str,

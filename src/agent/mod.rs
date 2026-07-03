@@ -1,13 +1,15 @@
 mod conversation;
 
+use crate::clipboard::ClipboardImage;
 use crate::config::AppConfig;
 use crate::llm::{
-    ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient,
+    ChatContent, ChatContentPart, ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind,
+    ImageUrlContent, OpenAiCompatibleClient,
 };
 use crate::memory::{EvictedTurn, MemoryStore};
 use crate::paths::MiyuPaths;
 use crate::state::StateStore;
-use crate::tools::{self, memes, ToolPermission, ToolRegistry};
+use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
 use std::sync::{Arc, Mutex};
 use anyhow::{bail, Result};
 use chrono::Local;
@@ -118,6 +120,18 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
+        self.chat_stream_with_images(input, &[], on_event).await
+    }
+
+    pub async fn chat_stream_with_images<F>(
+        &mut self,
+        input: &str,
+        images: &[ClipboardImage],
+        on_event: F,
+    ) -> Result<ChatResult>
+    where
+        F: FnMut(AgentEvent) -> Result<()>,
+    {
         self.state.mark_interrupted_turn_if_needed()?;
         let evicted = self.state.trim_conversation_to_budget(
             self.context_chars,
@@ -134,8 +148,67 @@ impl Agent {
             .collect::<Vec<_>>();
         self.memory.remember_evicted_turns(&evicted)?;
         let input = clean_user_visible_text(input);
+        let temp_paths: Vec<String> = if !images.is_empty() {
+            images
+                .iter()
+                .enumerate()
+                .filter_map(|(i, img)| {
+                    img.write_temp_file(&self.paths.cache_dir, i)
+                        .ok()
+                        .map(|p| p.display().to_string())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let input = if !images.is_empty() && !self.current_model_supports_vision() {
+            self.describe_images_with_vision_provider(&input, images)
+                .await?
+        } else {
+            input
+        };
         self.state.append_message("user", &input)?;
         let mut messages = self.chat_messages()?;
+        if !images.is_empty() && self.current_model_supports_vision() {
+            if let Some(last) = messages.last_mut() {
+                if last.role == "user" {
+                    let text = match &last.content {
+                        Some(ChatContent::Text(t)) => t.clone(),
+                        _ => String::new(),
+                    };
+                    let mut parts = vec![ChatContentPart::Text { text }];
+                    for img in images {
+                        parts.push(ChatContentPart::ImageUrl {
+                            image_url: ImageUrlContent {
+                                url: img.data_url(),
+                            },
+                        });
+                    }
+                    last.content = Some(ChatContent::Parts(parts));
+                }
+            }
+        }
+        if !temp_paths.is_empty() {
+            let hint = if temp_paths.len() == 1 {
+                format!(
+                    "用户粘贴了 1 张剪贴板图片，已保存到临时文件：{}\n你可以使用 vision_analyze 工具对此图片进行更详细的分析。",
+                    temp_paths[0]
+                )
+            } else {
+                let list = temp_paths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| format!("  [Image {}] {}", i + 1, p))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "用户粘贴了 {} 张剪贴板图片，已保存到临时文件：\n{}\n你可以使用 vision_analyze 工具对这些图片进行更详细的分析。",
+                    temp_paths.len(),
+                    list
+                )
+            };
+            messages.push(ChatMessage::system(hint));
+        }
         if let Some(association) = self.memory.association(&input)? {
             messages.insert(
                 1,
@@ -174,6 +247,57 @@ impl Agent {
             self.state.add_usage(usage)?;
         }
         Ok(result)
+    }
+
+    fn current_model_supports_vision(&self) -> bool {
+        let provider = match self.config.provider(None) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        match provider.supports_vision(&provider.default_model) {
+            Some(true) => true,
+            _ => false,
+        }
+    }
+
+    async fn describe_images_with_vision_provider(
+        &self,
+        input: &str,
+        images: &[ClipboardImage],
+    ) -> Result<String> {
+        let vision_cfg = &self.config.plugins.vision;
+        if !vision_cfg.enabled {
+            return Ok(input.to_string());
+        }
+        let mut descriptions = Vec::new();
+        for (i, img) in images.iter().enumerate() {
+            let prompt = if input.trim().is_empty() {
+                "请简洁描述这张图片，并指出重要细节。".to_string()
+            } else {
+                format!("用户消息：{input}\n\n请基于图片内容回答或描述图片，不要编造看不见的信息。")
+            };
+            match vision::analyze_image_url_with_prompt(
+                &self.config,
+                &self.paths,
+                &img.data_url(),
+                &prompt,
+            )
+            .await
+            {
+                Ok(desc) => {
+                    descriptions.push(format!("[Image {} 的描述]\n{}", i + 1, desc.trim()));
+                }
+                Err(e) => {
+                    descriptions.push(format!("[Image {} 识图失败: {}]", i + 1, e));
+                }
+            }
+        }
+        let combined = descriptions.join("\n\n");
+        if input.trim().is_empty() {
+            Ok(combined)
+        } else {
+            Ok(format!("{input}\n\n{combined}"))
+        }
     }
 
     async fn chat_with_tools<F>(

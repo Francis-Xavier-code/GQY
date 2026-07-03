@@ -616,6 +616,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         AgentMode::Yolo
     };
 
+    crate::models_cache::try_load(&paths);
+    crate::models_cache::spawn_background_refresh(paths.clone());
+
     if cli.shell_intercept {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
         let message = join_message(cli.message);
@@ -1392,8 +1395,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     println!(
         "\x1b[2m{}\x1b[0m",
         t(
-            "Tab toggles mode; Enter sends; Ctrl+J inserts newline",
-            "Tab 切换模式；Enter 发送；Ctrl+J 换行",
+            "Tab toggles mode; Enter sends; Ctrl+J inserts newline; Ctrl+V pastes image",
+            "Tab 切换模式；Enter 发送；Ctrl+J 换行；Ctrl+V 粘贴图片",
         )
     );
     crate::default_kb::check_update_if_due(paths).ok();
@@ -1401,10 +1404,10 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         println!("\x1b[2m{message}\x1b[0m");
     }
     loop {
-        let input = match read_repl_input(mode, prefill.take(), &input_history)? {
-            Some((new_mode, input)) => {
+        let (input, images) = match read_repl_input(mode, prefill.take(), &input_history)? {
+            Some((new_mode, input, images)) => {
                 mode = new_mode;
-                input
+                (input, images)
             }
             None => break,
         };
@@ -1480,7 +1483,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         );
         renderer.start_waiting()?;
         let chat_result = {
-            let chat = agent.chat_stream(input, |event| handle_agent_event(&mut renderer, event));
+            let chat = agent.chat_stream_with_images(input, &images, |event| handle_agent_event(&mut renderer, event));
             tokio::pin!(chat);
             tokio::select! {
                 result = &mut chat => result.map(|_| ()),
@@ -1561,6 +1564,10 @@ fn print_repl_help() {
     println!("  Enter       {}", t("send message", "发送消息"));
     println!("  Ctrl+J      {}", t("insert newline", "插入换行"));
     println!(
+        "  Ctrl+V      {}",
+        t("paste image from clipboard", "从剪贴板粘贴图片")
+    );
+    println!(
         "  Ctrl+L      {}",
         t("clear screen", "清屏")
     );
@@ -1578,7 +1585,7 @@ fn read_repl_input(
     mut mode: AgentMode,
     prefill: Option<String>,
     history: &[String],
-) -> Result<Option<(AgentMode, String)>> {
+) -> Result<Option<(AgentMode, String, Vec<crate::clipboard::ClipboardImage>)>> {
     let mut stdout = io::stdout();
     let mut input = strip_terminal_control_sequences(&prefill.unwrap_or_default());
     let mut cursor = input.chars().count();
@@ -1593,6 +1600,7 @@ fn read_repl_input(
     let (_, mut input_row) = cursor::position()?;
     let mut rendered_rows = 0u16;
     let mut is_pasted = false;
+    let mut pasted_images: Vec<crate::clipboard::ClipboardImage> = Vec::new();
     render_repl_input(
         &mut stdout,
         &mut input_row,
@@ -1649,6 +1657,7 @@ fn read_repl_input(
                     input.clear();
                     cursor = 0;
                     is_pasted = false;
+                    pasted_images.clear();
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1713,6 +1722,7 @@ fn read_repl_input(
                         input = history.get(history_index).cloned().unwrap_or_default();
                         cursor = input.chars().count();
                         is_pasted = false;
+                        pasted_images.clear();
                         render_repl_input(
                             &mut stdout,
                             &mut input_row,
@@ -1734,6 +1744,7 @@ fn read_repl_input(
                     }
                     cursor = input.chars().count();
                     is_pasted = false;
+                    pasted_images.clear();
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1749,7 +1760,7 @@ fn read_repl_input(
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
-                    return Ok(Some((mode, input)));
+                    return Ok(Some((mode, input, pasted_images)));
                 }
                 KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                     insert_newline_at_cursor(&mut input, &mut cursor);
@@ -1769,6 +1780,7 @@ fn read_repl_input(
                         input.clear();
                         cursor = 0;
                         is_pasted = false;
+                        pasted_images.clear();
                         render_repl_input(
                             &mut stdout,
                             &mut input_row,
@@ -1849,6 +1861,28 @@ fn read_repl_input(
                         is_pasted,
                     )?;
                 }
+                KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    match crate::clipboard::read_clipboard_image() {
+                        Ok(Some(img)) => {
+                            let index = pasted_images.len() + 1;
+                            let placeholder = format!("[Image {}] ", index);
+                            insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
+                            pasted_images.push(img);
+                            is_pasted = false;
+                            render_repl_input(
+                                &mut stdout,
+                                &mut input_row,
+                                &mut rendered_rows,
+                                mode,
+                                &input,
+                                cursor,
+                                is_pasted,
+                            )?;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {}
+                    }
+                }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
                     if !is_disallowed_control_char(ch) {
                         insert_char_at_cursor(&mut input, &mut cursor, ch);
@@ -1886,6 +1920,10 @@ fn render_repl_input(
     let plain_prefix = format!("[{}] > ", mode.label());
     let display_lines =
         repl_visible_input_lines(&plain_prefix, &lines, REPL_MAX_VISIBLE_INPUT_ROWS, is_pasted);
+    let display_lines: Vec<String> = display_lines
+        .iter()
+        .map(|line| colorize_image_placeholders(line))
+        .collect();
     let current_rows = repl_render_rows(&plain_prefix, &display_lines, !suggestions.is_empty());
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
@@ -2175,6 +2213,27 @@ fn visible_width(value: &str) -> usize {
         }
     }
     width
+}
+
+fn colorize_image_placeholders(line: &str) -> String {
+    let mut result = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("[Image ") {
+        result.push_str(&rest[..start]);
+        let after = &rest[start..];
+        if let Some(end) = after.find(']') {
+            let placeholder = &after[..=end];
+            result.push_str("\x1b[35m");
+            result.push_str(placeholder);
+            result.push_str("\x1b[0m");
+            rest = &after[end + 1..];
+        } else {
+            result.push_str(after);
+            break;
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 fn colored_mode_label(mode: AgentMode) -> String {

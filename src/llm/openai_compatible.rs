@@ -1643,8 +1643,10 @@ fn finalize_stream_result(
 ) -> Result<ChatResult> {
     let content = clean_plain_text(content);
     let (content, mut dsml_tool_calls) = extract_dsml_tool_calls(content);
+    let content = strip_orphaned_dsml_tags(content);
     let reasoning = clean_plain_text(reasoning);
     let (reasoning, reasoning_dsml_tool_calls) = extract_dsml_tool_calls(reasoning);
+    let reasoning = strip_orphaned_dsml_tags(reasoning);
     dsml_tool_calls.extend(reasoning_dsml_tool_calls);
     let (content, tag_reasoning) = clean_response_content(content);
     let reasoning = if reasoning.trim().is_empty() {
@@ -1761,6 +1763,16 @@ fn extract_dsml_tool_calls(mut content: String) -> (String, Vec<ToolCall>) {
         content.replace_range(start..end + DSML_END.len(), "");
     }
     (content.trim().to_string(), calls)
+}
+
+fn strip_orphaned_dsml_tags(mut content: String) -> String {
+    content = content.replace(DSML_END, "");
+    content = content.replace(DSML_PREFIX, "");
+    content = content.replace("</｜｜DSML｜｜invoke>", "");
+    content = content.replace("<｜｜DSML｜｜invoke", "");
+    content = content.replace("</｜｜DSML｜｜parameter>", "");
+    content = content.replace("<｜｜DSML｜｜parameter", "");
+    content.trim().to_string()
 }
 
 fn parse_dsml_block(block: &str, index: &mut usize) -> Vec<ToolCall> {
@@ -2234,6 +2246,7 @@ mod tests {
             api_key: None,
             models: Vec::new(),
             model_context_chars: std::collections::HashMap::new(),
+            model_modalities: std::collections::HashMap::new(),
             default_model: String::new(),
             timeout_seconds: 60,
             temperature: 0.7,

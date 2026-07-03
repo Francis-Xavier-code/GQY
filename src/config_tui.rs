@@ -1714,6 +1714,7 @@ fn edit_provider_form(
         api_key: Some(fields[4].value.trim().to_string()).filter(|value| !value.is_empty()),
         models,
         model_context_chars,
+        model_modalities: provider.model_modalities.clone(),
         default_model,
         timeout_seconds: fields[7].value.trim().parse().unwrap_or(60),
         temperature: fields[8].value.trim().parse().unwrap_or(0.7),

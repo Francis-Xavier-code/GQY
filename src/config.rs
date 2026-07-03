@@ -102,6 +102,8 @@ pub struct ProviderConfig {
     pub models: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_context_chars: HashMap<String, usize>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub model_modalities: HashMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_model: String,
     #[serde(
@@ -825,6 +827,7 @@ impl ProviderConfig {
             api_key: None,
             models: vec![OPENCODE_DEFAULT_CHAT_MODEL.to_string()],
             model_context_chars: HashMap::new(),
+            model_modalities: HashMap::new(),
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
@@ -840,6 +843,7 @@ impl ProviderConfig {
             api_key: Some("$env:OPENAI_API_KEY".to_string()),
             models: vec!["gpt-4o-mini".to_string()],
             model_context_chars: HashMap::new(),
+            model_modalities: HashMap::new(),
             default_model: "gpt-4o-mini".to_string(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
@@ -878,6 +882,7 @@ impl ProviderConfig {
             api_key: None,
             models: Vec::new(),
             model_context_chars: HashMap::new(),
+            model_modalities: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
@@ -889,6 +894,13 @@ impl ProviderConfig {
         provider.models.clear();
         provider.default_model.clear();
         provider
+    }
+
+    pub fn supports_vision(&self, model: &str) -> Option<bool> {
+        if let Some(modalities) = self.model_modalities.get(model) {
+            return Some(modalities.iter().any(|m| m == "image"));
+        }
+        crate::models_cache::supports_vision(&self.id, model)
     }
 
     pub fn resolved_api_key(&self, paths: &MiyuPaths) -> Result<String> {

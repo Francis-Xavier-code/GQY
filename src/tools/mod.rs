@@ -26,7 +26,7 @@ mod skills;
 mod subagent_runner;
 mod task;
 mod todowrite;
-mod vision;
+pub mod vision;
 mod weather;
 mod web;
 mod web_images;
