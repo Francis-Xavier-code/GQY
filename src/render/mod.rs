@@ -595,7 +595,6 @@ impl StreamRenderer {
             if self.summary_line_active {
                 let mut stdout = io::stdout();
                 self.clear_summary_lines()?;
-                writeln!(stdout)?;
                 writeln!(
                     stdout,
                     "{}",
