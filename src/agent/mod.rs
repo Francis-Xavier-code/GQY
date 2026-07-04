@@ -1,6 +1,6 @@
 mod conversation;
 
-use crate::clipboard::ClipboardImage;
+use crate::clipboard::{ClipboardImage, PastedImage};
 use crate::config::AppConfig;
 use crate::llm::{
     ChatContent, ChatContentPart, ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind,
@@ -124,14 +124,13 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
-        self.chat_stream_with_images(input, &[], &[], on_event).await
+        self.chat_stream_with_images(input, &[], on_event).await
     }
 
     pub async fn chat_stream_with_images<F>(
         &mut self,
         input: &str,
-        images: &[ClipboardImage],
-        image_paths: &[String],
+        images: &[Option<PastedImage>],
         on_event: F,
     ) -> Result<ChatResult>
     where
@@ -153,8 +152,22 @@ impl Agent {
             .collect::<Vec<_>>();
         self.memory.remember_evicted_turns(&evicted)?;
         let input = clean_user_visible_text(input);
-        let temp_paths: Vec<String> = if !images.is_empty() {
-            images
+        let binary_images: Vec<&ClipboardImage> = images
+            .iter()
+            .filter_map(|opt| match opt {
+                Some(PastedImage::Binary(img)) => Some(img),
+                _ => None,
+            })
+            .collect();
+        let path_images: Vec<&str> = images
+            .iter()
+            .filter_map(|opt| match opt {
+                Some(PastedImage::Path(p)) => Some(p.as_str()),
+                _ => None,
+            })
+            .collect();
+        let temp_paths: Vec<String> = if !binary_images.is_empty() {
+            binary_images
                 .iter()
                 .enumerate()
                 .filter_map(|(i, img)| {
@@ -166,15 +179,15 @@ impl Agent {
         } else {
             Vec::new()
         };
-        let input = if !images.is_empty() && !self.current_model_supports_vision() {
-            self.describe_images_with_vision_provider(&input, images)
+        let input = if !binary_images.is_empty() && !self.current_model_supports_vision() {
+            self.describe_images_with_vision_provider(&input, &binary_images)
                 .await?
         } else {
             input
         };
         self.state.append_message("user", &input)?;
         let mut messages = self.chat_messages()?;
-        if !images.is_empty() && self.current_model_supports_vision() {
+        if !binary_images.is_empty() && self.current_model_supports_vision() {
             if let Some(last) = messages.last_mut() {
                 if last.role == "user" {
                     let text = match &last.content {
@@ -182,7 +195,7 @@ impl Agent {
                         _ => String::new(),
                     };
                     let mut parts = vec![ChatContentPart::Text { text }];
-                    for img in images {
+                    for img in &binary_images {
                         parts.push(ChatContentPart::ImageUrl {
                             image_url: ImageUrlContent {
                                 url: img.data_url(),
@@ -214,8 +227,8 @@ impl Agent {
             };
             messages.push(ChatMessage::system(hint));
         }
-        if !image_paths.is_empty() {
-            let list = image_paths
+        if !path_images.is_empty() {
+            let list = path_images
                 .iter()
                 .enumerate()
                 .map(|(i, p)| format!("  [Image {}] {}", i + 1, p))
@@ -223,7 +236,7 @@ impl Agent {
                 .join("\n");
             let hint = format!(
                 "用户粘贴了 {} 张本地图片路径：\n{}\n你可以使用 vision_analyze 工具读取并分析这些图片。",
-                image_paths.len(),
+                path_images.len(),
                 list
             );
             messages.push(ChatMessage::system(hint));
@@ -303,7 +316,7 @@ impl Agent {
     async fn describe_images_with_vision_provider(
         &self,
         input: &str,
-        images: &[ClipboardImage],
+        images: &[&ClipboardImage],
     ) -> Result<String> {
         let vision_cfg = &self.config.plugins.vision;
         if !vision_cfg.enabled {

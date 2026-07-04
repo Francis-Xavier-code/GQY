@@ -1411,10 +1411,10 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         println!("\x1b[2m{message}\x1b[0m");
     }
     loop {
-        let (input, images, image_paths) = match read_repl_input(mode, prefill.take(), &input_history)? {
-            Some((new_mode, input, images, image_paths)) => {
+        let (input, pasted_images) = match read_repl_input(mode, prefill.take(), &input_history)? {
+            Some((new_mode, input, pasted_images)) => {
                 mode = new_mode;
-                (input, images, image_paths)
+                (input, pasted_images)
             }
             None => break,
         };
@@ -1490,7 +1490,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         );
         renderer.start_waiting()?;
         let chat_result = {
-            let chat = agent.chat_stream_with_images(input, &images, &image_paths, |event| handle_agent_event(&mut renderer, event));
+            let chat = agent.chat_stream_with_images(input, &pasted_images, |event| handle_agent_event(&mut renderer, event));
             tokio::pin!(chat);
             tokio::select! {
                 result = &mut chat => result.map(|_| ()),
@@ -1598,7 +1598,7 @@ fn read_repl_input(
     mut mode: AgentMode,
     prefill: Option<String>,
     history: &[String],
-) -> Result<Option<(AgentMode, String, Vec<crate::clipboard::ClipboardImage>, Vec<String>)>> {
+) -> Result<Option<(AgentMode, String, Vec<Option<crate::clipboard::PastedImage>>)>> {
     let mut stdout = io::stdout();
     let mut input = strip_terminal_control_sequences(&prefill.unwrap_or_default());
     let mut cursor = input.chars().count();
@@ -1613,8 +1613,7 @@ fn read_repl_input(
     let (_, mut input_row) = cursor::position()?;
     let mut rendered_rows = 0u16;
     let mut is_pasted = false;
-    let mut pasted_images: Vec<crate::clipboard::ClipboardImage> = Vec::new();
-    let mut pasted_image_paths: Vec<String> = Vec::new();
+    let mut pasted_images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
     render_repl_input(
         &mut stdout,
         &mut input_row,
@@ -1683,7 +1682,11 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Left => {
-                    cursor = cursor.saturating_sub(1);
+                    if let Some((start, _)) = placeholder_at_cursor(&input, cursor) {
+                        cursor = start;
+                    } else {
+                        cursor = cursor.saturating_sub(1);
+                    }
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1695,7 +1698,11 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Right => {
-                    cursor = (cursor + 1).min(input.chars().count());
+                    if let Some((_, end)) = placeholder_at_cursor(&input, cursor) {
+                        cursor = end;
+                    } else {
+                        cursor = (cursor + 1).min(input.chars().count());
+                    }
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1774,7 +1781,7 @@ fn read_repl_input(
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
-                    return Ok(Some((mode, input, pasted_images, pasted_image_paths)));
+                    return Ok(Some((mode, input, pasted_images)));
                 }
                 KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                     insert_newline_at_cursor(&mut input, &mut cursor);
@@ -1835,7 +1842,17 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    remove_word_before_cursor(&mut input, &mut cursor);
+                    if let Some((start, end)) = placeholder_before_cursor(&input, cursor) {
+                        if let Some(n) = parse_placeholder_index(&input, start, end) {
+                            if n > 0 && n <= pasted_images.len() {
+                                pasted_images[n - 1] = None;
+                            }
+                        }
+                        remove_range_chars(&mut input, start, end);
+                        cursor = start;
+                    } else {
+                        remove_word_before_cursor(&mut input, &mut cursor);
+                    }
                     is_pasted = false;
                     render_repl_input(
                         &mut stdout,
@@ -1849,7 +1866,17 @@ fn read_repl_input(
                 }
                 KeyCode::Backspace => {
                     if cursor > 0 {
-                        remove_char_before_cursor(&mut input, &mut cursor);
+                        if let Some((start, end)) = placeholder_before_cursor(&input, cursor) {
+                            if let Some(n) = parse_placeholder_index(&input, start, end) {
+                                if n > 0 && n <= pasted_images.len() {
+                                    pasted_images[n - 1] = None;
+                                }
+                            }
+                            remove_range_chars(&mut input, start, end);
+                            cursor = start;
+                        } else {
+                            remove_char_before_cursor(&mut input, &mut cursor);
+                        }
                     }
                     is_pasted = false;
                     render_repl_input(
@@ -1863,7 +1890,16 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Delete => {
-                    remove_char_at_cursor(&mut input, cursor);
+                    if let Some((start, end)) = placeholder_after_cursor(&input, cursor) {
+                        if let Some(n) = parse_placeholder_index(&input, start, end) {
+                            if n > 0 && n <= pasted_images.len() {
+                                pasted_images[n - 1] = None;
+                            }
+                        }
+                        remove_range_chars(&mut input, start, end);
+                    } else {
+                        remove_char_at_cursor(&mut input, cursor);
+                    }
                     is_pasted = false;
                     render_repl_input(
                         &mut stdout,
@@ -1876,12 +1912,12 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    match crate::clipboard::read_clipboard_image() {
-                        Ok(Some(img)) => {
-                            let index = pasted_images.len() + pasted_image_paths.len() + 1;
+                    match crate::clipboard::read_clipboard() {
+                        Ok(crate::clipboard::ClipboardContent::Image(img)) => {
+                            let index = pasted_images.len() + 1;
                             let placeholder = format!("[Image {}] ", index);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
-                            pasted_images.push(img);
+                            pasted_images.push(Some(crate::clipboard::PastedImage::Binary(img)));
                             is_pasted = false;
                             render_repl_input(
                                 &mut stdout,
@@ -1893,39 +1929,47 @@ fn read_repl_input(
                                 is_pasted,
                             )?;
                         }
-                        _ => {
-                            if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
-                                if let Some(cp) = crate::clipboard::parse_clipboard_path(&text) {
-                                    let index = pasted_images.len() + pasted_image_paths.len() + 1;
-                                    if cp.is_image {
-                                        let filename = std::path::Path::new(&cp.path)
-                                            .file_name()
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or("image");
-                                        let placeholder =
-                                            format!("[Image {}: {}] ", index, filename);
-                                        insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
-                                        pasted_image_paths.push(cp.path);
-                                    } else {
-                                        insert_str_at_cursor(&mut input, &mut cursor, &cp.path);
-                                    }
-                                    is_pasted = false;
-                                    render_repl_input(
-                                        &mut stdout,
-                                        &mut input_row,
-                                        &mut rendered_rows,
-                                        mode,
-                                        &input,
-                                        cursor,
-                                        is_pasted,
-                                    )?;
-                                }
-                            }
+                        Ok(crate::clipboard::ClipboardContent::ImagePath(path)) => {
+                            let index = pasted_images.len() + 1;
+                            let filename = std::path::Path::new(&path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("image");
+                            let placeholder = format!("[Image {}: {}] ", index, filename);
+                            insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
+                            pasted_images.push(Some(crate::clipboard::PastedImage::Path(path)));
+                            is_pasted = false;
+                            render_repl_input(
+                                &mut stdout,
+                                &mut input_row,
+                                &mut rendered_rows,
+                                mode,
+                                &input,
+                                cursor,
+                                is_pasted,
+                            )?;
                         }
+                        Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+                            insert_str_at_cursor(&mut input, &mut cursor, &path);
+                            is_pasted = false;
+                            render_repl_input(
+                                &mut stdout,
+                                &mut input_row,
+                                &mut rendered_rows,
+                                mode,
+                                &input,
+                                cursor,
+                                is_pasted,
+                            )?;
+                        }
+                        _ => {}
                     }
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
                     if !is_disallowed_control_char(ch) {
+                        if let Some((_, end)) = placeholder_at_cursor(&input, cursor) {
+                            cursor = end;
+                        }
                         insert_char_at_cursor(&mut input, &mut cursor, ch);
                     }
                     is_pasted = false;
@@ -2182,6 +2226,81 @@ fn byte_index_for_char(value: &str, char_index: usize) -> usize {
         .unwrap_or(value.len())
 }
 
+fn find_image_placeholders(input: &str) -> Vec<(usize, usize)> {
+    let mut result = Vec::new();
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 7 <= chars.len() && chars[i..i + 7].iter().collect::<String>() == "[Image " {
+            let mut j = i + 7;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == ':' {
+                j += 1;
+                while j < chars.len() && chars[j] != ']' {
+                    j += 1;
+                }
+                if j < chars.len() && chars[j] == ']' {
+                    result.push((i, j + 1));
+                    i = j + 1;
+                    continue;
+                }
+            } else if j < chars.len() && chars[j] == ']' {
+                result.push((i, j + 1));
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
+fn placeholder_at_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
+    let placeholders = find_image_placeholders(input);
+    for (start, end) in &placeholders {
+        if cursor > *start && cursor < *end {
+            return Some((*start, *end));
+        }
+    }
+    None
+}
+
+fn placeholder_before_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
+    let placeholders = find_image_placeholders(input);
+    for (start, end) in &placeholders {
+        if *end == cursor {
+            return Some((*start, *end));
+        }
+    }
+    None
+}
+
+fn placeholder_after_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
+    let placeholders = find_image_placeholders(input);
+    for (start, end) in &placeholders {
+        if *start == cursor {
+            return Some((*start, *end));
+        }
+    }
+    None
+}
+
+fn remove_range_chars(value: &mut String, char_start: usize, char_end: usize) {
+    let byte_start = byte_index_for_char(value, char_start);
+    let byte_end = byte_index_for_char(value, char_end);
+    value.replace_range(byte_start..byte_end, "");
+}
+
+fn parse_placeholder_index(input: &str, char_start: usize, char_end: usize) -> Option<usize> {
+    let chars: Vec<char> = input.chars().collect();
+    let segment: String = chars[char_start..char_end].iter().collect();
+    let after_prefix = segment.strip_prefix("[Image ")?;
+    let num_str: String = after_prefix.chars().take_while(|c| c.is_ascii_digit()).collect();
+    num_str.parse::<usize>().ok()
+}
+
 fn take_chars(value: &str, count: usize) -> String {
     value.chars().take(count).collect()
 }
@@ -2270,7 +2389,7 @@ fn colorize_image_placeholders(line: &str) -> String {
             rest = &after[end + 1..];
         } else {
             result.push_str(after);
-            break;
+            return result;
         }
     }
     result.push_str(rest);
