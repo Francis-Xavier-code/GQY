@@ -1494,7 +1494,13 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             }
         };
         renderer.finish()?;
-        chat_result?;
+        if let Err(err) = chat_result {
+            eprintln!(
+                "\x1b[31m{}: {err}\x1b[0m",
+                t("error", "错误")
+            );
+            continue;
+        }
     }
     Ok(())
 }
