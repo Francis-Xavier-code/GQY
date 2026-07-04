@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::cursor::{MoveToColumn, MoveUp};
+use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
 use std::io::{self, IsTerminal, Write};
@@ -298,8 +298,11 @@ fn write_spinner_lines(output: &str, prev_lines: u16, lines: u16) -> Result<()> 
     }
     if prev_lines > lines {
         for _ in lines..prev_lines {
-            execute!(stdout, MoveUp(1))?;
+            execute!(stdout, MoveDown(1))?;
             execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        }
+        for _ in lines..prev_lines {
+            execute!(stdout, MoveUp(1))?;
         }
     }
     stdout.flush()?;
