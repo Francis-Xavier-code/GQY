@@ -2758,5 +2758,9 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         }
         AgentEvent::ExternalOutput => renderer.prepare_for_external_output(),
         AgentEvent::SpinnerTick => renderer.tick_spinner(),
+        AgentEvent::MemeSelectPhase => {
+            renderer.set_meme_select_phase()?;
+            renderer.tick_spinner()
+        }
     }
 }

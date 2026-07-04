@@ -12,6 +12,7 @@ use crate::state::StateStore;
 use crate::render::wait_spinner::SPINNER_INTERVAL;
 use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use chrono::Local;
 use std::io::IsTerminal;
@@ -57,6 +58,7 @@ pub enum AgentEvent {
     },
     ExternalOutput,
     SpinnerTick,
+    MemeSelectPhase,
 }
 
 pub struct Agent {
@@ -232,13 +234,34 @@ impl Agent {
                 ChatMessage::system(self.memory.format_association(&association)),
             );
         }
-        let auto_meme_plan =
-            memes::plan_auto_meme_before_reply(&self.config, &self.paths, &self.client, &input)
-                .await?;
+        let mut on_event = on_event;
+        let meme_future =
+            memes::plan_auto_meme_before_reply(&self.config, &self.paths, &self.client, &input);
+        tokio::pin!(meme_future);
+        let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
+        spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        spinner_interval.tick().await;
+        let meme_start = Instant::now();
+        let mut meme_phase_switched = false;
+        let auto_meme_plan = loop {
+            tokio::select! {
+                result = &mut meme_future => {
+                    break result?;
+                }
+                _ = spinner_interval.tick() => {
+                    if !meme_phase_switched
+                        && meme_start.elapsed() >= Duration::from_millis(150)
+                    {
+                        on_event(AgentEvent::MemeSelectPhase)?;
+                        meme_phase_switched = true;
+                    }
+                    on_event(AgentEvent::SpinnerTick)?;
+                }
+            }
+        };
         if let Some(plan) = &auto_meme_plan {
             messages.push(ChatMessage::system(plan.reminder.clone()));
         }
-        let mut on_event = on_event;
         let mut used_tools = Vec::new();
         let mut persisted_tool_reports = Vec::new();
         let result = self

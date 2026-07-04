@@ -797,6 +797,15 @@ impl StreamRenderer {
         }
     }
 
+    pub fn set_meme_select_phase(&mut self) -> Result<()> {
+        self.set_waiting_phase(format!(
+            "{} · {}",
+            t("thinking", "思考"),
+            t("picking meme", "挑选表情包")
+        ));
+        Ok(())
+    }
+
     fn ensure_waiting_phase(&mut self, phase: String) -> Result<()> {
         if self.plain || !WaitSpinner::supported() {
             if self.summary_line_active {
