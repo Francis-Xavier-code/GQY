@@ -9,6 +9,7 @@ use crate::llm::{
 use crate::memory::{EvictedTurn, MemoryStore};
 use crate::paths::MiyuPaths;
 use crate::state::StateStore;
+use crate::render::wait_spinner::SPINNER_INTERVAL;
 use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
 use std::sync::{Arc, Mutex};
 use anyhow::{bail, Result};
@@ -55,6 +56,7 @@ pub enum AgentEvent {
         message: String,
     },
     ExternalOutput,
+    SpinnerTick,
 }
 
 pub struct Agent {
@@ -341,12 +343,34 @@ impl Agent {
                 Vec::new()
             };
 
-            let result = self
+            let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<ChatStreamChunk>();
+            let llm_future = self
                 .client
-                .chat_stream(messages.clone(), definitions, |chunk| {
-                    on_event(AgentEvent::Chunk(chunk))
-                })
-                .await?;
+                .chat_stream(messages.clone(), definitions, move |chunk| {
+                    let _ = chunk_tx.send(chunk);
+                    Ok(())
+                });
+            tokio::pin!(llm_future);
+            let mut spinner_interval =
+                tokio::time::interval(SPINNER_INTERVAL);
+            spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            spinner_interval.tick().await;
+            let result = loop {
+                tokio::select! {
+                    result = &mut llm_future => {
+                        break result?;
+                    }
+                    Some(chunk) = chunk_rx.recv() => {
+                        on_event(AgentEvent::Chunk(chunk))?;
+                    }
+                    _ = spinner_interval.tick() => {
+                        on_event(AgentEvent::SpinnerTick)?;
+                    }
+                }
+            };
+            while let Ok(chunk) = chunk_rx.try_recv() {
+                on_event(AgentEvent::Chunk(chunk))?;
+            }
             if result.tool_calls.is_empty() || !self.tools_enabled {
                 return Ok(result);
             }
@@ -391,9 +415,26 @@ impl Agent {
                         &call.function.name,
                         &call.function.arguments,
                         progress_tx,
-                    )?
+                    )
+                };
+                let tool_future = match tool_future {
+                    Ok(f) => f,
+                    Err(err) => {
+                        let output = format!("tool error: {err}");
+                        on_event(AgentEvent::ToolResult {
+                            name: call.function.name.clone(),
+                            ok: false,
+                            output: output.clone(),
+                        })?;
+                        messages.push(ChatMessage::tool(call.id, output));
+                        continue;
+                    }
                 };
                 tokio::pin!(tool_future);
+                let mut spinner_interval =
+                    tokio::time::interval(SPINNER_INTERVAL);
+                spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                spinner_interval.tick().await;
                 let output = loop {
                     tokio::select! {
                         result = &mut tool_future => {
@@ -440,6 +481,9 @@ impl Agent {
                                 name: call.function.name.clone(),
                                 message,
                             })?;
+                        }
+                        _ = spinner_interval.tick() => {
+                            on_event(AgentEvent::SpinnerTick)?;
                         }
                     }
                 };

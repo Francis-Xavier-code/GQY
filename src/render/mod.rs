@@ -1,8 +1,8 @@
-mod wait_spinner;
+pub(crate) mod wait_spinner;
 
 use crate::i18n::text as t;
 use crate::llm::{ChatResult, ChatStreamChunk, ChatStreamKind};
-use crate::render::wait_spinner::{SpinnerStyle, WaitSpinner};
+use crate::render::wait_spinner::{SpinnerStyle, WaitSpinner, SPINNER_INTERVAL};
 use anyhow::Result;
 use crossterm::cursor::{Hide, MoveToColumn, Show};
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
@@ -82,6 +82,7 @@ pub struct StreamRenderer {
     last_tool_summary: String,
     live_summary: bool,
     wait_spinner: Option<WaitSpinner>,
+    last_tick: Option<std::time::Instant>,
     subagent_mode: Option<ChatStreamKind>,
     subagent_reasoning_chars: usize,
     subagent_reasoning_lines: usize,
@@ -112,6 +113,7 @@ impl StreamRenderer {
             last_tool_summary: String::new(),
             live_summary: io::stdout().is_terminal(),
             wait_spinner: None,
+            last_tick: None,
             subagent_mode: None,
             subagent_reasoning_chars: 0,
             subagent_reasoning_lines: 0,
@@ -128,6 +130,22 @@ impl StreamRenderer {
             t("thinking", "思考").to_string(),
             SpinnerStyle::Scanner,
         ));
+        self.last_tick = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    pub fn tick_spinner(&mut self) -> Result<()> {
+        if let Some(spinner) = &mut self.wait_spinner {
+            let now = std::time::Instant::now();
+            let should_tick = self
+                .last_tick
+                .map(|last| now.duration_since(last) >= SPINNER_INTERVAL)
+                .unwrap_or(true);
+            if should_tick {
+                spinner.tick()?;
+                self.last_tick = Some(now);
+            }
+        }
         Ok(())
     }
 
@@ -774,7 +792,7 @@ impl StreamRenderer {
     }
 
     fn set_waiting_phase(&mut self, phase: String) {
-        if let Some(spinner) = &self.wait_spinner {
+        if let Some(spinner) = &mut self.wait_spinner {
             spinner.set_phase(phase);
         }
     }
@@ -789,6 +807,7 @@ impl StreamRenderer {
         }
         if self.wait_spinner.is_none() {
             self.wait_spinner = Some(WaitSpinner::start(phase, SpinnerStyle::Scanner));
+            self.last_tick = Some(std::time::Instant::now());
         } else {
             self.set_waiting_phase(phase);
         }
@@ -815,17 +834,18 @@ impl StreamRenderer {
         }
         if self.wait_spinner.is_none() {
             self.wait_spinner = Some(WaitSpinner::start(header, SpinnerStyle::Braille));
+            self.last_tick = Some(std::time::Instant::now());
         } else {
             self.set_waiting_phase(header);
         }
-        if let Some(spinner) = &self.wait_spinner {
+        if let Some(spinner) = &mut self.wait_spinner {
             spinner.set_sub_phase(sub);
         }
         Ok(())
     }
 
     fn set_tool_waiting_phase(&mut self, header: &str, sub: Option<&str>) {
-        if let Some(spinner) = &self.wait_spinner {
+        if let Some(spinner) = &mut self.wait_spinner {
             spinner.set_phase(header.to_string());
             spinner.set_sub_phase(sub.map(|s| s.to_string()));
         }
@@ -835,6 +855,7 @@ impl StreamRenderer {
         if let Some(mut spinner) = self.wait_spinner.take() {
             spinner.stop()?;
         }
+        self.last_tick = None;
         Ok(())
     }
 }
@@ -1863,8 +1884,8 @@ fn write_todo_table(stdout: &mut io::Stdout, output: &str) -> Result<bool> {
 
     if todos.is_empty() {
         let lines = vec![
-            "| #Todo |".to_string(),
-            "|--- |".to_string(),
+            format!("| {} |", t("Todo List", "任务列表")),
+            "|---|".to_string(),
             format!("| {} |", t("empty", "空")),
         ];
         write!(stdout, "{}", render_todo_table(&lines))?;
@@ -1872,8 +1893,8 @@ fn write_todo_table(stdout: &mut io::Stdout, output: &str) -> Result<bool> {
     }
 
     let mut lines = vec![
-        "| #Todo |".to_string(),
-        "|--- |".to_string(),
+        format!("| {} |", t("Todo List", "任务列表")),
+        "|---|".to_string(),
     ];
     for item in todos {
         let status = item
@@ -1884,10 +1905,16 @@ fn write_todo_table(stdout: &mut io::Stdout, output: &str) -> Result<bool> {
             .get("content")
             .and_then(Value::as_str)
             .unwrap_or("");
+        let cell = escape_table_cell(content);
+        let cell = if status == "in_progress" {
+            format!("{TERTIARY_STYLE}{cell}{RESET}")
+        } else {
+            cell
+        };
         lines.push(format!(
             "| {} {} |",
             todo_status_marker(status),
-            escape_table_cell(content)
+            cell
         ));
     }
     write!(stdout, "{}", render_todo_table(&lines))?;
@@ -1909,7 +1936,7 @@ fn todo_status_marker(status: &str) -> &'static str {
 
 fn escape_table_cell(value: &str) -> String {
     value
-        .replace('|', "\|")
+        .replace('|', "\\|")
         .replace('\n', " ")
         .trim()
         .to_string()
@@ -2180,7 +2207,7 @@ mod tests {
     fn todo_output_uses_single_column_rendered_table() {
         let output = render_todo_table(&[
             "| #Todo |".to_string(),
-            "|--- |".to_string(),
+            "|---|".to_string(),
             "| [·] 修复 todo 表格渲染 |".to_string(),
             "| [ ] 补充单元测试 |".to_string(),
             "| [✔] 跑 cargo test |".to_string(),
@@ -2220,7 +2247,7 @@ mod tests {
 
         let lines = [
             "| #Todo |".to_string(),
-            "|--- |".to_string(),
+            "|---|".to_string(),
             "| [✔] 把冰箱门打开 |".to_string(),
             "| [·] 把冰箱门关上 |".to_string(),
         ];

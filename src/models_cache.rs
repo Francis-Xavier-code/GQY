@@ -131,6 +131,7 @@ pub fn supports_vision(provider_id: &str, model_id: &str) -> Option<bool> {
     Some(input.iter().any(|m| m == "image"))
 }
 
+#[allow(dead_code)]
 pub fn refresh_blocking(paths: &crate::paths::MiyuPaths) -> Result<()> {
     let path = cache_file(paths);
     let data = fetch_and_cache(&path)?;

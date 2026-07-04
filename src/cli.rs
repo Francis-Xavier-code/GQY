@@ -1279,6 +1279,12 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
     }
     let result = run_chat_with_options(paths, message, None, false, AgentMode::Yolo).await;
     drain_stdin();
+    if let Err(err) = &result {
+        println!(
+            "\x1b[31m{}: {err}\x1b[0m",
+            t("error", "错误")
+        );
+    }
     result
 }
 
@@ -2704,12 +2710,23 @@ fn build_tool_registry(
 
 fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) -> Result<()> {
     match event {
-        AgentEvent::Chunk(chunk) => renderer.write_chunk(chunk),
-        AgentEvent::ToolCall { name, arguments } => renderer.write_tool_call(&name, &arguments),
-        AgentEvent::ToolResult { name, ok, output } => {
-            renderer.write_tool_result(&name, ok, &output)
+        AgentEvent::Chunk(chunk) => {
+            renderer.write_chunk(chunk)?;
+            renderer.tick_spinner()
         }
-        AgentEvent::ToolProgress { name, message } => renderer.write_tool_progress(&name, &message),
+        AgentEvent::ToolCall { name, arguments } => {
+            renderer.write_tool_call(&name, &arguments)?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::ToolResult { name, ok, output } => {
+            renderer.write_tool_result(&name, ok, &output)?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::ToolProgress { name, message } => {
+            renderer.write_tool_progress(&name, &message)?;
+            renderer.tick_spinner()
+        }
         AgentEvent::ExternalOutput => renderer.prepare_for_external_output(),
+        AgentEvent::SpinnerTick => renderer.tick_spinner(),
     }
 }

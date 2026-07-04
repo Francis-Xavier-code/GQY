@@ -10,7 +10,19 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn gen_tool_call_id() -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let n = TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("call_{ts}_{n}")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderProtocol {
@@ -123,6 +135,7 @@ impl OpenAiCompatibleClient {
             );
         }
 
+        let dsml = dsml_enabled_for(&self.provider);
         let mut buffer = String::new();
         let mut content = String::new();
         let mut content_emitted = 0usize;
@@ -153,6 +166,7 @@ impl OpenAiCompatibleClient {
                             reasoning,
                             usage,
                             tool_calls.finish(),
+                            dsml,
                         );
                     }
                 }
@@ -170,7 +184,7 @@ impl OpenAiCompatibleClient {
                 &mut on_chunk,
             )?;
         }
-        finalize_stream_result(content, reasoning, usage, tool_calls.finish())
+        finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)
     }
 
     async fn chat_anthropic_stream<F>(
@@ -212,6 +226,7 @@ impl OpenAiCompatibleClient {
             );
         }
 
+        let dsml = dsml_enabled_for(&self.provider);
         let mut state = AnthropicStreamState::default();
         let mut buffer = SseBuffer::default();
         let mut stream = response.bytes_stream();
@@ -224,6 +239,7 @@ impl OpenAiCompatibleClient {
                         state.reasoning,
                         state.usage,
                         state.tool_calls.finish(),
+                        dsml,
                     );
                 }
             }
@@ -236,6 +252,7 @@ impl OpenAiCompatibleClient {
             state.reasoning,
             state.usage,
             state.tool_calls.finish(),
+            dsml,
         )
     }
 
@@ -280,6 +297,7 @@ impl OpenAiCompatibleClient {
             );
         }
 
+        let dsml = dsml_enabled_for(&self.provider);
         let mut buffer = String::new();
         let mut content = String::new();
         let mut content_emitted = 0usize;
@@ -306,12 +324,18 @@ impl OpenAiCompatibleClient {
                     &mut tool_calls,
                     &mut *on_chunk,
                 )? {
-                    return finalize_stream_result(content, reasoning, usage, tool_calls.finish())
-                        .map(Some);
+                    return finalize_stream_result(
+                        content,
+                        reasoning,
+                        usage,
+                        tool_calls.finish(),
+                        dsml,
+                    )
+                    .map(Some);
                 }
             }
         }
-        finalize_stream_result(content, reasoning, usage, tool_calls.finish()).map(Some)
+        finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml).map(Some)
     }
 
     fn uses_openai_responses(&self) -> bool {
@@ -942,8 +966,7 @@ impl AnthropicToolAccumulator {
         while self.calls.len() <= index {
             self.calls.push(PartialToolCall::default());
         }
-        let call = &mut self.calls[index];
-        call.id = block.id.unwrap_or_else(|| format!("tool-{index}"));
+        let call = &mut self.calls[index];        call.id = block.id.unwrap_or_else(|| format!("tool-{index}"));
         call.kind = "function".to_string();
         call.name = block.name.unwrap_or_default();
     }
@@ -959,17 +982,24 @@ impl AnthropicToolAccumulator {
         self.calls
             .into_iter()
             .filter(|call| !call.name.trim().is_empty())
-            .map(|call| ToolCall {
-                id: call.id,
-                kind: if call.kind.is_empty() {
-                    "function".to_string()
+            .map(|call| {
+                let id = if call.id.is_empty() {
+                    gen_tool_call_id()
                 } else {
-                    call.kind
-                },
-                function: ToolCallFunction {
-                    name: call.name,
-                    arguments: call.arguments,
-                },
+                    call.id
+                };
+                ToolCall {
+                    id,
+                    kind: if call.kind.is_empty() {
+                        "function".to_string()
+                    } else {
+                        call.kind
+                    },
+                    function: ToolCallFunction {
+                        name: call.name,
+                        arguments: call.arguments,
+                    },
+                }
             })
             .collect()
     }
@@ -1036,13 +1066,20 @@ impl ResponsesToolAccumulator {
         self.calls
             .into_iter()
             .filter(|call| !call.name.trim().is_empty())
-            .map(|call| ToolCall {
-                id: call.id,
-                kind: call.kind,
-                function: ToolCallFunction {
-                    name: call.name,
-                    arguments: call.arguments,
-                },
+            .map(|call| {
+                let id = if call.id.is_empty() {
+                    gen_tool_call_id()
+                } else {
+                    call.id
+                };
+                ToolCall {
+                    id,
+                    kind: call.kind,
+                    function: ToolCallFunction {
+                        name: call.name,
+                        arguments: call.arguments,
+                    },
+                }
             })
             .collect()
     }
@@ -1085,17 +1122,24 @@ impl ToolCallAccumulator {
         self.calls
             .into_iter()
             .filter(|call| !call.name.trim().is_empty())
-            .map(|call| ToolCall {
-                id: call.id,
-                kind: if call.kind.is_empty() {
-                    "function".to_string()
+            .map(|call| {
+                let id = if call.id.is_empty() {
+                    gen_tool_call_id()
                 } else {
-                    call.kind
-                },
-                function: ToolCallFunction {
-                    name: call.name,
-                    arguments: call.arguments,
-                },
+                    call.id
+                };
+                ToolCall {
+                    id,
+                    kind: if call.kind.is_empty() {
+                        "function".to_string()
+                    } else {
+                        call.kind
+                    },
+                    function: ToolCallFunction {
+                        name: call.name,
+                        arguments: call.arguments,
+                    },
+                }
             })
             .collect()
     }
@@ -1640,13 +1684,30 @@ fn finalize_stream_result(
     reasoning: String,
     usage: Option<Usage>,
     tool_calls: Vec<ToolCall>,
+    dsml_enabled: bool,
 ) -> Result<ChatResult> {
     let content = clean_plain_text(content);
-    let (content, mut dsml_tool_calls) = extract_dsml_tool_calls(content);
-    let content = strip_orphaned_dsml_tags(content);
+    let (content, mut dsml_tool_calls) = if dsml_enabled {
+        extract_dsml_tool_calls(content)
+    } else {
+        (content, Vec::new())
+    };
+    let content = if dsml_enabled {
+        strip_orphaned_dsml_tags(content)
+    } else {
+        content
+    };
     let reasoning = clean_plain_text(reasoning);
-    let (reasoning, reasoning_dsml_tool_calls) = extract_dsml_tool_calls(reasoning);
-    let reasoning = strip_orphaned_dsml_tags(reasoning);
+    let (reasoning, reasoning_dsml_tool_calls) = if dsml_enabled {
+        extract_dsml_tool_calls(reasoning)
+    } else {
+        (reasoning, Vec::new())
+    };
+    let reasoning = if dsml_enabled {
+        strip_orphaned_dsml_tags(reasoning)
+    } else {
+        reasoning
+    };
     dsml_tool_calls.extend(reasoning_dsml_tool_calls);
     let (content, tag_reasoning) = clean_response_content(content);
     let reasoning = if reasoning.trim().is_empty() {
@@ -1674,6 +1735,12 @@ fn finalize_stream_result(
         usage,
         tool_calls,
     })
+}
+
+fn dsml_enabled_for(provider: &ProviderConfig) -> bool {
+    let base_url = provider.base_url.to_ascii_lowercase();
+    let model = provider.default_model.to_ascii_lowercase();
+    base_url.contains("taotoken.net") && model.starts_with("glm")
 }
 
 const DSML_ANY_PREFIX: &str = "<｜｜DSML";

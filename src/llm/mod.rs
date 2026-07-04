@@ -75,9 +75,19 @@ impl ChatMessage {
     }
 
     pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
+        let text = content.into();
+        let has_tool_calls = tool_calls
+            .as_ref()
+            .map(|c| !c.is_empty())
+            .unwrap_or(false);
+        let content = if text.trim().is_empty() && has_tool_calls {
+            None
+        } else {
+            Some(ChatContent::Text(text))
+        };
         Self {
             role: "assistant".to_string(),
-            content: Some(ChatContent::Text(content.into())),
+            content,
             tool_call_id: None,
             tool_calls,
         }
