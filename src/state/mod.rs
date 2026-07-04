@@ -1,34 +1,41 @@
+mod conversation_db;
 mod usage;
 
 use crate::llm::Usage;
 use crate::paths::MiyuPaths;
 use anyhow::Result;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+#[allow(unused_imports)]
+pub use conversation_db::{
+    interrupted_text, pending_placeholder, ConversationDb, Turn, TurnStatus,
+};
 
 #[derive(Debug, Clone)]
 pub struct StateStore {
     state_dir: PathBuf,
+    conv_db: Arc<ConversationDb>,
 }
 
 impl StateStore {
     pub fn new(paths: &MiyuPaths) -> Result<Self> {
-        Ok(Self {
-            state_dir: paths.state_dir.clone(),
-        })
+        let state_dir = paths.state_dir.clone();
+        let conv_db = Arc::new(ConversationDb::open(&state_dir)?);
+        Ok(Self { state_dir, conv_db })
     }
 
     pub fn init_files(&self) -> Result<()> {
         std::fs::create_dir_all(&self.state_dir)?;
-        touch(self.conversation_file())?;
         if !self.usage_file().exists() {
             std::fs::write(self.usage_file(), "{\n  \"requests\": 0,\n  \"prompt_tokens\": 0,\n  \"completion_tokens\": 0,\n  \"total_tokens\": 0\n}\n")?;
         }
-        touch(self.log_file())?;
+        if !self.log_file().exists() {
+            touch(self.log_file())?;
+        }
         if !self.profile_file().exists() {
             std::fs::write(self.profile_file(), "# Miyu Profile\n\n")?;
         }
@@ -41,78 +48,71 @@ impl StateStore {
         let file = self.prompt_fingerprint_file();
         let previous = std::fs::read_to_string(&file).unwrap_or_default();
         if previous.trim() != fingerprint {
-            std::fs::write(self.conversation_file(), "")?;
+            self.conv_db.reset()?;
             std::fs::write(file, format!("{fingerprint}\n"))?;
         }
         Ok(())
     }
 
-    pub fn append_message(&self, role: &str, content: &str) -> Result<()> {
-        self.append_entry(role, content, None)
+    #[allow(dead_code)]
+    pub fn conv_db(&self) -> &ConversationDb {
+        &self.conv_db
     }
 
-    pub fn append_assistant_message(&self, content: &str, reasoning: Option<&str>) -> Result<()> {
-        self.append_entry("assistant", content, reasoning)
+    pub fn start_turn(&self, turn_id: &str, user_content: &str) -> Result<()> {
+        self.conv_db.start_turn(turn_id, user_content)
     }
 
-    pub fn append_tool_report_context(&self, tool_name: &str, report: &str) -> Result<()> {
-        self.append_assistant_message(
+    pub fn complete_turn(
+        &self,
+        turn_id: &str,
+        content: &str,
+        reasoning: Option<&str>,
+    ) -> Result<()> {
+        self.conv_db.complete_turn(turn_id, content, reasoning)
+    }
+
+    pub fn interrupt_turn(&self, turn_id: &str) -> Result<()> {
+        self.conv_db.interrupt_turn(turn_id)
+    }
+
+    pub fn append_tool_report_context(&self, turn_id: &str, tool_name: &str, report: &str) -> Result<()> {
+        self.conv_db.append_tool_report(
+            turn_id,
             &format!(
                 "<previous_tool_report name=\"{tool_name}\">\n{}\n</previous_tool_report>",
                 report.trim()
             ),
-            None,
         )
     }
 
     pub fn mark_interrupted_turn_if_needed(&self) -> Result<bool> {
-        let entries = self.load_conversation()?;
-        if !matches!(entries.last(), Some(entry) if entry.role == "user") {
-            return Ok(false);
-        }
-        self.append_assistant_message(
-            "上一轮响应已中断，未完成。不要继续执行上一轮任务，除非用户重新要求。",
-            None,
-        )?;
-        Ok(true)
+        Ok(false)
     }
 
-    fn append_entry(&self, role: &str, content: &str, reasoning: Option<&str>) -> Result<()> {
-        self.init_files()?;
-        let entry = ConversationEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            role,
-            content,
-            reasoning,
-        };
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.conversation_file())?;
-        writeln!(file, "{}", serde_json::to_string(&entry)?)?;
-        Ok(())
+    pub fn recover_stale_turns(&self) -> Result<usize> {
+        self.conv_db.recover_stale_running_turns()
     }
 
     pub fn history(&self, limit: usize) -> Result<Vec<StoredConversationEntry>> {
-        let mut entries = self.load_conversation()?;
+        let turns = self.conv_db.load_turns()?;
+        let mut entries = turns_to_entries(turns);
         let start = entries.len().saturating_sub(limit);
         Ok(entries.split_off(start))
     }
 
     pub fn load_conversation(&self) -> Result<Vec<StoredConversationEntry>> {
-        self.init_files()?;
-        let file = OpenOptions::new()
-            .read(true)
-            .open(self.conversation_file())?;
-        let mut entries = Vec::new();
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            entries.push(serde_json::from_str(&line)?);
-        }
-        Ok(entries)
+        let turns = self.conv_db.load_turns()?;
+        Ok(turns_to_entries(turns))
+    }
+
+    #[allow(dead_code)]
+    pub fn load_turns(&self) -> Result<Vec<Turn>> {
+        self.conv_db.load_turns()
+    }
+
+    pub fn load_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
+        self.conv_db.load_turns_excluding(exclude_turn_id)
     }
 
     pub fn trim_conversation_to_budget(
@@ -121,49 +121,28 @@ impl StateStore {
         trim_at_ratio: f32,
         trim_batch_ratio: f32,
     ) -> Result<Vec<StoredConversationEntry>> {
-        let entries = self.load_conversation()?;
+        let turns = self.conv_db.load_turns()?;
         let trigger = (max_chars as f32 * trim_at_ratio).max(1.0) as usize;
-        let mut total = conversation_chars(&entries);
+        let mut total: usize = turns.iter().map(|t| turn_chars(t)).sum();
         if total <= trigger {
             return Ok(Vec::new());
         }
-        let target =
-            max_chars.saturating_sub((max_chars as f32 * trim_batch_ratio).max(1.0) as usize);
+        let target = max_chars.saturating_sub((max_chars as f32 * trim_batch_ratio).max(1.0) as usize);
         let mut start = 0usize;
-        while start < entries.len() && total > target {
-            total = total.saturating_sub(entry_chars(&entries[start]));
+        while start < turns.len() && total > target {
+            total = total.saturating_sub(turn_chars(&turns[start]));
             start += 1;
         }
-        let evicted = entries[..start].to_vec();
-        self.rewrite_conversation(&entries[start..])?;
+        let evicted = turns_to_entries(self.conv_db.trim_oldest_turns(start)?);
         Ok(evicted)
     }
 
     pub fn reset_conversation(&self) -> Result<()> {
-        self.init_files()?;
-        std::fs::write(self.conversation_file(), "")?;
-        Ok(())
+        self.conv_db.reset()
     }
 
     pub fn undo_last_turn(&self) -> Result<(usize, Option<String>)> {
-        let mut entries = self.load_conversation()?;
-        let original_len = entries.len();
-        let mut prompt = None;
-        while matches!(entries.last(), Some(entry) if entry.role != "assistant") {
-            entries.pop();
-        }
-        if matches!(entries.last(), Some(entry) if entry.role == "assistant") {
-            entries.pop();
-        }
-        if matches!(entries.last(), Some(entry) if entry.role == "user") {
-            prompt = entries.last().map(|entry| entry.content.clone());
-            entries.pop();
-        }
-        let removed = original_len.saturating_sub(entries.len());
-        if removed > 0 {
-            self.rewrite_conversation(&entries)?;
-        }
-        Ok((removed, prompt))
+        self.conv_db.undo_last_turn()
     }
 
     pub fn add_usage(&self, usage: &Usage) -> Result<()> {
@@ -171,21 +150,31 @@ impl StateStore {
         usage::add_usage(&self.usage_file(), usage)
     }
 
-    fn conversation_file(&self) -> PathBuf {
-        self.state_dir.join("conversation.jsonl")
+    #[allow(dead_code)]
+    pub fn has_running_turns(&self) -> Result<bool> {
+        self.conv_db.has_running_turns()
     }
 
-    fn rewrite_conversation(&self, entries: &[StoredConversationEntry]) -> Result<()> {
-        self.init_files()?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(self.conversation_file())?;
-        for entry in entries {
-            writeln!(file, "{}", serde_json::to_string(entry)?)?;
-        }
-        Ok(())
+    #[allow(dead_code)]
+    pub fn running_turn_summaries(&self) -> Result<Vec<String>> {
+        self.conv_db.running_turn_summaries()
+    }
+
+    pub fn running_turn_summaries_excluding(
+        &self,
+        exclude_turn_id: &str,
+    ) -> Result<Vec<String>> {
+        self.conv_db.running_turn_summaries_excluding(exclude_turn_id)
+    }
+
+    #[allow(dead_code)]
+    pub fn migrate_from_jsonl(&self) -> Result<usize> {
+        let jsonl_path = self.conversation_file();
+        self.conv_db.migrate_from_jsonl(&jsonl_path)
+    }
+
+    fn conversation_file(&self) -> PathBuf {
+        self.state_dir.join("conversation.jsonl")
     }
 
     fn usage_file(&self) -> PathBuf {
@@ -211,28 +200,48 @@ fn prompt_fingerprint(system_prompt: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn conversation_chars(entries: &[StoredConversationEntry]) -> usize {
-    entries.iter().map(entry_chars).sum()
-}
-
-fn entry_chars(entry: &StoredConversationEntry) -> usize {
-    entry.role.chars().count()
-        + entry.content.chars().count()
-        + entry
-            .reasoning
+fn turn_chars(turn: &Turn) -> usize {
+    turn.user_content.chars().count()
+        + turn.assistant_content.chars().count()
+        + turn
+            .assistant_reasoning
             .as_deref()
             .map(str::chars)
             .map(Iterator::count)
             .unwrap_or(0)
+        + turn
+            .tool_reports
+            .iter()
+            .map(|r| r.chars().count())
+            .sum::<usize>()
 }
 
-#[derive(Serialize)]
-struct ConversationEntry<'a> {
-    timestamp: String,
-    role: &'a str,
-    content: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<&'a str>,
+fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {
+    let mut entries = Vec::with_capacity(turns.len() * 3);
+    for turn in turns {
+        let ts = turn.assistant_timestamp.clone().unwrap_or_default();
+        entries.push(StoredConversationEntry {
+            timestamp: turn.user_timestamp,
+            role: "user".to_string(),
+            content: turn.user_content,
+            reasoning: None,
+        });
+        entries.push(StoredConversationEntry {
+            timestamp: ts.clone(),
+            role: "assistant".to_string(),
+            content: turn.assistant_content,
+            reasoning: turn.assistant_reasoning,
+        });
+        for report in turn.tool_reports {
+            entries.push(StoredConversationEntry {
+                timestamp: ts.clone(),
+                role: "assistant".to_string(),
+                content: report,
+                reasoning: None,
+            });
+        }
+    }
+    entries
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -254,17 +263,129 @@ mod tests {
     use super::*;
 
     #[test]
-    fn marks_orphan_user_turn_as_interrupted() {
+    fn turn_lifecycle() {
         let temp = tempfile::tempdir().unwrap();
-        let store = StateStore {
-            state_dir: temp.path().to_path_buf(),
-        };
-        store.append_message("user", "old task").unwrap();
-        assert!(store.mark_interrupted_turn_if_needed().unwrap());
-        let entries = store.load_conversation().unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[1].role, "assistant");
-        assert!(entries[1].content.contains("已中断"));
-        assert!(!store.mark_interrupted_turn_if_needed().unwrap());
+        let store = StateStore::new(&MiyuPaths {
+            config_dir: temp.path().join("config"),
+            config_file: temp.path().join("config/config.jsonc"),
+            secrets_file: temp.path().join("config/secrets.jsonc"),
+            skills_dir: temp.path().join("config/skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            bash_hook_file: temp.path().join("shell/bash-hook.sh"),
+            zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
+            scripts_dir: temp.path().join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        })
+        .unwrap();
+
+        store.start_turn("turn_1", "hello").unwrap();
+        let turns = store.load_turns().unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].status, TurnStatus::Running);
+        assert_eq!(turns[0].assistant_content, pending_placeholder());
+
+        store
+            .complete_turn("turn_1", "hi there", None)
+            .unwrap();
+        let turns = store.load_turns().unwrap();
+        assert_eq!(turns[0].status, TurnStatus::Completed);
+        assert_eq!(turns[0].assistant_content, "hi there");
+    }
+
+    #[test]
+    fn interrupt_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::new(&MiyuPaths {
+            config_dir: temp.path().join("config"),
+            config_file: temp.path().join("config/config.jsonc"),
+            secrets_file: temp.path().join("config/secrets.jsonc"),
+            skills_dir: temp.path().join("config/skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            bash_hook_file: temp.path().join("shell/bash-hook.sh"),
+            zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
+            scripts_dir: temp.path().join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        })
+        .unwrap();
+
+        store.start_turn("turn_1", "do something").unwrap();
+        store.interrupt_turn("turn_1").unwrap();
+        let turns = store.load_turns().unwrap();
+        assert_eq!(turns[0].status, TurnStatus::Interrupted);
+        assert_eq!(turns[0].assistant_content, interrupted_text());
+    }
+
+    #[test]
+    fn recover_stale_running() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::new(&MiyuPaths {
+            config_dir: temp.path().join("config"),
+            config_file: temp.path().join("config/config.jsonc"),
+            secrets_file: temp.path().join("config/secrets.jsonc"),
+            skills_dir: temp.path().join("config/skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            bash_hook_file: temp.path().join("shell/bash-hook.sh"),
+            zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
+            scripts_dir: temp.path().join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        })
+        .unwrap();
+
+        store.start_turn("turn_1", "task a").unwrap();
+        store.start_turn("turn_2", "task b").unwrap();
+        assert!(store.has_running_turns().unwrap());
+
+        let recovered = store.recover_stale_turns().unwrap();
+        assert_eq!(recovered, 2);
+
+        let turns = store.load_turns().unwrap();
+        assert_eq!(turns.len(), 2);
+        assert!(turns.iter().all(|t| t.status == TurnStatus::Interrupted));
+    }
+
+    #[test]
+    fn undo_removes_last_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::new(&MiyuPaths {
+            config_dir: temp.path().join("config"),
+            config_file: temp.path().join("config/config.jsonc"),
+            secrets_file: temp.path().join("config/secrets.jsonc"),
+            skills_dir: temp.path().join("config/skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            bash_hook_file: temp.path().join("shell/bash-hook.sh"),
+            zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
+            scripts_dir: temp.path().join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        })
+        .unwrap();
+
+        store.start_turn("turn_1", "hello").unwrap();
+        store.complete_turn("turn_1", "hi", None).unwrap();
+        store.start_turn("turn_2", "bye").unwrap();
+        store.complete_turn("turn_2", "goodbye", None).unwrap();
+
+        let (removed, prompt) = store.undo_last_turn().unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(prompt.as_deref(), Some("bye"));
+
+        let turns = store.load_turns().unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn_id, "turn_1");
     }
 }

@@ -19,6 +19,46 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+pub struct PendingTurnGuard {
+    state: StateStore,
+    turn_id: String,
+    completed: bool,
+}
+
+impl PendingTurnGuard {
+    pub fn new(state: StateStore, turn_id: String) -> Self {
+        Self {
+            state,
+            turn_id,
+            completed: false,
+        }
+    }
+
+    pub fn complete(mut self, content: &str, reasoning: Option<&str>) -> Result<()> {
+        self.state
+            .complete_turn(&self.turn_id, content, reasoning)?;
+        self.completed = true;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn interrupt(&mut self) -> Result<()> {
+        if !self.completed {
+            self.state.interrupt_turn(&self.turn_id)?;
+            self.completed = true;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PendingTurnGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            let _ = self.state.interrupt_turn(&self.turn_id);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum AgentMode {
     Yolo,
@@ -97,6 +137,7 @@ impl Agent {
         }
         if mode == AgentMode::Yolo {
             state.reset_if_prompt_changed(&base_system_prompt)?;
+            state.recover_stale_turns()?;
         }
         let system_prompt = with_current_time(base_system_prompt, mode);
         let context_chars = config.active_context_chars()?;
@@ -186,8 +227,17 @@ impl Agent {
         } else {
             input
         };
-        self.state.append_message("user", &input)?;
-        let mut messages = self.chat_messages()?;
+        let turn_id = format!(
+            "turn_{}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            rand::random::<u16>()
+        );
+        self.state.start_turn(&turn_id, &input)?;
+        let guard = PendingTurnGuard::new(self.state.clone(), turn_id.clone());
+        let mut messages = self.chat_messages(&turn_id, &input)?;
         if !binary_images.is_empty() && self.current_model_supports_vision() {
             if let Some(last) = messages.last_mut() {
                 if last.role == "user" {
@@ -291,11 +341,11 @@ impl Agent {
             memes::render_auto_meme(&self.config, &self.paths, &plan.event).await?;
             memes::record_auto_meme_event(&self.config, &self.paths, &plan.event)?;
         }
-        self.state
-            .append_assistant_message(&result.content, result.reasoning.as_deref())?;
         for (tool_name, report) in persisted_tool_reports {
-            self.state.append_tool_report_context(&tool_name, &report)?;
+            self.state
+                .append_tool_report_context(&turn_id, &tool_name, &report)?;
         }
+        guard.complete(&result.content, result.reasoning.as_deref())?;
         self.memory.process_after_turn(&input, &result.content)?;
         if let Some(usage) = &result.usage {
             self.state.add_usage(usage)?;
@@ -629,16 +679,26 @@ impl Agent {
         Ok(Some(ChatMessage::plain("user", description)))
     }
 
-    fn chat_messages(&self) -> Result<Vec<ChatMessage>> {
+    fn chat_messages(&self, current_turn_id: &str, current_input: &str) -> Result<Vec<ChatMessage>> {
         let mut messages = vec![ChatMessage::system(self.system_prompt.clone())];
         if let Some(summary) = memes::last_auto_meme_reminder(&self.config, &self.paths)? {
             messages.push(ChatMessage::system(summary));
         }
-        for entry in self.state.load_conversation()? {
-            if entry.role == "user" || entry.role == "assistant" {
-                messages.push(ChatMessage::plain(entry.role, entry.content));
+        let turns = self.state.load_turns_excluding(current_turn_id)?;
+        let running_summaries: Vec<String> =
+            self.state.running_turn_summaries_excluding(current_turn_id)?;
+        for turn in &turns {
+            messages.push(ChatMessage::plain("user", &turn.user_content));
+            messages.push(ChatMessage::plain("assistant", &turn.assistant_content));
+            for report in &turn.tool_reports {
+                messages.push(ChatMessage::plain("assistant", report));
             }
         }
+        if !running_summaries.is_empty() {
+            let hint = format_parallel_focus_hint(&running_summaries);
+            messages.push(ChatMessage::system(hint));
+        }
+        messages.push(ChatMessage::plain("user", current_input));
         Ok(messages)
     }
 }
@@ -776,6 +836,26 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
         text.replace_range(start..end, "");
     }
     text
+}
+
+fn format_parallel_focus_hint(running_summaries: &[String]) -> String {
+    let list = running_summaries
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("  {}. {}", i + 1, truncate(s, 80)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "<parallel-focus>\n你当前还有这些正在由另一条对话线处理的注意力焦点，它们尚未完成：\n{list}\n不要替这些轮次继续生成最终回答；请根据当前用户输入继续。\n</parallel-focus>"
+    )
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(max.saturating_sub(3)).collect::<String>())
+    }
 }
 
 #[cfg(test)]

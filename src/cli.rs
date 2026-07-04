@@ -2565,9 +2565,9 @@ mod repl_input_tests {
             system_scripts_dir: PathBuf::new(),
         };
         let state = StateStore::new(&paths).unwrap();
-        state.append_message("user", "first").unwrap();
-        state.append_assistant_message("reply", None).unwrap();
-        state.append_message("user", "\x1b[Esecond").unwrap();
+        state.start_turn("turn_1", "first").unwrap();
+        state.complete_turn("turn_1", "reply", None).unwrap();
+        state.start_turn("turn_2", "second").unwrap();
 
         assert_eq!(
             load_repl_input_history(&state).unwrap(),
