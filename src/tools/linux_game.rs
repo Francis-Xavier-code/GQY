@@ -1,3 +1,4 @@
+use super::subagent_runner::format_token_count;
 use super::{readable_tool_name, ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
 use crate::i18n::is_zh;
@@ -65,6 +66,23 @@ impl GameProgress {
         if self.mode != ProgressMode::Hidden {
             self.progress.report(format!("__subagent_reasoning__{}", text));
         }
+    }
+
+    fn report_stats(&self, stats: &GameStats) {
+        let text = if is_zh() {
+            format!(
+                "工具调用 {} 次　消耗 Token {}",
+                stats.tool_calls,
+                format_token_count(stats.token_estimate, false)
+            )
+        } else {
+            format!(
+                "tool calls: {}　token cost: {}",
+                stats.tool_calls,
+                format_token_count(stats.token_estimate, false)
+            )
+        };
+        self.progress.report(format!("__subagent_stats__{text}"));
     }
 }
 
@@ -214,6 +232,7 @@ async fn deep_research_linux_game_compatibility(
         result.usage.as_ref(),
         &[system_prompt, &prompt, &result.content],
     );
+    progress.report_stats(&stats);
     let report = strip_report_preamble(&result.content);
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,
