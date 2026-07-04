@@ -2,6 +2,7 @@ mod alarm;
 mod archlinux;
 mod calculator;
 mod caniplayonlinux_query;
+mod clipboard;
 mod deep_diagnose;
 mod deep_research;
 mod deepseek_status;
@@ -83,6 +84,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "get_current_time" => "当前时间",
         "check_issue" => "检查问题",
         "check_os_info" => "查看系统信息",
+        "read_clipboard" => "读取剪贴板",
         "web_search" => "网页搜索",
         "web_fetch" => "读取网页",
         "fcitx5_input_method_wiki_qurey" => "查询 Fcitx5 Wiki",
@@ -168,6 +170,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     edit_replace::register(&mut registry);
     todowrite::register(&mut registry);
     alarm::register(&mut registry, paths.clone());
+    clipboard::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
     weather::register(&mut registry);
@@ -239,6 +242,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
 pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     default_tools::register_readonly(&mut registry);
+    clipboard::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
     caniplayonlinux_query::register(&mut registry);
@@ -254,6 +258,9 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     }
     if config.plugins.web_images.enabled {
         web_images::register(&mut registry, config.clone(), paths.clone(), false);
+    }
+    if config.plugins.vision.enabled {
+        vision::register(&mut registry, config.clone(), paths.clone(), true);
     }
     if config.plugins.knowledge_base.enabled {
         knowledge_base::register_readonly(&mut registry, config.clone(), paths.clone());

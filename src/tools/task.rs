@@ -18,6 +18,7 @@ const EXPLORE_ALLOWED: &[&str] = &[
     "grep",
     "search_text",
     "check_os_info",
+    "read_clipboard",
     "web_fetch",
     "web_search",
 ];

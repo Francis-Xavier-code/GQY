@@ -8,14 +8,15 @@ use crate::llm::{
 };
 use crate::memory::{EvictedTurn, MemoryStore};
 use crate::paths::MiyuPaths;
-use crate::state::StateStore;
 use crate::render::wait_spinner::SPINNER_INTERVAL;
+use crate::state::StateStore;
 use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use chrono::Local;
+use serde_json::Value;
 use std::io::IsTerminal;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -394,7 +395,8 @@ impl Agent {
                 Vec::new()
             };
 
-            let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<ChatStreamChunk>();
+            let (chunk_tx, mut chunk_rx) =
+                tokio::sync::mpsc::unbounded_channel::<ChatStreamChunk>();
             let llm_future = self
                 .client
                 .chat_stream(messages.clone(), definitions, move |chunk| {
@@ -402,8 +404,7 @@ impl Agent {
                     Ok(())
                 });
             tokio::pin!(llm_future);
-            let mut spinner_interval =
-                tokio::time::interval(SPINNER_INTERVAL);
+            let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
             spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             spinner_interval.tick().await;
             let result = loop {
@@ -438,8 +439,7 @@ impl Agent {
                 {
                     let tools = self.tools.lock().unwrap();
                     if self.mode == AgentMode::Plan
-                        && tools.permission(&call.function.name)?
-                            != ToolPermission::ReadOnly
+                        && tools.permission(&call.function.name)? != ToolPermission::ReadOnly
                     {
                         bail!(
                             "Plan mode blocked non-read-only tool: {}",
@@ -482,11 +482,10 @@ impl Agent {
                     }
                 };
                 tokio::pin!(tool_future);
-                let mut spinner_interval =
-                    tokio::time::interval(SPINNER_INTERVAL);
+                let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
                 spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 spinner_interval.tick().await;
-                let output = loop {
+                let (output, tool_succeeded) = loop {
                     tokio::select! {
                         result = &mut tool_future => {
                             break match result {
@@ -497,19 +496,7 @@ impl Agent {
                                             message,
                                         })?;
                                     }
-                                    on_event(AgentEvent::ToolResult {
-                                        name: call.function.name.clone(),
-                                        ok: true,
-                                        output: output.clone(),
-                                    })?;
-                                    if let Some(report) = extract_persistable_tool_report(
-                                        &call.function.name,
-                                        &output,
-                                    ) {
-                                        persisted_tool_reports
-                                            .push((call.function.name.clone(), report));
-                                    }
-                                    output
+                                    (output, true)
                                 }
                                 Err(err) => {
                                     while let Ok(message) = progress_rx.try_recv() {
@@ -523,7 +510,7 @@ impl Agent {
                                         ok: false,
                                         output: format!("tool error: {err}"),
                                     })?;
-                                    format!("tool error: {err}")
+                                    (format!("tool error: {err}"), false)
                                 }
                             };
                         }
@@ -538,9 +525,108 @@ impl Agent {
                         }
                     }
                 };
-                messages.push(ChatMessage::tool(call.id, output));
+                let clipboard_image = if tool_succeeded {
+                    clipboard_binary_image_from_tool_result(&call.function.name, &output)
+                } else {
+                    None
+                };
+                messages.push(ChatMessage::tool(call.id, output.clone()));
+                if let Some(img) = clipboard_image {
+                    let supports_vision = self.current_model_supports_vision();
+                    let uses_vision_fallback =
+                        !supports_vision && self.config.plugins.vision.enabled;
+                    if !supports_vision {
+                        let message = if self.config.plugins.vision.enabled {
+                            if crate::i18n::is_zh() {
+                                "视觉分析."
+                            } else {
+                                "Vision analysis."
+                            }
+                        } else if crate::i18n::is_zh() {
+                            "当前模型不支持图片，且未启用视觉模型，无法分析剪贴板图片。"
+                        } else {
+                            "The current model does not support images and the vision plugin is disabled, so the clipboard image cannot be analyzed."
+                        };
+                        on_event(AgentEvent::ToolProgress {
+                            name: call.function.name.clone(),
+                            message: message.to_string(),
+                        })?;
+                    }
+                    let image_message = if uses_vision_fallback {
+                        let image_future = self.clipboard_image_message(img);
+                        tokio::pin!(image_future);
+                        let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
+                        spinner_interval
+                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        spinner_interval.tick().await;
+                        let mut progress_interval =
+                            tokio::time::interval(Duration::from_millis(900));
+                        progress_interval
+                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        progress_interval.tick().await;
+                        let mut progress_tick = 0usize;
+                        loop {
+                            tokio::select! {
+                                result = &mut image_future => {
+                                    break result?;
+                                }
+                                _ = progress_interval.tick() => {
+                                    progress_tick = progress_tick.wrapping_add(1);
+                                    on_event(AgentEvent::ToolProgress {
+                                        name: call.function.name.clone(),
+                                        message: vision_analysis_progress(progress_tick),
+                                    })?;
+                                }
+                                _ = spinner_interval.tick() => {
+                                    on_event(AgentEvent::SpinnerTick)?;
+                                }
+                            }
+                        }
+                    } else {
+                        self.clipboard_image_message(img).await?
+                    };
+                    if let Some(message) = image_message {
+                        messages.push(message);
+                    }
+                }
+                if tool_succeeded {
+                    on_event(AgentEvent::ToolResult {
+                        name: call.function.name.clone(),
+                        ok: true,
+                        output: output.clone(),
+                    })?;
+                    if let Some(report) =
+                        extract_persistable_tool_report(&call.function.name, &output)
+                    {
+                        persisted_tool_reports.push((call.function.name.clone(), report));
+                    }
+                }
             }
         }
+    }
+
+    async fn clipboard_image_message(&self, img: ClipboardImage) -> Result<Option<ChatMessage>> {
+        if self.current_model_supports_vision() {
+            return Ok(Some(ChatMessage {
+                role: "user".to_string(),
+                content: Some(ChatContent::Parts(vec![ChatContentPart::ImageUrl {
+                    image_url: ImageUrlContent {
+                        url: img.data_url(),
+                    },
+                }])),
+                tool_call_id: None,
+                tool_calls: None,
+            }));
+        }
+
+        let images = vec![&img];
+        let description = self
+            .describe_images_with_vision_provider("", &images)
+            .await?;
+        if description.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(ChatMessage::plain("user", description)))
     }
 
     fn chat_messages(&self) -> Result<Vec<ChatMessage>> {
@@ -574,6 +660,49 @@ fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<Stri
                 .map(str::to_string)
         })
         .filter(|report| !report.is_empty())
+}
+
+fn clipboard_binary_image_from_tool_result(
+    tool_name: &str,
+    output: &str,
+) -> Option<ClipboardImage> {
+    if tool_name != "read_clipboard" {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(output).ok()?;
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    if value.get("kind").and_then(Value::as_str) != Some("clipboard") {
+        return None;
+    }
+    if value.get("content_type").and_then(Value::as_str) != Some("image") {
+        return None;
+    }
+    if value.get("source").and_then(Value::as_str) != Some("clipboard_binary") {
+        return None;
+    }
+    let path = value.get("path").and_then(Value::as_str)?;
+    let mime = value
+        .get("mime")
+        .and_then(Value::as_str)
+        .unwrap_or("image/png")
+        .to_string();
+    let data = std::fs::read(path).ok()?;
+    Some(ClipboardImage { mime, data })
+}
+
+fn vision_analysis_progress(tick: usize) -> String {
+    let dots = match tick % 3 {
+        1 => ".",
+        2 => "..",
+        _ => "...",
+    };
+    if crate::i18n::is_zh() {
+        format!("视觉分析{dots}")
+    } else {
+        format!("Vision analysis{dots}")
+    }
 }
 
 fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
