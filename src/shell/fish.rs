@@ -3,8 +3,27 @@ use crate::paths::MiyuPaths;
 use anyhow::Result;
 
 pub fn hook() -> &'static str {
-    r#"function fish_command_not_found
+    r#"function __miyu_paste
+    set -l output (miyu --clipboard-paste 2>/dev/null)
+    if test $status -eq 0; and test -n "$output"
+        if not set -q __miyu_image_counter
+            set -g __miyu_image_counter 0
+        end
+        set __miyu_image_counter (math $__miyu_image_counter + 1)
+        set output (string replace "Image 1" "Image $__miyu_image_counter" -- $output)
+        commandline -i -- $output
+        commandline -f repaint
+    else
+        fish_clipboard_paste
+    end
+end
+
+bind \cv __miyu_paste
+
+function fish_command_not_found
     status is-interactive; or return 127
+
+    set -e __miyu_image_counter
 
     set -l command $argv
     if test (count $command) -eq 0
@@ -60,6 +79,20 @@ mod tests {
         assert!(hook.contains("fish_command_not_found"));
         assert!(hook.contains("--shell fish"));
         assert!(hook.contains("return 127"));
+    }
+
+    #[test]
+    fn fish_hook_defines_paste_binding() {
+        let hook = hook();
+        assert!(hook.contains("__miyu_paste"));
+        assert!(hook.contains("bind \\cv __miyu_paste"));
+        assert!(hook.contains("miyu --clipboard-paste"));
+    }
+
+    #[test]
+    fn fish_hook_resets_image_counter_on_command_not_found() {
+        let hook = hook();
+        assert!(hook.contains("set -e __miyu_image_counter"));
     }
 
     #[test]

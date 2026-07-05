@@ -41,6 +41,9 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub shell: Option<String>,
 
+    #[arg(long, hide = true)]
+    pub clipboard_paste: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 
@@ -623,6 +626,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
         let message = join_message(cli.message);
         return run_shell_intercept(&paths, shell_name, message).await;
+    }
+
+    if cli.clipboard_paste {
+        return run_clipboard_paste(&paths);
     }
 
     if !paths.config_file.exists() && !matches!(cli.command, Some(Command::Init)) {
@@ -1268,6 +1275,53 @@ async fn run_config(paths: &MiyuPaths, args: ConfigArgs) -> Result<()> {
     }
 }
 
+fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
+    match crate::clipboard::read_clipboard() {
+        Ok(crate::clipboard::ClipboardContent::Image(img)) => {
+            let path = img.write_temp_file(&paths.cache_dir, 0)?;
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("image");
+            print!("[Image 1: {}] ", filename);
+            io::stdout().flush()?;
+            Ok(())
+        }
+        Ok(crate::clipboard::ClipboardContent::ImagePath(path)) => {
+            let filename = std::path::Path::new(&path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("image");
+            let dir = paths.cache_dir.join("clipboard_images");
+            std::fs::create_dir_all(&dir)?;
+            crate::clipboard::cleanup_clipboard_images(&dir);
+            let link_path = dir.join(filename);
+            let need_create = if link_path.is_symlink() {
+                !link_path.exists()
+            } else {
+                !link_path.exists()
+            };
+            if need_create {
+                if link_path.exists() || link_path.is_symlink() {
+                    std::fs::remove_file(&link_path)?;
+                }
+                std::os::unix::fs::symlink(&path, &link_path)?;
+            }
+            print!("[Image 1: {}] ", filename);
+            io::stdout().flush()?;
+            Ok(())
+        }
+        Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+            print!("{}", path);
+            io::stdout().flush()?;
+            Ok(())
+        }
+        _ => {
+            std::process::exit(1);
+        }
+    }
+}
+
 async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: String) -> Result<()> {
     if !matches!(shell_name, "fish" | "bash" | "zsh") {
         bail!("{}: {shell_name}", t("unsupported shell", "不支持的 shell"));
@@ -1278,7 +1332,14 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
             t("not a natural language command", "不是自然语言命令")
         );
     }
-    let result = run_chat_with_options(paths, message, None, false, AgentMode::Yolo).await;
+
+    let (clean_message, pasted_images) = extract_image_placeholders(&message);
+
+    let result = if pasted_images.is_empty() {
+        run_chat_with_options(paths, clean_message, None, false, AgentMode::Yolo).await
+    } else {
+        run_chat_with_images(paths, clean_message, pasted_images).await
+    };
     drain_stdin();
     if let Err(err) = &result {
         println!(
@@ -1287,6 +1348,85 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
         );
     }
     result
+}
+
+fn extract_image_placeholders(
+    message: &str,
+) -> (String, Vec<Option<crate::clipboard::PastedImage>>) {
+    let placeholders = find_image_placeholders(message);
+    if placeholders.is_empty() {
+        return (message.to_string(), Vec::new());
+    }
+
+    let cache_images_dir = MiyuPaths::new()
+        .map(|p| p.cache_dir.join("clipboard_images"))
+        .ok();
+
+    let chars: Vec<char> = message.chars().collect();
+    let mut clean = String::new();
+    let mut images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
+    let mut last_end = 0;
+
+    for (start, end) in &placeholders {
+        clean.extend(&chars[last_end..*start]);
+        let segment: String = chars[*start..*end].iter().collect();
+        let name_str = segment
+            .strip_prefix("[Image ")
+            .and_then(|s| s.strip_prefix(|c: char| c.is_ascii_digit()))
+            .and_then(|s| s.strip_prefix(':'))
+            .and_then(|s| s.strip_suffix(']'))
+            .map(|s| s.trim().to_string());
+
+        if let Some(name_str) = name_str {
+            if let Some(dir) = &cache_images_dir {
+                let candidate = dir.join(&name_str);
+                if candidate.exists() {
+                    images.push(Some(crate::clipboard::PastedImage::Path(
+                        candidate.display().to_string(),
+                    )));
+                } else {
+                    images.push(None);
+                }
+            } else {
+                images.push(None);
+            }
+        } else {
+            images.push(None);
+        }
+        clean.push_str(&format!("[Image {}] ", images.len()));
+        last_end = *end;
+    }
+    clean.extend(&chars[last_end..]);
+
+    (clean, images)
+}
+
+async fn run_chat_with_images(
+    paths: &MiyuPaths,
+    message: String,
+    pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
+) -> Result<()> {
+    AppConfig::init_files(paths)?;
+    let config = AppConfig::load_or_default(paths)?;
+    let state = StateStore::new(paths)?;
+    state.init_files()?;
+    let client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    let registry = build_tool_registry(&config, paths, AgentMode::Yolo)?;
+    let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
+    let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+    let readable_tool_names = config.display.readable_tool_names;
+    let mut agent = Agent::new(config, paths, state, client, registry, AgentMode::Yolo)?;
+    let mut renderer =
+        render::StreamRenderer::new(reasoning_mode, tool_call_mode, false, readable_tool_names);
+    renderer.start_waiting()?;
+    let result = agent
+        .chat_stream_with_images(&message, &pasted_images, |event| {
+            handle_agent_event(&mut renderer, event)
+        })
+        .await;
+    renderer.finish()?;
+    result?;
+    Ok(())
 }
 
 fn drain_stdin() {

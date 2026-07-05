@@ -1,10 +1,11 @@
 use anyhow::Result;
 use base64::Engine;
+use sha2::Digest;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_CLIPBOARD_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const CLIPBOARD_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 pub struct ClipboardImage {
     pub mime: String,
@@ -22,21 +23,22 @@ impl ClipboardImage {
         format!("data:{};base64,{}", self.mime, encoded)
     }
 
-    pub fn write_temp_file(&self, cache_dir: &std::path::Path, index: usize) -> Result<PathBuf> {
+    pub fn write_temp_file(&self, cache_dir: &std::path::Path, _index: usize) -> Result<PathBuf> {
         let dir = cache_dir.join("clipboard_images");
         std::fs::create_dir_all(&dir)?;
+        cleanup_clipboard_images(&dir);
         let ext = self
             .mime
             .split('/')
             .nth(1)
             .filter(|e| !e.is_empty())
             .unwrap_or("png");
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let path = dir.join(format!("img_{ts}_{index}.{ext}"));
-        std::fs::write(&path, &self.data)?;
+        let hash = sha2::Sha256::digest(&self.data);
+        let short_hash = hex::encode(&hash[..4]);
+        let path = dir.join(format!("{short_hash}.{ext}"));
+        if !path.exists() {
+            std::fs::write(&path, &self.data)?;
+        }
         Ok(path)
     }
 }
@@ -196,6 +198,13 @@ pub fn parse_clipboard_path(text: &str) -> Option<ClipboardPath> {
         return None;
     }
     let raw = text.strip_prefix("file://").unwrap_or(text);
+    let raw = if text.starts_with("file://") {
+        urlencoding::decode(raw)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| raw.to_string())
+    } else {
+        raw.to_string()
+    };
     let path_str = if raw.starts_with('/') {
         raw.to_string()
     } else if let Some(rest) = raw.strip_prefix("~/") {
@@ -220,4 +229,47 @@ pub fn parse_clipboard_path(text: &str) -> Option<ClipboardPath> {
         path: path_str,
         is_image,
     })
+}
+
+pub fn cleanup_clipboard_images(dir: &Path) {
+    cleanup_clipboard_images_with_max(dir, CLIPBOARD_CACHE_MAX_BYTES);
+}
+
+fn cleanup_clipboard_images_with_max(dir: &Path, max_bytes: u64) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let mut total: u64 = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() && !meta.file_type().is_symlink() {
+            continue;
+        }
+        let size = meta.len();
+        let atime = meta.accessed().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        total += size;
+        files.push((path, size, atime));
+    }
+
+    if total <= max_bytes {
+        return;
+    }
+
+    files.sort_by(|a, b| a.2.cmp(&b.2));
+
+    for (path, size, _) in &files {
+        if total <= max_bytes {
+            break;
+        }
+        let _ = std::fs::remove_file(path);
+        total -= size;
+    }
 }
