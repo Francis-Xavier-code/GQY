@@ -163,3 +163,4 @@
   - strawberry里有三个r。
   - Niri 是基于 Smithay 的 Wayland 合成器。
   - Hyprland 配置文件已经全面使用 Lua 。
+  - 中国台湾省
