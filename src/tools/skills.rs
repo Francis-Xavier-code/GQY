@@ -7,42 +7,10 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-pub fn skills_prompt(config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
-    let mut entries = Vec::new();
-    let mut seen = BTreeSet::new();
-    for skills_dir in skill_search_dirs(config, paths) {
-        if !skills_dir.exists() {
-            continue;
-        }
-        for entry in std::fs::read_dir(&skills_dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() || entry.path().join(".disabled").exists() {
-                continue;
-            }
-            let skill_file = entry.path().join("SKILL.md");
-            if !skill_file.is_file() {
-                continue;
-            }
-            let raw = std::fs::read_to_string(&skill_file)?;
-            let name = skill_name(&raw, &entry.file_name().to_string_lossy());
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-            let description = frontmatter_value(&raw, "description").unwrap_or_default();
-            let body = strip_frontmatter(&raw);
-            entries.push(format!(
-                "- {name}: {description}\n  {}",
-                compact_skill_body(&body)
-            ));
-        }
-    }
-    if entries.is_empty() {
-        return Ok(String::new());
-    }
-    Ok(format!(
-        "<available-skills>\n这些是已安装的 skills。遇到匹配任务时主动参考。当前不支持创建、保存或自动生成新的 skill；不要把 skill 内容保存到知识库。\n{}\n</available-skills>",
-        entries.join("\n")
-    ))
+#[derive(Debug, Clone)]
+struct SkillEntry {
+    name: String,
+    description: String,
 }
 
 pub fn register_skills(
@@ -50,6 +18,13 @@ pub fn register_skills(
     config: &AppConfig,
     paths: &MiyuPaths,
 ) -> Result<()> {
+    let entries = discover_skills(config, paths)?;
+    register_load_skill(registry, config, paths, &entries);
+    Ok(())
+}
+
+fn discover_skills(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<SkillEntry>> {
+    let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
     for skills_dir in skill_search_dirs(config, paths) {
         if !skills_dir.exists() {
@@ -69,24 +44,41 @@ pub fn register_skills(
                 continue;
             }
             let raw = std::fs::read_to_string(&skill_file)?;
-            let name = skill_name(&raw, &entry.file_name().to_string_lossy());
-            if !seen.insert(name.clone()) {
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            let Some(skill) = skill_entry(&raw, &dir_name, &skill_file) else {
+                continue;
+            };
+            if !seen.insert(skill.name.clone()) {
                 continue;
             }
+            entries.push(skill);
         }
     }
-    register_load_skill(registry, config, paths);
-    Ok(())
+    Ok(entries)
 }
 
-fn register_load_skill(registry: &mut ToolRegistry, config: &AppConfig, paths: &MiyuPaths) {
+fn register_load_skill(
+    registry: &mut ToolRegistry,
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    entries: &[SkillEntry],
+) {
     let skill_dirs = skill_search_dirs(config, paths);
+    let description = format!(
+        "{}\n\n{}\n\n{}",
+        t(
+            "Load a specialized skill's full instructions and resources into the conversation. The skill name must match one of the available skills listed below.",
+            "加载指定技能的完整指令和资源到当前对话。技能名称必须匹配下方列出的可用技能之一。",
+        ),
+        t(
+            "Use this tool before applying a skill or using any scripts/resources from that skill. Do not use skill scripts directly before loading the skill.",
+            "应用 skill 或使用其中的脚本/资源前，必须先使用此工具加载该 skill。不要在加载前直接使用 skill 脚本。",
+        ),
+        available_skills_xml(entries),
+    );
     registry.register(ToolSpec::new(
         "load_skill",
-        t(
-            "Load a specialized skill's full instructions and resources into the conversation. The skill name must match one of the available skills listed in the system prompt.",
-            "加载指定技能的完整指令和资源到当前对话。技能名称必须匹配系统提示中列出的可用技能之一。",
-        ),
+        description,
         json!({
             "type": "object",
             "properties": {
@@ -125,13 +117,19 @@ fn load_skill(args: Value, skill_dirs: &[PathBuf]) -> Result<String> {
                 continue;
             }
             let skill_dir = entry.path();
+            if skill_dir.join(".disabled").exists() {
+                continue;
+            }
             let skill_file = skill_dir.join("SKILL.md");
             if !skill_file.is_file() {
                 continue;
             }
             let raw = std::fs::read_to_string(&skill_file)?;
-            let skill_name = skill_name(&raw, &entry.file_name().to_string_lossy());
-            if skill_name != name {
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            let Some(skill) = skill_entry(&raw, &dir_name, &skill_file) else {
+                continue;
+            };
+            if skill.name != name {
                 continue;
             }
             let body = strip_frontmatter(&raw);
@@ -152,13 +150,17 @@ fn load_skill(args: Value, skill_dirs: &[PathBuf]) -> Result<String> {
             } else {
                 let items = files
                     .iter()
-                    .map(|f| format!("<file>{f}</file>"))
+                    .map(|f| format!("<file>{}</file>", xml_escape(f)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!("\n<skill_files>\n{items}\n</skill_files>")
             };
             return Ok(format!(
-                "<skill_content name=\"{name}\">\n# Skill: {name}\n\n{body}\n\nBase directory for this skill: {base_dir}\nRelative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\n{files_xml}\n</skill_content>"
+                "<skill_content name=\"{}\">\n<skill_instructions format=\"markdown\">\n{}\n</skill_instructions>\n\n<skill_base_dir>{}</skill_base_dir>\n{}\n</skill_content>",
+                xml_escape(&name),
+                xml_escape(&body),
+                xml_escape(&base_dir),
+                files_xml
             ));
         }
     }
@@ -174,8 +176,76 @@ fn skill_search_dirs(config: &AppConfig, paths: &MiyuPaths) -> Vec<PathBuf> {
     dirs
 }
 
-fn skill_name(raw: &str, fallback: &str) -> String {
-    frontmatter_value(raw, "name").unwrap_or_else(|| fallback.to_string())
+fn skill_entry(raw: &str, dir_name: &str, skill_file: &std::path::Path) -> Option<SkillEntry> {
+    let name = frontmatter_value(raw, "name").unwrap_or_default();
+    let description = frontmatter_value(raw, "description").unwrap_or_default();
+    if !valid_skill_name(&name) {
+        eprintln!(
+            "warning: skipping skill {}: invalid name `{}`",
+            skill_file.display(),
+            name
+        );
+        return None;
+    }
+    if name != dir_name {
+        eprintln!(
+            "warning: skipping skill {}: name `{}` does not match directory `{}`",
+            skill_file.display(),
+            name,
+            dir_name
+        );
+        return None;
+    }
+    if !valid_skill_description(&description) {
+        eprintln!(
+            "warning: skipping skill {}: description must be 1-1024 characters",
+            skill_file.display()
+        );
+        return None;
+    }
+    Some(SkillEntry { name, description })
+}
+
+fn valid_skill_name(name: &str) -> bool {
+    let len = name.chars().count();
+    if !(1..=64).contains(&len) || name.starts_with('-') || name.ends_with('-') {
+        return false;
+    }
+    let mut prev_hyphen = false;
+    for ch in name.chars() {
+        let valid = ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-';
+        if !valid || (ch == '-' && prev_hyphen) {
+            return false;
+        }
+        prev_hyphen = ch == '-';
+    }
+    true
+}
+
+fn valid_skill_description(description: &str) -> bool {
+    let len = description.chars().count();
+    (1..=1024).contains(&len)
+}
+
+fn available_skills_xml(entries: &[SkillEntry]) -> String {
+    let items = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n  </skill>",
+                xml_escape(&entry.name),
+                xml_escape(&entry.description)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("<available_skills>\n{items}\n</available_skills>")
+}
+
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn frontmatter_value(raw: &str, key: &str) -> Option<String> {
@@ -210,15 +280,6 @@ fn strip_frontmatter(raw: &str) -> String {
     raw.to_string()
 }
 
-fn compact_skill_body(body: &str) -> String {
-    let text = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.chars().count() > 700 {
-        format!("{}...", text.chars().take(697).collect::<String>())
-    } else {
-        text
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn skills_prompt_reads_global_skills_dir() {
+    fn load_skill_description_lists_only_name_and_description() {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_paths(temp.path());
         let skill_dir = paths.skills_dir.join("gpu-passthrough");
@@ -253,8 +314,69 @@ mod tests {
         )
         .unwrap();
         let config = AppConfig::default();
-        let prompt = skills_prompt(&config, &paths).unwrap();
-        assert!(prompt.contains("gpu-passthrough"));
-        assert!(prompt.contains("GPU switching"));
+        let mut registry = ToolRegistry::new();
+        register_skills(&mut registry, &config, &paths).unwrap();
+        let description = &registry.get("load_skill").unwrap().description;
+        assert!(description.contains("<available_skills>"));
+        assert!(description.contains("<name>gpu-passthrough</name>"));
+        assert!(description.contains("<description>GPU switching</description>"));
+        assert!(!description.contains("gpustoggle --status"));
+    }
+
+    #[test]
+    fn invalid_skill_names_are_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let skill_dir = paths.skills_dir.join("BadName");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: BadName\ndescription: Bad skill\n---\n\nBody.",
+        )
+        .unwrap();
+        let config = AppConfig::default();
+        let entries = discover_skills(&config, &paths).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn skill_name_must_match_directory_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let skill_dir = paths.skills_dir.join("gpu-passthrough");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: other-skill\ndescription: GPU switching\n---\n\nBody.",
+        )
+        .unwrap();
+        let config = AppConfig::default();
+        let entries = discover_skills(&config, &paths).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn load_skill_returns_base_dir_and_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let skill_dir = paths.skills_dir.join("web-search");
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: web-search\ndescription: Search the web\n---\n\nRun scripts/web-search.py.",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("scripts/web-search.py"), "print('ok')").unwrap();
+        let config = AppConfig::default();
+        let result = load_skill(
+            json!({ "name": "web-search" }),
+            &skill_search_dirs(&config, &paths),
+        )
+        .unwrap();
+        assert!(result.contains("<skill_instructions format=\"markdown\">"));
+        assert!(result.contains("<skill_base_dir>"));
+        assert!(result.contains("<skill_files>"));
+        assert!(result.contains("scripts"));
+        assert!(!result.contains("Relative paths in this skill"));
     }
 }

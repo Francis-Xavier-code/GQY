@@ -2850,7 +2850,7 @@ fn build_tool_registry(
     } else {
         tools::ToolRegistry::new()
     };
-    if mode == AgentMode::Yolo && config.tools.enabled && config.skills.enabled {
+    if config.tools.enabled && config.skills.enabled {
         tools::register_skills(&mut registry, config, paths)?;
     }
     tools::register_script_display_names(&registry);

@@ -127,14 +127,7 @@ impl Agent {
         tools: ToolRegistry,
         mode: AgentMode,
     ) -> Result<Self> {
-        let mut base_system_prompt = config.system_prompt(paths)?;
-        if config.skills.enabled {
-            let prompt = tools::skills_prompt(&config, paths)?;
-            if !prompt.trim().is_empty() {
-                base_system_prompt.push_str("\n\n");
-                base_system_prompt.push_str(&prompt);
-            }
-        }
+        let base_system_prompt = config.system_prompt(paths)?;
         if mode == AgentMode::Yolo {
             state.reset_if_prompt_changed(&base_system_prompt)?;
             state.recover_stale_turns()?;

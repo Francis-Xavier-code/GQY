@@ -41,7 +41,7 @@ use std::sync::RwLock;
 
 #[allow(unused_imports)]
 pub use registry::{empty_parameters, ToolPermission, ToolProgress, ToolRegistry, ToolSpec};
-pub use skills::{register_skills, skills_prompt};
+pub use skills::register_skills;
 pub(crate) use scripts::rescan_scripts;
 
 static SCRIPT_DISPLAY_NAMES: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
