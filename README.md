@@ -38,7 +38,7 @@ miyu config
 
 - 从源码构建
 
-  需要安装 Rust 1.96 或更新版本、C 编译工具链、`pkg-config` 和 ALSA 开发库。Arch Linux、Fedora 和 Ubuntu 24.04 均已验证可构建。
+  需要安装 Rust 1.96 或更新版本、C 编译工具链、`pkg-config` 和 ALSA 开发库，图片显示功能依赖 `chafa`。Arch Linux、Fedora 和 Ubuntu 24.04 均已验证可构建。
 
   ```
   git clone https://github.com/SHORiN-KiWATA/Miyu.git
