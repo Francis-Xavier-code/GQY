@@ -59,8 +59,8 @@ impl StateStore {
         &self.conv_db
     }
 
-    pub fn start_turn(&self, turn_id: &str, user_content: &str) -> Result<()> {
-        self.conv_db.start_turn(turn_id, user_content)
+    pub fn start_turn(&self, turn_id: &str, user_content: &str, owner_pid: u32) -> Result<()> {
+        self.conv_db.start_turn(turn_id, user_content, owner_pid)
     }
 
     pub fn complete_turn(
@@ -185,6 +185,7 @@ impl StateStore {
         self.conv_db.running_turn_summaries()
     }
 
+    #[allow(dead_code)]
     pub fn running_turn_summaries_excluding(
         &self,
         exclude_turn_id: &str,
@@ -311,7 +312,7 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "hello").unwrap();
+        store.start_turn("turn_1", "hello", 999999).unwrap();
         let turns = store.load_turns().unwrap();
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].status, TurnStatus::Running);
@@ -345,7 +346,7 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "do something").unwrap();
+        store.start_turn("turn_1", "do something", 999999).unwrap();
         store.interrupt_turn("turn_1").unwrap();
         let turns = store.load_turns().unwrap();
         assert_eq!(turns[0].status, TurnStatus::Interrupted);
@@ -372,8 +373,8 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "task a").unwrap();
-        store.start_turn("turn_2", "task b").unwrap();
+        store.start_turn("turn_1", "task a", 999999).unwrap();
+        store.start_turn("turn_2", "task b", 999999).unwrap();
         assert!(store.has_running_turns().unwrap());
 
         let recovered = store.recover_stale_turns().unwrap();
@@ -382,6 +383,26 @@ mod tests {
         let turns = store.load_turns().unwrap();
         assert_eq!(turns.len(), 2);
         assert!(turns.iter().all(|t| t.status == TurnStatus::Interrupted));
+    }
+
+    #[test]
+    fn recover_stale_skips_alive_owner() {
+        let (_temp, store) = test_store();
+
+        let current_pid = std::process::id();
+        store.start_turn("turn_1", "终端1的prompt", current_pid).unwrap();
+        store.start_turn("turn_dead", "孤儿turn", 999999).unwrap();
+
+        let recovered = store.recover_stale_turns().unwrap();
+        assert_eq!(recovered, 1);
+
+        let turns = store.load_turns().unwrap();
+        let turn1 = turns.iter().find(|t| t.turn_id == "turn_1").unwrap();
+        assert_eq!(turn1.status, TurnStatus::Running);
+        assert_eq!(turn1.assistant_content, pending_placeholder());
+
+        let dead = turns.iter().find(|t| t.turn_id == "turn_dead").unwrap();
+        assert_eq!(dead.status, TurnStatus::Interrupted);
     }
 
     #[test]
@@ -404,9 +425,9 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "hello").unwrap();
+        store.start_turn("turn_1", "hello", 999999).unwrap();
         store.complete_turn("turn_1", "hi", None).unwrap();
-        store.start_turn("turn_2", "bye").unwrap();
+        store.start_turn("turn_2", "bye", 999999).unwrap();
         store.complete_turn("turn_2", "goodbye", None).unwrap();
 
         let (removed, prompt) = store.undo_last_turn().unwrap();
@@ -442,9 +463,9 @@ mod tests {
     #[test]
     fn hidden_turns_excluded_from_visible() {
         let (_temp, store) = test_store();
-        store.start_turn("t1", "first").unwrap();
+        store.start_turn("t1", "first", 999999).unwrap();
         store.complete_turn("t1", "reply1", None).unwrap();
-        store.start_turn("t2", "second").unwrap();
+        store.start_turn("t2", "second", 999999).unwrap();
         store.complete_turn("t2", "reply2", None).unwrap();
 
         let visible = store.load_visible_turns().unwrap();
@@ -466,7 +487,7 @@ mod tests {
     #[test]
     fn summary_turn_insert_and_load() {
         let (_temp, store) = test_store();
-        store.start_turn("t1", "hello").unwrap();
+        store.start_turn("t1", "hello", 999999).unwrap();
         store.complete_turn("t1", "hi", None).unwrap();
 
         store.insert_summary_turn("## Task Goal\nDo stuff").unwrap();
@@ -487,10 +508,10 @@ mod tests {
     #[test]
     fn hide_before_seq_hides_old_summary_too() {
         let (_temp, store) = test_store();
-        store.start_turn("t1", "old").unwrap();
+        store.start_turn("t1", "old", 999999).unwrap();
         store.complete_turn("t1", "old reply", None).unwrap();
         store.insert_summary_turn("summary of old").unwrap();
-        store.start_turn("t2", "new").unwrap();
+        store.start_turn("t2", "new", 999999).unwrap();
         store.complete_turn("t2", "new reply", None).unwrap();
 
         let visible = store.load_visible_turns().unwrap();
@@ -510,7 +531,7 @@ mod tests {
         for i in 0..10 {
             let id = format!("t{i}");
             let content = "x".repeat(1000);
-            store.start_turn(&id, &content).unwrap();
+            store.start_turn(&id, &content, 999999).unwrap();
             store.complete_turn(&id, &content, None).unwrap();
         }
 
@@ -526,7 +547,7 @@ mod tests {
     #[test]
     fn token_trim_noop_when_under_threshold() {
         let (_temp, store) = test_store();
-        store.start_turn("t1", "short").unwrap();
+        store.start_turn("t1", "short", 999999).unwrap();
         store.complete_turn("t1", "reply", None).unwrap();
 
         let evicted = store

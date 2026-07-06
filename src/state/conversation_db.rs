@@ -4,9 +4,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
-const PENDING_PLACEHOLDER: &str = "此轮响应正在由另一条对话线处理...";
+const PENDING_PLACEHOLDER: &str = "<system-reminder>上一轮prompt正在被另一个进程处理，你只需要回应用户当前的prompt，不要处理上一轮的prompt</system-reminder>";
 const INTERRUPTED_TEXT: &str =
-    "此轮响应被中断，但是除非用户重新要求否则不要重新执行此轮对话。";
+    "<system-reminder>上一轮prompt已被中断，除非用户重新要求否则不要处理上一轮的prompt</system-reminder>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatus {
@@ -48,6 +48,7 @@ pub struct Turn {
     pub tool_reports: Vec<String>,
     pub hidden: bool,
     pub is_summary: bool,
+    pub owner_pid: Option<i64>,
 }
 
 pub struct ConversationDb {
@@ -89,19 +90,20 @@ impl ConversationDb {
         )?;
         add_column_if_missing(&conn, "turns", "hidden", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(&conn, "turns", "is_summary", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(&conn, "turns", "owner_pid", "INTEGER")?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
-    pub fn start_turn(&self, turn_id: &str, user_content: &str) -> Result<()> {
+    pub fn start_turn(&self, turn_id: &str, user_content: &str, owner_pid: u32) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let seq = self.next_seq_locked(&conn)?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
-            params![turn_id, seq, user_content, now, PENDING_PLACEHOLDER],
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6)",
+            params![turn_id, seq, user_content, now, PENDING_PLACEHOLDER, owner_pid as i64],
         )?;
         Ok(())
     }
@@ -159,7 +161,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
              FROM turns ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -173,7 +175,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
              FROM turns WHERE turn_id != ?1 ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -191,7 +193,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
              FROM turns WHERE hidden = 0 ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -204,7 +206,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
              FROM turns WHERE hidden = 0 AND turn_id != ?1 ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -246,7 +248,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
              FROM turns WHERE is_summary = 1 ORDER BY seq DESC LIMIT 1",
         )?;
         let turn = stmt
@@ -274,7 +276,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
              FROM turns WHERE is_summary = 0 ORDER BY seq ASC LIMIT ?1",
         )?;
         let to_remove: Vec<Turn> = stmt
@@ -294,7 +296,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
              FROM turns WHERE hidden = 0 AND is_summary = 0 ORDER BY seq ASC LIMIT ?1",
         )?;
         let to_remove: Vec<Turn> = stmt
@@ -373,12 +375,36 @@ impl ConversationDb {
 
     pub fn recover_stale_running_turns(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
-        let affected = conn.execute(
-            "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2, status = 'interrupted'
-             WHERE status = 'running'",
-            params![INTERRUPTED_TEXT, now],
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, owner_pid FROM turns WHERE status = 'running'",
         )?;
+        let stale_turn_ids: Vec<String> = stmt
+            .query_map([], |row| {
+                let turn_id: String = row.get(0)?;
+                let owner_pid: Option<i64> = row.get(1)?;
+                Ok((turn_id, owner_pid))
+            })?
+            .filter_map(|row| {
+                let (turn_id, owner_pid) = row.ok()?;
+                let alive = owner_pid
+                    .map(|pid| crate::alarm::process_exists(pid as u32))
+                    .unwrap_or(false);
+                if alive { None } else { Some(turn_id) }
+            })
+            .collect();
+        drop(stmt);
+        if stale_turn_ids.is_empty() {
+            return Ok(0);
+        }
+        let now = Utc::now().to_rfc3339();
+        let mut affected = 0usize;
+        for turn_id in &stale_turn_ids {
+            affected += conn.execute(
+                "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2, status = 'interrupted'
+                 WHERE turn_id = ?3 AND status = 'running'",
+                params![INTERRUPTED_TEXT, now, turn_id],
+            )?;
+        }
         Ok(affected)
     }
 
@@ -524,6 +550,7 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
         tool_reports,
         hidden: hidden != 0,
         is_summary: is_summary != 0,
+        owner_pid: row.get(11)?,
     })
 }
 
