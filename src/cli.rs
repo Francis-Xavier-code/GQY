@@ -632,7 +632,17 @@ pub async fn run(cli: Cli) -> Result<()> {
         return run_clipboard_paste(&paths);
     }
 
-    if !paths.config_file.exists() && !matches!(cli.command, Some(Command::Init)) {
+    if !paths.config_file.exists()
+        && !matches!(
+            cli.command,
+            Some(Command::Init)
+                | Some(Command::FishInit)
+                | Some(Command::BashInit)
+                | Some(Command::ZshInit)
+                | Some(Command::RemoveShellHook)
+                | Some(Command::Paths)
+        )
+    {
         run_init(&paths, InitKind::FirstRun)?;
     }
 
@@ -805,22 +815,24 @@ fn select_shell_hook() -> Result<Option<&'static str>> {
     }
     let _guard = ShellMenuGuard;
     loop {
-        queue!(stdout, MoveTo(0, menu_row))?;
+        queue!(stdout, MoveTo(0, menu_row), Clear(ClearType::FromCursorDown))?;
         for (index, (label, _)) in options.iter().enumerate() {
-            queue!(stdout, Clear(ClearType::CurrentLine))?;
             if index == selected {
                 queue!(stdout, Print(format!("> {label}\n")))?;
             } else {
                 queue!(stdout, Print(format!("  {label}\n")))?;
             }
         }
-        println!(
-            "\n\x1b[2m{}\x1b[0m",
-            t(
-                "Up/Down or j/k to choose, Enter to confirm, Esc/q to skip",
-                "↑/↓ 或 j/k 选择，Enter 确认，Esc/q 跳过"
-            )
-        );
+        queue!(
+            stdout,
+            Print(format!(
+                "\n\x1b[2m{}\x1b[0m",
+                t(
+                    "Up/Down or j/k to choose, Enter to confirm, Esc/q to skip",
+                    "↑/↓ 或 j/k 选择，Enter 确认，Esc/q 跳过"
+                )
+            ))
+        )?;
         stdout.flush()?;
         terminal::enable_raw_mode()?;
         let key = read_shell_menu_key();
