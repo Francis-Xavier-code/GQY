@@ -2705,9 +2705,9 @@ mod repl_input_tests {
             system_scripts_dir: PathBuf::new(),
         };
         let state = StateStore::new(&paths).unwrap();
-        state.start_turn("turn_1", "first", 999999).unwrap();
+        state.start_turn("turn_1", "first").unwrap();
         state.complete_turn("turn_1", "reply", None).unwrap();
-        state.start_turn("turn_2", "second", 999999).unwrap();
+        state.start_turn("turn_2", "second").unwrap();
 
         assert_eq!(
             load_repl_input_history(&state).unwrap(),
@@ -3019,6 +3019,26 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         AgentEvent::SpinnerTick => renderer.tick_spinner(),
         AgentEvent::MemeSelectPhase => {
             renderer.set_meme_select_phase()?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::CompactStart => {
+            renderer.write_system_message("正在压缩上下文...")?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::CompactChunk(chunk) => {
+            renderer.write_compact_chunk(&chunk)?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::CompactEnd => {
+            renderer.finish_compact()?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::PopStart => {
+            renderer.write_system_message("正在弹出旧上下文...")?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::PopEnd { popped_count } => {
+            renderer.write_system_message(&format!("已弹出 {} 轮对话", popped_count))?;
             renderer.tick_spinner()
         }
     }

@@ -1,10 +1,12 @@
+mod compact;
 mod conversation;
+mod overflow;
 
 use crate::clipboard::{ClipboardImage, PastedImage};
 use crate::config::AppConfig;
 use crate::llm::{
     ChatContent, ChatContentPart, ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind,
-    ImageUrlContent, OpenAiCompatibleClient,
+    ImageUrlContent, OpenAiCompatibleClient, Usage,
 };
 use crate::memory::{EvictedTurn, MemoryStore};
 use crate::paths::MiyuPaths;
@@ -100,13 +102,19 @@ pub enum AgentEvent {
     ExternalOutput,
     SpinnerTick,
     MemeSelectPhase,
+    CompactStart,
+    CompactChunk(ChatStreamChunk),
+    CompactEnd,
+    PopStart,
+    PopEnd {
+        popped_count: usize,
+    },
 }
 
 pub struct Agent {
     state: StateStore,
     client: OpenAiCompatibleClient,
     system_prompt: String,
-    context_chars: usize,
     trim_at_ratio: f32,
     trim_batch_ratio: f32,
     tools_enabled: bool,
@@ -116,6 +124,9 @@ pub struct Agent {
     mode: AgentMode,
     config: AppConfig,
     paths: MiyuPaths,
+    context_window: Option<usize>,
+    on_overflow: String,
+    compact_keep_turns: usize,
 }
 
 impl Agent {
@@ -133,16 +144,17 @@ impl Agent {
             state.recover_stale_turns()?;
         }
         let system_prompt = with_current_time(base_system_prompt, mode);
-        let context_chars = config.active_context_chars()?;
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
         let memory = MemoryStore::new(&config, paths);
         memory.init()?;
+        let context_window = config.active_context_window()?;
+        let on_overflow = config.context.on_overflow.clone();
+        let compact_keep_turns = config.context.compact_keep_turns;
         Ok(Self {
             state,
             client,
             system_prompt,
-            context_chars,
             trim_at_ratio: config.context.trim_at_ratio,
             trim_batch_ratio: config.context.trim_batch_ratio,
             tools_enabled,
@@ -152,6 +164,9 @@ impl Agent {
             mode,
             config,
             paths: paths.clone(),
+            context_window,
+            on_overflow,
+            compact_keep_turns,
         })
     }
 
@@ -172,11 +187,15 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         self.state.mark_interrupted_turn_if_needed()?;
-        let evicted = self.state.trim_conversation_to_budget(
-            self.context_chars,
-            self.trim_at_ratio,
-            self.trim_batch_ratio,
-        )?;
+        let evicted = if let Some(window) = self.context_window {
+            self.state.trim_visible_to_token_budget(
+                window,
+                self.trim_at_ratio,
+                self.trim_batch_ratio,
+            )?
+        } else {
+            Vec::new()
+        };
         let evicted = evicted
             .into_iter()
             .map(|entry| EvictedTurn {
@@ -228,7 +247,7 @@ impl Agent {
                 .unwrap_or(0),
             rand::random::<u16>()
         );
-        self.state.start_turn(&turn_id, &input, std::process::id())?;
+        self.state.start_turn(&turn_id, &input)?;
         let guard = PendingTurnGuard::new(self.state.clone(), turn_id.clone());
         let mut messages = self.chat_messages(&turn_id, &input)?;
         if !binary_images.is_empty() && self.current_model_supports_vision() {
@@ -342,8 +361,69 @@ impl Agent {
         self.memory.process_after_turn(&input, &result.content)?;
         if let Some(usage) = &result.usage {
             self.state.add_usage(usage)?;
+            self.handle_overflow(usage, &mut on_event).await?;
         }
         Ok(result)
+    }
+
+    async fn handle_overflow<F>(&self, usage: &Usage, on_event: &mut F) -> Result<()>
+    where
+        F: FnMut(AgentEvent) -> Result<()>,
+    {
+        let check = overflow::OverflowCheck::new(
+            self.context_window,
+            self.trim_at_ratio,
+            None,
+        );
+        if !check.is_enabled() || !check.check_usage(usage) {
+            return Ok(());
+        }
+        match self.on_overflow.as_str() {
+            "compact" => {
+                on_event(AgentEvent::CompactStart)?;
+                let compactor = compact::Compactor::new(
+                    self.client.clone(),
+                    self.state.clone(),
+                    self.context_window.unwrap(),
+                    check.reserved_tokens,
+                    self.compact_keep_turns,
+                );
+                let mut on_chunk = |chunk: ChatStreamChunk| {
+                    on_event(AgentEvent::CompactChunk(chunk))
+                };
+                match compactor.perform_compact(&mut on_chunk).await {
+                    Ok(_) => {
+                        on_event(AgentEvent::CompactEnd)?;
+                    }
+                    Err(e) => {
+                        on_event(AgentEvent::CompactEnd)?;
+                        return Err(e);
+                    }
+                }
+            }
+            "pop" => {
+                on_event(AgentEvent::PopStart)?;
+                let evicted = self.state.trim_visible_to_token_budget(
+                    self.context_window.unwrap(),
+                    self.trim_at_ratio,
+                    self.trim_batch_ratio,
+                )?;
+                let evicted_turns: Vec<EvictedTurn> = evicted
+                    .into_iter()
+                    .map(|entry| EvictedTurn {
+                        timestamp: entry.timestamp,
+                        role: entry.role,
+                        content: entry.content,
+                    })
+                    .collect();
+                self.memory.remember_evicted_turns(&evicted_turns)?;
+                on_event(AgentEvent::PopEnd {
+                    popped_count: evicted_turns.len(),
+                })?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn current_model_supports_vision(&self) -> bool {
@@ -677,13 +757,28 @@ impl Agent {
         if let Some(summary) = memes::last_auto_meme_reminder(&self.config, &self.paths)? {
             messages.push(ChatMessage::system(summary));
         }
-        let turns = self.state.load_turns_excluding(current_turn_id)?;
+        if let Some(summary) = self.state.load_last_summary()? {
+            messages.push(ChatMessage::system(format!(
+                "<conversation-summary>\n{}\n</conversation-summary>",
+                summary.assistant_content
+            )));
+        }
+        let turns = self.state.load_visible_turns_excluding(current_turn_id)?;
+        let running_summaries: Vec<String> =
+            self.state.running_turn_summaries_excluding(current_turn_id)?;
         for turn in &turns {
+            if turn.is_summary {
+                continue;
+            }
             messages.push(ChatMessage::plain("user", &turn.user_content));
             messages.push(ChatMessage::plain("assistant", &turn.assistant_content));
             for report in &turn.tool_reports {
                 messages.push(ChatMessage::plain("assistant", report));
             }
+        }
+        if !running_summaries.is_empty() {
+            let hint = format_parallel_focus_hint(&running_summaries);
+            messages.push(ChatMessage::system(hint));
         }
         messages.push(ChatMessage::plain("user", current_input));
         Ok(messages)
@@ -825,9 +920,30 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
     text
 }
 
+fn format_parallel_focus_hint(running_summaries: &[String]) -> String {
+    let list = running_summaries
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("  {}. {}", i + 1, truncate(s, 80)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "<parallel-focus>\n你当前还有这些正在由另一条对话线处理的注意力焦点，它们尚未完成：\n{list}\n不要替这些轮次继续生成最终回答；请根据当前用户输入继续。\n</parallel-focus>"
+    )
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(max.saturating_sub(3)).collect::<String>())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::Usage;
 
     #[test]
     fn strips_pasted_system_reminder_from_user_input() {
@@ -841,5 +957,40 @@ mod tests {
         let input = "继续<system_reminder>hidden";
 
         assert_eq!(clean_user_visible_text(input), "继续");
+    }
+
+    #[test]
+    fn overflow_check_usage_triggers_at_threshold() {
+        let check = overflow::OverflowCheck::new(Some(100_000), 0.9, None);
+        assert!(!check.check_usage(&Usage {
+            prompt_tokens: 50_000,
+            completion_tokens: 10_000,
+            total_tokens: 60_000,
+        }));
+        assert!(check.check_usage(&Usage {
+            prompt_tokens: 85_000,
+            completion_tokens: 10_000,
+            total_tokens: 95_000,
+        }));
+    }
+
+    #[test]
+    fn overflow_check_disabled_when_no_window() {
+        let check = overflow::OverflowCheck::new(None, 0.9, None);
+        assert!(!check.is_enabled());
+        assert!(!check.check_usage(&Usage {
+            prompt_tokens: 999_999,
+            completion_tokens: 999_999,
+            total_tokens: 1_998_998,
+        }));
+    }
+
+    #[test]
+    fn overflow_check_estimate_triggers() {
+        let check = overflow::OverflowCheck::new(Some(1_000), 0.9, None);
+        let big_msg = ChatMessage::plain("user", &"x".repeat(4_000));
+        let small_msg = ChatMessage::plain("user", "hi");
+        assert!(check.check_estimate(&[big_msg]));
+        assert!(!check.check_estimate(&[small_msg]));
     }
 }

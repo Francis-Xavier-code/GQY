@@ -4,9 +4,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
-const PENDING_PLACEHOLDER: &str = "<system>此轮响应正在由另一个进程处理中，请勿接手此轮对话，只需回应当前用户的输入。</system>";
+const PENDING_PLACEHOLDER: &str = "此轮响应正在由另一条对话线处理...";
 const INTERRUPTED_TEXT: &str =
-    "<system>此轮响应被中断，除非用户重新要求否则不要重新执行此轮对话。</system>";
+    "此轮响应被中断，但是除非用户重新要求否则不要重新执行此轮对话。";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatus {
@@ -46,7 +46,8 @@ pub struct Turn {
     pub assistant_timestamp: Option<String>,
     pub status: TurnStatus,
     pub tool_reports: Vec<String>,
-    pub owner_pid: Option<i64>,
+    pub hidden: bool,
+    pub is_summary: bool,
 }
 
 pub struct ConversationDb {
@@ -86,20 +87,21 @@ impl ConversationDb {
             CREATE INDEX IF NOT EXISTS idx_turns_seq ON turns(seq);
             CREATE INDEX IF NOT EXISTS idx_turns_status ON turns(status);",
         )?;
-        add_column_if_missing(&conn, "turns", "owner_pid", "INTEGER")?;
+        add_column_if_missing(&conn, "turns", "hidden", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(&conn, "turns", "is_summary", "INTEGER NOT NULL DEFAULT 0")?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
-    pub fn start_turn(&self, turn_id: &str, user_content: &str, owner_pid: u32) -> Result<()> {
+    pub fn start_turn(&self, turn_id: &str, user_content: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let seq = self.next_seq_locked(&conn)?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6)",
-            params![turn_id, seq, user_content, now, PENDING_PLACEHOLDER, owner_pid as i64],
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
+            params![turn_id, seq, user_content, now, PENDING_PLACEHOLDER],
         )?;
         Ok(())
     }
@@ -157,7 +159,7 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
              FROM turns ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -166,11 +168,12 @@ impl ConversationDb {
         Ok(turns)
     }
 
+    #[allow(dead_code)]
     pub fn load_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
              FROM turns WHERE turn_id != ?1 ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -182,6 +185,75 @@ impl ConversationDb {
     #[allow(dead_code)]
     pub fn load_turns_for_context(&self) -> Result<Vec<Turn>> {
         self.load_turns()
+    }
+
+    pub fn load_visible_turns(&self) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+             FROM turns WHERE hidden = 0 ORDER BY seq ASC",
+        )?;
+        let turns = stmt
+            .query_map([], map_turn_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(turns)
+    }
+
+    pub fn load_visible_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+             FROM turns WHERE hidden = 0 AND turn_id != ?1 ORDER BY seq ASC",
+        )?;
+        let turns = stmt
+            .query_map(params![exclude_turn_id], map_turn_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(turns)
+    }
+
+    pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            "UPDATE turns SET hidden = 1 WHERE seq < ?1 AND is_summary = 0",
+            params![seq],
+        )?;
+        Ok(affected)
+    }
+
+    pub fn insert_summary_turn(&self, summary: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let turn_id = format!(
+            "summary_{}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            rand::random::<u16>()
+        );
+        let seq = self.next_seq_locked(&conn)?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1)",
+            params![turn_id, seq, "[conversation summary]", now, summary, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_last_summary(&self) -> Result<Option<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+             FROM turns WHERE is_summary = 1 ORDER BY seq DESC LIMIT 1",
+        )?;
+        let turn = stmt
+            .query_map([], map_turn_row)?
+            .next()
+            .transpose()?;
+        Ok(turn)
     }
 
     #[allow(dead_code)]
@@ -197,12 +269,33 @@ impl ConversationDb {
         Ok(turns.iter().map(|t| turn_chars(t)).sum())
     }
 
+    #[allow(dead_code)]
     pub fn trim_oldest_turns(&self, count: usize) -> Result<Vec<Turn>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, owner_pid
-             FROM turns ORDER BY seq ASC LIMIT ?1",
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+             FROM turns WHERE is_summary = 0 ORDER BY seq ASC LIMIT ?1",
+        )?;
+        let to_remove: Vec<Turn> = stmt
+            .query_map(params![count as i64], map_turn_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for turn in &to_remove {
+            conn.execute(
+                "DELETE FROM turns WHERE turn_id = ?1",
+                params![turn.turn_id],
+            )?;
+        }
+        Ok(to_remove)
+    }
+
+    pub fn trim_oldest_visible_turns(&self, count: usize) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary
+             FROM turns WHERE hidden = 0 AND is_summary = 0 ORDER BY seq ASC LIMIT ?1",
         )?;
         let to_remove: Vec<Turn> = stmt
             .query_map(params![count as i64], map_turn_row)?
@@ -280,36 +373,12 @@ impl ConversationDb {
 
     pub fn recover_stale_running_turns(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT turn_id, owner_pid FROM turns WHERE status = 'running'",
-        )?;
-        let stale_turn_ids: Vec<String> = stmt
-            .query_map([], |row| {
-                let turn_id: String = row.get(0)?;
-                let owner_pid: Option<i64> = row.get(1)?;
-                Ok((turn_id, owner_pid))
-            })?
-            .filter_map(|row| {
-                let (turn_id, owner_pid) = row.ok()?;
-                let alive = owner_pid
-                    .map(|pid| crate::alarm::process_exists(pid as u32))
-                    .unwrap_or(false);
-                if alive { None } else { Some(turn_id) }
-            })
-            .collect();
-        drop(stmt);
-        if stale_turn_ids.is_empty() {
-            return Ok(0);
-        }
         let now = Utc::now().to_rfc3339();
-        let mut affected = 0usize;
-        for turn_id in &stale_turn_ids {
-            affected += conn.execute(
-                "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2, status = 'interrupted'
-                 WHERE turn_id = ?3 AND status = 'running'",
-                params![INTERRUPTED_TEXT, now, turn_id],
-            )?;
-        }
+        let affected = conn.execute(
+            "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2, status = 'interrupted'
+             WHERE status = 'running'",
+            params![INTERRUPTED_TEXT, now],
+        )?;
         Ok(affected)
     }
 
@@ -441,6 +510,8 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
     let tool_reports_json: String = row.get(8)?;
     let tool_reports: Vec<String> =
         serde_json::from_str(&tool_reports_json).unwrap_or_default();
+    let hidden: i64 = row.get(9)?;
+    let is_summary: i64 = row.get(10)?;
     Ok(Turn {
         turn_id: row.get(0)?,
         seq: row.get(1)?,
@@ -451,7 +522,8 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
         assistant_timestamp: row.get(6)?,
         status: TurnStatus::from_str(row.get::<_, String>(7)?.as_str()),
         tool_reports,
-        owner_pid: row.get(9)?,
+        hidden: hidden != 0,
+        is_summary: is_summary != 0,
     })
 }
 

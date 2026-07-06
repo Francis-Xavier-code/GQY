@@ -59,8 +59,8 @@ impl StateStore {
         &self.conv_db
     }
 
-    pub fn start_turn(&self, turn_id: &str, user_content: &str, owner_pid: u32) -> Result<()> {
-        self.conv_db.start_turn(turn_id, user_content, owner_pid)
+    pub fn start_turn(&self, turn_id: &str, user_content: &str) -> Result<()> {
+        self.conv_db.start_turn(turn_id, user_content)
     }
 
     pub fn complete_turn(
@@ -111,29 +111,54 @@ impl StateStore {
         self.conv_db.load_turns()
     }
 
+    #[allow(dead_code)]
     pub fn load_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
         self.conv_db.load_turns_excluding(exclude_turn_id)
     }
 
-    pub fn trim_conversation_to_budget(
+    pub fn load_visible_turns(&self) -> Result<Vec<Turn>> {
+        self.conv_db.load_visible_turns()
+    }
+
+    pub fn load_visible_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
+        self.conv_db.load_visible_turns_excluding(exclude_turn_id)
+    }
+
+    pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
+        self.conv_db.hide_turns_before_seq(seq)
+    }
+
+    pub fn insert_summary_turn(&self, summary: &str) -> Result<()> {
+        self.conv_db.insert_summary_turn(summary)
+    }
+
+    pub fn load_last_summary(&self) -> Result<Option<Turn>> {
+        self.conv_db.load_last_summary()
+    }
+
+    pub fn trim_visible_to_token_budget(
         &self,
-        max_chars: usize,
+        context_window: usize,
         trim_at_ratio: f32,
         trim_batch_ratio: f32,
     ) -> Result<Vec<StoredConversationEntry>> {
-        let turns = self.conv_db.load_turns()?;
-        let trigger = (max_chars as f32 * trim_at_ratio).max(1.0) as usize;
-        let mut total: usize = turns.iter().map(|t| turn_chars(t)).sum();
+        let turns = self.conv_db.load_visible_turns()?;
+        let trigger = (context_window as f32 * trim_at_ratio).max(1.0) as usize;
+        let mut total: usize = turns.iter().map(|t| turn_estimated_tokens(t)).sum();
         if total <= trigger {
             return Ok(Vec::new());
         }
-        let target = max_chars.saturating_sub((max_chars as f32 * trim_batch_ratio).max(1.0) as usize);
+        let target =
+            (context_window as f32 * (1.0 - trim_batch_ratio)).max(1.0) as usize;
         let mut start = 0usize;
         while start < turns.len() && total > target {
-            total = total.saturating_sub(turn_chars(&turns[start]));
+            total = total.saturating_sub(turn_estimated_tokens(&turns[start]));
             start += 1;
         }
-        let evicted = turns_to_entries(self.conv_db.trim_oldest_turns(start)?);
+        if start == 0 {
+            return Ok(Vec::new());
+        }
+        let evicted = turns_to_entries(self.conv_db.trim_oldest_visible_turns(start)?);
         Ok(evicted)
     }
 
@@ -216,6 +241,10 @@ fn turn_chars(turn: &Turn) -> usize {
             .sum::<usize>()
 }
 
+fn turn_estimated_tokens(turn: &Turn) -> usize {
+    (turn_chars(turn) / 4).max(1)
+}
+
 fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {
     let mut entries = Vec::with_capacity(turns.len() * 3);
     for turn in turns {
@@ -282,7 +311,7 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "hello", 999999).unwrap();
+        store.start_turn("turn_1", "hello").unwrap();
         let turns = store.load_turns().unwrap();
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].status, TurnStatus::Running);
@@ -316,7 +345,7 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "do something", 999999).unwrap();
+        store.start_turn("turn_1", "do something").unwrap();
         store.interrupt_turn("turn_1").unwrap();
         let turns = store.load_turns().unwrap();
         assert_eq!(turns[0].status, TurnStatus::Interrupted);
@@ -343,8 +372,8 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "task a", 999999).unwrap();
-        store.start_turn("turn_2", "task b", 999999).unwrap();
+        store.start_turn("turn_1", "task a").unwrap();
+        store.start_turn("turn_2", "task b").unwrap();
         assert!(store.has_running_turns().unwrap());
 
         let recovered = store.recover_stale_turns().unwrap();
@@ -375,9 +404,9 @@ mod tests {
         })
         .unwrap();
 
-        store.start_turn("turn_1", "hello", 999999).unwrap();
+        store.start_turn("turn_1", "hello").unwrap();
         store.complete_turn("turn_1", "hi", None).unwrap();
-        store.start_turn("turn_2", "bye", 999999).unwrap();
+        store.start_turn("turn_2", "bye").unwrap();
         store.complete_turn("turn_2", "goodbye", None).unwrap();
 
         let (removed, prompt) = store.undo_last_turn().unwrap();
@@ -389,10 +418,9 @@ mod tests {
         assert_eq!(turns[0].turn_id, "turn_1");
     }
 
-    #[test]
-    fn recover_stale_skips_alive_owner() {
+    fn test_store() -> (tempfile::TempDir, StateStore) {
         let temp = tempfile::tempdir().unwrap();
-        let make_paths = || MiyuPaths {
+        let store = StateStore::new(&MiyuPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             secrets_file: temp.path().join("config/secrets.jsonc"),
@@ -406,34 +434,109 @@ mod tests {
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
             system_scripts_dir: PathBuf::new(),
-        };
+        })
+        .unwrap();
+        (temp, store)
+    }
 
-        let store = StateStore::new(&make_paths()).unwrap();
+    #[test]
+    fn hidden_turns_excluded_from_visible() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "first").unwrap();
+        store.complete_turn("t1", "reply1", None).unwrap();
+        store.start_turn("t2", "second").unwrap();
+        store.complete_turn("t2", "reply2", None).unwrap();
 
-        // 模拟终端1: 用当前进程 PID (活着)
-        let current_pid = std::process::id();
-        store.start_turn("turn_1", "终端1的prompt", current_pid).unwrap();
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 2);
 
-        // 模拟终端1还有一个死掉的 turn
-        store.start_turn("turn_dead", "孤儿turn", 999999).unwrap();
+        let hidden_count = store.hide_turns_before_seq(visible[1].seq).unwrap();
+        assert_eq!(hidden_count, 1);
 
-        // 模拟终端2启动: recover_stale_turns
-        let recovered = store.recover_stale_turns().unwrap();
+        let visible_after = store.load_visible_turns().unwrap();
+        assert_eq!(visible_after.len(), 1);
+        assert_eq!(visible_after[0].turn_id, "t2");
 
-        // 只恢复死掉的 turn, 不恢复活着的
-        assert_eq!(recovered, 1);
+        let all = store.load_turns().unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].hidden);
+        assert!(!all[1].hidden);
+    }
 
-        let turns = store.load_turns().unwrap();
-        let turn1 = turns.iter().find(|t| t.turn_id == "turn_1").unwrap();
-        assert_eq!(turn1.status, TurnStatus::Running);
-        assert_eq!(turn1.assistant_content, pending_placeholder());
+    #[test]
+    fn summary_turn_insert_and_load() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "hello").unwrap();
+        store.complete_turn("t1", "hi", None).unwrap();
 
-        let dead = turns.iter().find(|t| t.turn_id == "turn_dead").unwrap();
-        assert_eq!(dead.status, TurnStatus::Interrupted);
+        store.insert_summary_turn("## Task Goal\nDo stuff").unwrap();
 
-        // 终端2的 running_turn_summaries_excluding 应该能看到终端1的 turn
-        let running = store.running_turn_summaries_excluding("turn_2").unwrap();
-        assert_eq!(running.len(), 1);
-        assert_eq!(running[0], "终端1的prompt");
+        let summary = store.load_last_summary().unwrap();
+        assert!(summary.is_some());
+        let summary = summary.unwrap();
+        assert!(summary.is_summary);
+        assert!(!summary.hidden);
+        assert_eq!(summary.assistant_content, "## Task Goal\nDo stuff");
+
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().any(|t| t.is_summary));
+        assert!(visible.iter().any(|t| !t.is_summary));
+    }
+
+    #[test]
+    fn summary_turn_not_hidden_by_hide_before_seq() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "old").unwrap();
+        store.complete_turn("t1", "old reply", None).unwrap();
+        store.insert_summary_turn("summary of old").unwrap();
+        store.start_turn("t2", "new").unwrap();
+        store.complete_turn("t2", "new reply", None).unwrap();
+
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 3);
+
+        let t2_seq = visible.last().unwrap().seq;
+        let hidden = store.hide_turns_before_seq(t2_seq).unwrap();
+        assert_eq!(hidden, 1);
+
+        let visible_after = store.load_visible_turns().unwrap();
+        assert_eq!(visible_after.len(), 2);
+        assert!(visible_after.iter().any(|t| t.is_summary));
+        assert!(visible_after.iter().any(|t| !t.is_summary && t.turn_id == "t2"));
+    }
+
+    #[test]
+    fn token_trim_pops_oldest() {
+        let (_temp, store) = test_store();
+        for i in 0..10 {
+            let id = format!("t{i}");
+            let content = "x".repeat(1000);
+            store.start_turn(&id, &content).unwrap();
+            store.complete_turn(&id, &content, None).unwrap();
+        }
+
+        let evicted = store
+            .trim_visible_to_token_budget(2000, 0.9, 0.15)
+            .unwrap();
+        assert!(!evicted.is_empty(), "should have evicted some turns");
+
+        let visible = store.load_visible_turns().unwrap();
+        assert!(visible.len() < 10, "should have fewer turns after trim");
+    }
+
+    #[test]
+    fn token_trim_noop_when_under_threshold() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "short").unwrap();
+        store.complete_turn("t1", "reply", None).unwrap();
+
+        let evicted = store
+            .trim_visible_to_token_budget(100_000, 0.9, 0.15)
+            .unwrap();
+        assert!(evicted.is_empty());
+
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 1);
     }
 }

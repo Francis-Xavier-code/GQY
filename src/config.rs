@@ -101,7 +101,7 @@ pub struct ProviderConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub model_context_chars: HashMap<String, usize>,
+    pub model_context_window: HashMap<String, usize>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_modalities: HashMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -151,12 +151,14 @@ impl ProviderModelChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextConfig {
-    #[serde(default = "default_context_chars")]
-    pub default_max_chars: usize,
     #[serde(default = "default_trim_at_ratio")]
     pub trim_at_ratio: f32,
     #[serde(default = "default_trim_batch_ratio")]
     pub trim_batch_ratio: f32,
+    #[serde(default = "default_on_overflow")]
+    pub on_overflow: String,
+    #[serde(default = "default_compact_keep_turns")]
+    pub compact_keep_turns: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -810,9 +812,10 @@ impl Default for MemoryConfig {
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
-            default_max_chars: default_context_chars(),
             trim_at_ratio: default_trim_at_ratio(),
             trim_batch_ratio: default_trim_batch_ratio(),
+            on_overflow: default_on_overflow(),
+            compact_keep_turns: default_compact_keep_turns(),
         }
     }
 }
@@ -826,7 +829,7 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: vec![OPENCODE_DEFAULT_CHAT_MODEL.to_string()],
-            model_context_chars: HashMap::new(),
+            model_context_window: HashMap::new(),
             model_modalities: HashMap::new(),
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             timeout_seconds: default_timeout(),
@@ -842,7 +845,7 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: Some("$env:OPENAI_API_KEY".to_string()),
             models: vec!["gpt-4o-mini".to_string()],
-            model_context_chars: HashMap::new(),
+            model_context_window: HashMap::new(),
             model_modalities: HashMap::new(),
             default_model: "gpt-4o-mini".to_string(),
             timeout_seconds: default_timeout(),
@@ -881,7 +884,7 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: Vec::new(),
-            model_context_chars: HashMap::new(),
+            model_context_window: HashMap::new(),
             model_modalities: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
@@ -1047,14 +1050,18 @@ impl AppConfig {
                 bail!("provider {} base_url cannot be empty", provider.id);
             }
         }
-        if self.context.default_max_chars == 0 {
-            bail!("context.default_max_chars must be greater than 0");
-        }
         if !(0.1..=1.0).contains(&self.context.trim_at_ratio) {
             bail!("context.trim_at_ratio must be between 0.1 and 1.0");
         }
         if !(0.01..=0.9).contains(&self.context.trim_batch_ratio) {
             bail!("context.trim_batch_ratio must be between 0.01 and 0.9");
+        }
+        match self.context.on_overflow.as_str() {
+            "pop" | "compact" => {}
+            value => bail!("context.on_overflow must be 'pop' or 'compact', got: {value}"),
+        }
+        if self.context.compact_keep_turns == 0 {
+            bail!("context.compact_keep_turns must be greater than 0");
         }
         if self.plugins.print_image.width_percent == 0
             || self.plugins.print_image.width_percent > 100
@@ -1168,13 +1175,12 @@ impl AppConfig {
         Ok(())
     }
 
-    pub fn active_context_chars(&self) -> Result<usize> {
+    pub fn active_context_window(&self) -> Result<Option<usize>> {
         let provider = self.provider(None)?;
         Ok(provider
-            .model_context_chars
+            .model_context_window
             .get(&provider.default_model)
-            .copied()
-            .unwrap_or(self.context.default_max_chars))
+            .copied())
     }
 
     pub fn system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
@@ -1639,16 +1645,20 @@ fn default_calculator_backend() -> String {
     "rust-simple".to_string()
 }
 
-fn default_context_chars() -> usize {
-    120_000
-}
-
 fn default_trim_at_ratio() -> f32 {
     0.9
 }
 
 fn default_trim_batch_ratio() -> f32 {
     0.15
+}
+
+fn default_on_overflow() -> String {
+    "pop".to_string()
+}
+
+fn default_compact_keep_turns() -> usize {
+    2
 }
 
 #[cfg(unix)]

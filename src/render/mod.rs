@@ -463,6 +463,41 @@ impl StreamRenderer {
         Ok(())
     }
 
+    pub fn write_system_message(&mut self, message: &str) -> Result<()> {
+        self.prepare_for_external_output()?;
+        let mut stdout = io::stdout();
+        execute!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            MoveToColumn(0)
+        )?;
+        writeln!(stdout, "{message}")?;
+        execute!(stdout, ResetColor)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    pub fn write_compact_chunk(&mut self, chunk: &ChatStreamChunk) -> Result<()> {
+        if chunk.kind != ChatStreamKind::Content {
+            return Ok(());
+        }
+        self.prepare_for_external_output()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+        write!(stdout, "{}", chunk.text)?;
+        execute!(stdout, ResetColor)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    pub fn finish_compact(&mut self) -> Result<()> {
+        let mut stdout = io::stdout();
+        execute!(stdout, ResetColor)?;
+        writeln!(stdout)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
     pub fn finish(&mut self) -> Result<()> {
         self.stop_waiting()?;
         self.end_subagent_stream_line()?;
