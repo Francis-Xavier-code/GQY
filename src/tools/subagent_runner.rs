@@ -316,11 +316,7 @@ impl SubagentRunner {
         stats: &mut SubagentStats,
         _start: Instant,
     ) -> Result<ChatResult> {
-        let excluded: Vec<&str> = self
-            .excluded_tools
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let excluded: Vec<&str> = self.excluded_tools.iter().map(String::as_str).collect();
         let definitions = self.tools.definitions_except(&excluded);
         let mut steps = 0usize;
 
@@ -343,12 +339,16 @@ impl SubagentRunner {
 
             let result = self
                 .client
-                .chat_stream(messages.clone(), definitions.clone(), |chunk: ChatStreamChunk| {
-                    if chunk.kind == ChatStreamKind::Reasoning {
-                        self.progress.reasoning(&chunk.text);
-                    }
-                    Ok(())
-                })
+                .chat_stream(
+                    messages.clone(),
+                    definitions.clone(),
+                    |chunk: ChatStreamChunk| {
+                        if chunk.kind == ChatStreamKind::Reasoning {
+                            self.progress.reasoning(&chunk.text);
+                        }
+                        Ok(())
+                    },
+                )
                 .await?;
             stats.add_usage_or_estimate(result.usage.as_ref(), &[]);
 
@@ -378,7 +378,8 @@ impl SubagentRunner {
 
                 let (output, ok) = match tokio::time::timeout(
                     Duration::from_secs(self.timeout_seconds.max(5)),
-                    self.tools.call(&call.function.name, &call.function.arguments),
+                    self.tools
+                        .call(&call.function.name, &call.function.arguments),
                 )
                 .await
                 {

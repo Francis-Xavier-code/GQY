@@ -292,7 +292,10 @@ fn target_index(update: &Value, list: &[Todo]) -> Result<usize> {
 }
 
 fn validate_status(status: &str) -> Result<()> {
-    if matches!(status, "pending" | "in_progress" | "completed" | "cancelled") {
+    if matches!(
+        status,
+        "pending" | "in_progress" | "completed" | "cancelled"
+    ) {
         Ok(())
     } else {
         anyhow::bail!("status must be pending, in_progress, completed, or cancelled")
@@ -363,11 +366,7 @@ mod tests {
             status: "pending".into(),
             priority: "low".into(),
         }]));
-        let result = todo_write(
-            json!({"todos": []}),
-            Arc::clone(&todos),
-        )
-        .unwrap();
+        let result = todo_write(json!({"todos": []}), Arc::clone(&todos)).unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["total_count"], 0);
         assert_eq!(data["pending_count"], 0);

@@ -202,7 +202,12 @@ async fn run_task(
     let sa_progress = SubagentProgress::new(progress, mode, enabled);
 
     sa_progress.report(if is_zh() {
-        format!("{}（{}）：{}", t("subagent", "子代理"), sa_type.label(), description)
+        format!(
+            "{}（{}）：{}",
+            t("subagent", "子代理"),
+            sa_type.label(),
+            description
+        )
     } else {
         format!("subagent ({}): {}", sa_type.label(), description)
     });
@@ -222,36 +227,32 @@ async fn run_task(
             &[]
         });
 
-    let (result, stats) = match tokio::time::timeout(
-        Duration::from_secs(total_timeout),
-        runner.run(&prompt),
-    )
-    .await
-    {
-        Ok(Ok((result, stats))) => (result, stats),
-        Ok(Err(err)) => {
-            return Ok(serde_json::to_string_pretty(&json!({
-                "ok": false,
-                "kind": "task",
-                "subagent_type": sa_type.label(),
-                "description": description,
-                "state": "error",
-                "error": err.to_string(),
-                "stats": SubagentStats::default().public(),
-            }))?);
-        }
-        Err(_) => {
-            return Ok(serde_json::to_string_pretty(&json!({
-                "ok": false,
-                "kind": "task",
-                "subagent_type": sa_type.label(),
-                "description": description,
-                "state": "timeout",
-                "error": format!("subagent timed out after {total_timeout}s"),
-                "stats": SubagentStats::default().public(),
-            }))?);
-        }
-    };
+    let (result, stats) =
+        match tokio::time::timeout(Duration::from_secs(total_timeout), runner.run(&prompt)).await {
+            Ok(Ok((result, stats))) => (result, stats),
+            Ok(Err(err)) => {
+                return Ok(serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "kind": "task",
+                    "subagent_type": sa_type.label(),
+                    "description": description,
+                    "state": "error",
+                    "error": err.to_string(),
+                    "stats": SubagentStats::default().public(),
+                }))?);
+            }
+            Err(_) => {
+                return Ok(serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "kind": "task",
+                    "subagent_type": sa_type.label(),
+                    "description": description,
+                    "state": "timeout",
+                    "error": format!("subagent timed out after {total_timeout}s"),
+                    "stats": SubagentStats::default().public(),
+                }))?);
+            }
+        };
 
     let state = if stats.budget_reached {
         "budget_reached"

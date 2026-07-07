@@ -98,8 +98,8 @@ pub fn all() -> &'static HashMap<String, ToolDescription> {
     TOOL_DESCRIPTIONS.get_or_init(|| {
         let mut map = HashMap::new();
         for raw in tool_description_files!() {
-            let desc: ToolDescription = serde_json::from_str(raw)
-                .expect("built-in tool description JSON must be valid");
+            let desc: ToolDescription =
+                serde_json::from_str(raw).expect("built-in tool description JSON must be valid");
             map.insert(desc.name.clone(), desc);
         }
         map

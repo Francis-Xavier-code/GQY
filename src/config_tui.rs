@@ -206,7 +206,12 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
         9 => config.plugins.man.enabled,
         10 => config.plugins.memory.enabled,
         11 => config.plugins.package_advisor.enabled,
-        12 => config.plugins.deep_research_linux_game_compatibility.enabled,
+        12 => {
+            config
+                .plugins
+                .deep_research_linux_game_compatibility
+                .enabled
+        }
         _ => false,
     }
 }
@@ -226,7 +231,12 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
         9 => config.plugins.man.enabled = value,
         10 => config.plugins.memory.enabled = value,
         11 => config.plugins.package_advisor.enabled = value,
-        12 => config.plugins.deep_research_linux_game_compatibility.enabled = value,
+        12 => {
+            config
+                .plugins
+                .deep_research_linux_game_compatibility
+                .enabled = value
+        }
         _ => {}
     }
 }
@@ -530,7 +540,13 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             config.plugins.package_advisor.enabled,
         )],
         12 => vec![
-            Field::boolean("启用", config.plugins.deep_research_linux_game_compatibility.enabled),
+            Field::boolean(
+                "启用",
+                config
+                    .plugins
+                    .deep_research_linux_game_compatibility
+                    .enabled,
+            ),
             Field::new(
                 "子代理最大工具次数",
                 config
@@ -676,9 +692,14 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
             config.plugins.package_advisor.enabled = parse_bool_field(&fields[0].value)?;
         }
         12 => {
-            config.plugins.deep_research_linux_game_compatibility.enabled = parse_bool_field(&fields[0].value)?;
-            config.plugins.deep_research_linux_game_compatibility.max_tool_steps =
-                fields[1].value.trim().parse::<usize>()?.clamp(1, 500);
+            config
+                .plugins
+                .deep_research_linux_game_compatibility
+                .enabled = parse_bool_field(&fields[0].value)?;
+            config
+                .plugins
+                .deep_research_linux_game_compatibility
+                .max_tool_steps = fields[1].value.trim().parse::<usize>()?.clamp(1, 500);
         }
         _ => {
             let value = parse_bool_field(&fields[0].value)?;
@@ -1685,7 +1706,10 @@ fn edit_provider_form(
             provider.api_key.clone().unwrap_or_default(),
         ),
         Field::new("当前模型", provider.default_model.clone()),
-        Field::new("模型上下文窗口 (tokens, 0=自动)", current_context_window.to_string()),
+        Field::new(
+            "模型上下文窗口 (tokens, 0=自动)",
+            current_context_window.to_string(),
+        ),
         Field::new("超时秒数", provider.timeout_seconds.to_string()),
         Field::new("Temperature", provider.temperature.to_string()),
     ];
@@ -1736,7 +1760,10 @@ fn edit_model_form(
     let mut fields = vec![
         Field::boolean("激活模型", active),
         Field::boolean("设为当前模型", current),
-        Field::new("模型上下文窗口 (tokens, 0=自动)", context_window.to_string()),
+        Field::new(
+            "模型上下文窗口 (tokens, 0=自动)",
+            context_window.to_string(),
+        ),
     ];
     if !run_form(stdout, " EDIT MODEL ", &mut fields)? {
         return Ok(false);
@@ -1782,7 +1809,8 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
     let mut fields = vec![
         Field::boolean("工具启用", config.tools.enabled),
         Field::new("工具最大轮数", config.tools.max_rounds.to_string()),
-        Field::new("工具信息如何传入", config.tools.loading_mode.clone()).choices(&["full", "lazy"]),
+        Field::new("工具信息如何传入", config.tools.loading_mode.clone())
+            .choices(&["full", "lazy"]),
         Field::boolean("Skills 启用", config.skills.enabled),
         Field::boolean("允许执行命令", config.skills.allow_command_execution),
         Field::new("显示思考过程", config.display.reasoning.clone())

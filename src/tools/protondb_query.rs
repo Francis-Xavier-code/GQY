@@ -57,15 +57,17 @@ async fn protondb_query(args: Value) -> Result<String> {
         .build()?;
 
     // Resolve app_id: numeric → direct, otherwise search via Algolia
-    let (app_id, game_name, oslist) = if query.chars().all(|c| c.is_ascii_digit()) && !query.is_empty() {
-        let id: u64 = query.parse()?;
-        let (name, os) = search_game_info(&client, query).await
-            .unwrap_or((query.to_string(), Vec::new()));
-        (id, name, os)
-    } else {
-        let (id, name, os) = search_game(&client, query).await?;
-        (id, name, os)
-    };
+    let (app_id, game_name, oslist) =
+        if query.chars().all(|c| c.is_ascii_digit()) && !query.is_empty() {
+            let id: u64 = query.parse()?;
+            let (name, os) = search_game_info(&client, query)
+                .await
+                .unwrap_or((query.to_string(), Vec::new()));
+            (id, name, os)
+        } else {
+            let (id, name, os) = search_game(&client, query).await?;
+            (id, name, os)
+        };
 
     // Fetch summary
     let summary = fetch_json(
@@ -144,10 +146,7 @@ async fn search_game(client: &reqwest::Client, query: &str) -> Result<(u64, Stri
         .as_str()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow::anyhow!("invalid objectID in search result"))?;
-    let name = hit["name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
+    let name = hit["name"].as_str().unwrap_or("unknown").to_string();
     let oslist = hit["oslist"]
         .as_array()
         .map(|arr| {
@@ -161,10 +160,7 @@ async fn search_game(client: &reqwest::Client, query: &str) -> Result<(u64, Stri
 }
 
 /// When user provides a numeric app_id directly, try to look up the game name via search.
-async fn search_game_info(
-    client: &reqwest::Client,
-    app_id: &str,
-) -> Option<(String, Vec<String>)> {
+async fn search_game_info(client: &reqwest::Client, app_id: &str) -> Option<(String, Vec<String>)> {
     let body = json!({
         "query": app_id,
         "facetFilters": [["appType:Game"]],
@@ -249,7 +245,11 @@ fn extract_report(r: &Value) -> Value {
     let nickname = contributor["nickname"].as_str().unwrap_or("anonymous");
     let report_tally = contributor["reportTally"].as_u64().unwrap_or(0);
     let playtime = contributor["playtime"].as_u64().unwrap_or(0);
-    let playtime_hours = if playtime > 0 { Some(playtime / 60) } else { None };
+    let playtime_hours = if playtime > 0 {
+        Some(playtime / 60)
+    } else {
+        None
+    };
 
     let timestamp = r["timestamp"].as_u64().unwrap_or(0);
     let date = format_date(timestamp);
@@ -272,9 +272,17 @@ fn extract_report(r: &Value) -> Value {
     let recommended = if starts_play != "yes" {
         "broken"
     } else if let Some(v) = verdict_oob {
-        if v == "yes" { "recommended" } else { "not_recommended" }
+        if v == "yes" {
+            "recommended"
+        } else {
+            "not_recommended"
+        }
     } else if let Some(v) = verdict {
-        if v == "yes" { "recommended" } else { "not_recommended" }
+        if v == "yes" {
+            "recommended"
+        } else {
+            "not_recommended"
+        }
     } else {
         "unknown"
     };
@@ -296,7 +304,11 @@ fn extract_report(r: &Value) -> Value {
     // Extract launch options note
     let launch_opts = if let Some(lo) = launch_options {
         let trimmed = lo.trim();
-        if trimmed.is_empty() { None } else { Some(trimmed) }
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
     } else {
         None
     };
@@ -352,7 +364,11 @@ fn extract_faults(responses: &Value, notes: &Value) -> Vec<Value> {
 
             let note = notes[key].as_str().and_then(|s| {
                 let trimmed = s.trim();
-                if trimmed.is_empty() { None } else { Some(trimmed) }
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
             });
 
             Some(json!({

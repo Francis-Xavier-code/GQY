@@ -80,14 +80,14 @@ fn load_from_disk(path: &PathBuf) -> Result<HashMap<String, HashMap<String, Mode
     for (provider_id, provider) in api.0 {
         let mut models = HashMap::new();
         for (model_id, model) in provider.models {
-            let input = model
-                .modalities
-                .map(|m| m.input)
-                .unwrap_or_default();
-            models.insert(model_id, ModelInfo {
-                input_modalities: input,
-                context_window: model.limit.and_then(|l| l.context),
-            });
+            let input = model.modalities.map(|m| m.input).unwrap_or_default();
+            models.insert(
+                model_id,
+                ModelInfo {
+                    input_modalities: input,
+                    context_window: model.limit.and_then(|l| l.context),
+                },
+            );
         }
         result.insert(provider_id, models);
     }

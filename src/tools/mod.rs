@@ -15,9 +15,9 @@ mod hash_codec;
 mod image_generation;
 pub mod knowledge_base;
 mod linux_game;
+mod load_tools;
 mod man;
 pub(crate) mod memes;
-mod load_tools;
 mod memory;
 mod moegirl;
 mod package_advisor;
@@ -27,8 +27,8 @@ mod scripts;
 mod skills;
 mod subagent_runner;
 mod task;
-pub mod tool_descriptions;
 mod todowrite;
+pub mod tool_descriptions;
 pub mod vision;
 mod weather;
 mod web;
@@ -43,8 +43,8 @@ use std::sync::RwLock;
 
 #[allow(unused_imports)]
 pub use registry::{empty_parameters, ToolPermission, ToolProgress, ToolRegistry, ToolSpec};
-pub use skills::register_skills;
 pub(crate) use scripts::rescan_scripts;
+pub use skills::register_skills;
 
 static SCRIPT_DISPLAY_NAMES: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 
@@ -242,7 +242,11 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.plugins.package_advisor.enabled {
         package_advisor::register(&mut registry, paths.clone());
     }
-    if config.plugins.deep_research_linux_game_compatibility.enabled {
+    if config
+        .plugins
+        .deep_research_linux_game_compatibility
+        .enabled
+    {
         let game_tools = registry.clone();
         linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }
@@ -290,7 +294,11 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     if config.plugins.package_advisor.enabled {
         package_advisor::register(&mut registry, paths.clone());
     }
-    if config.plugins.deep_research_linux_game_compatibility.enabled {
+    if config
+        .plugins
+        .deep_research_linux_game_compatibility
+        .enabled
+    {
         let game_tools = registry.clone();
         linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }

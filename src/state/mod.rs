@@ -94,7 +94,12 @@ impl StateStore {
         )
     }
 
-    pub fn append_tool_report_context(&self, turn_id: &str, tool_name: &str, report: &str) -> Result<()> {
+    pub fn append_tool_report_context(
+        &self,
+        turn_id: &str,
+        tool_name: &str,
+        report: &str,
+    ) -> Result<()> {
         self.conv_db.append_tool_report(
             turn_id,
             &format!(
@@ -166,8 +171,7 @@ impl StateStore {
         if total <= trigger {
             return Ok(Vec::new());
         }
-        let target =
-            (context_window as f32 * (1.0 - trim_batch_ratio)).max(1.0) as usize;
+        let target = (context_window as f32 * (1.0 - trim_batch_ratio)).max(1.0) as usize;
         let mut start = 0usize;
         while start < turns.len() && total > target {
             total = total.saturating_sub(turn_estimated_tokens(&turns[start]));
@@ -208,11 +212,9 @@ impl StateStore {
     }
 
     #[allow(dead_code)]
-    pub fn running_turn_summaries_excluding(
-        &self,
-        exclude_turn_id: &str,
-    ) -> Result<Vec<String>> {
-        self.conv_db.running_turn_summaries_excluding(exclude_turn_id)
+    pub fn running_turn_summaries_excluding(&self, exclude_turn_id: &str) -> Result<Vec<String>> {
+        self.conv_db
+            .running_turn_summaries_excluding(exclude_turn_id)
     }
 
     #[allow(dead_code)]
@@ -340,9 +342,7 @@ mod tests {
         assert_eq!(turns[0].status, TurnStatus::Running);
         assert_eq!(turns[0].assistant_content, pending_placeholder());
 
-        store
-            .complete_turn("turn_1", "hi there", None)
-            .unwrap();
+        store.complete_turn("turn_1", "hi there", None).unwrap();
         let turns = store.load_turns().unwrap();
         assert_eq!(turns[0].status, TurnStatus::Completed);
         assert_eq!(turns[0].assistant_content, "hi there");
@@ -412,7 +412,9 @@ mod tests {
         let (_temp, store) = test_store();
 
         let current_pid = std::process::id();
-        store.start_turn("turn_1", "终端1的prompt", current_pid).unwrap();
+        store
+            .start_turn("turn_1", "终端1的prompt", current_pid)
+            .unwrap();
         store.start_turn("turn_dead", "孤儿turn", 999999).unwrap();
 
         let recovered = store.recover_stale_turns().unwrap();
@@ -557,9 +559,7 @@ mod tests {
             store.complete_turn(&id, &content, None).unwrap();
         }
 
-        let evicted = store
-            .trim_visible_to_token_budget(2000, 0.9, 0.15)
-            .unwrap();
+        let evicted = store.trim_visible_to_token_budget(2000, 0.9, 0.15).unwrap();
         assert!(!evicted.is_empty(), "should have evicted some turns");
 
         let visible = store.load_visible_turns().unwrap();

@@ -239,9 +239,15 @@ async fn run_deep_research(
             break;
         }
         sa_progress.phase(if is_zh() {
-            format!("第 {iteration} 轮：草稿就绪，{chars} 字", chars = draft.chars().count())
+            format!(
+                "第 {iteration} 轮：草稿就绪，{chars} 字",
+                chars = draft.chars().count()
+            )
         } else {
-            format!("round {iteration}: draft ready chars={}", draft.chars().count())
+            format!(
+                "round {iteration}: draft ready chars={}",
+                draft.chars().count()
+            )
         });
         let review_prompt = reviewer_prompt(&topic, iteration, &draft, &state)?;
         sa_progress.phase(if is_zh() {
@@ -288,19 +294,35 @@ async fn run_deep_research(
             break;
         }
         sa_progress.phase(if is_zh() {
-            format!("第 {iteration} 轮：需修订 — {}", clip_inline(
-                review.get("challenge").and_then(Value::as_str).unwrap_or("审视者要求修改"),
-                100
-            ))
+            format!(
+                "第 {iteration} 轮：需修订 — {}",
+                clip_inline(
+                    review
+                        .get("challenge")
+                        .and_then(Value::as_str)
+                        .unwrap_or("审视者要求修改"),
+                    100
+                )
+            )
         } else {
-            format!("round {iteration}: revision requested - {}", clip_inline(
-                review.get("challenge").and_then(Value::as_str).unwrap_or("reviewer requested changes"),
-                100
-            ))
+            format!(
+                "round {iteration}: revision requested - {}",
+                clip_inline(
+                    review
+                        .get("challenge")
+                        .and_then(Value::as_str)
+                        .unwrap_or("reviewer requested changes"),
+                    100
+                )
+            )
         });
     }
 
-    sa_progress.phase(if is_zh() { "生成最终报告" } else { "finalizing report" });
+    sa_progress.phase(if is_zh() {
+        "生成最终报告"
+    } else {
+        "finalizing report"
+    });
     let mut final_answer = normalize_final_answer(&draft, &state)?;
     if plugin.max_final_answer_chars > 0
         && final_answer.chars().count() > plugin.max_final_answer_chars
@@ -420,7 +442,10 @@ fn register_reference_tools(registry: &mut ToolRegistry, state: Arc<Mutex<Resear
     ));
 }
 
-fn merge_stats(state: &Arc<Mutex<ResearchState>>, sa_stats: &super::subagent_runner::SubagentStats) {
+fn merge_stats(
+    state: &Arc<Mutex<ResearchState>>,
+    sa_stats: &super::subagent_runner::SubagentStats,
+) {
     use super::subagent_runner::TokenEstimateMethod as SaTEM;
     let mut state = state.lock().expect("deep research state lock");
     state.stats.tool_calls += sa_stats.tool_calls;

@@ -409,7 +409,10 @@ async fn search_duckduckgo(
     let response = client
         .get(&url)
         .header("User-Agent", CRAWLER_USER_AGENT)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .send()
         .await;
@@ -428,7 +431,9 @@ async fn search_duckduckgo(
                         fallback,
                     ));
                 }
-                bail!("DuckDuckGo returned a captcha page and fallback engines returned no results");
+                bail!(
+                    "DuckDuckGo returned a captcha page and fallback engines returned no results"
+                );
             }
             if status != 200 {
                 let fallback = search_fallback_html(client, query, max_results).await;
@@ -542,7 +547,10 @@ async fn search_yahoo_html(
     let html = match client
         .get(&url)
         .header("User-Agent", CRAWLER_USER_AGENT)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .send()
         .await
@@ -617,7 +625,10 @@ async fn search_so_html(
     let html = match client
         .get(&url)
         .header("User-Agent", CRAWLER_USER_AGENT)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .send()
         .await
@@ -767,7 +778,10 @@ async fn search_sogou_html(
     let html = match client
         .get(&url)
         .header("User-Agent", CRAWLER_USER_AGENT)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .send()
         .await
@@ -953,7 +967,6 @@ async fn search_fallback_html(
 
     combined
 }
-
 
 fn clean_html_text(value: &str) -> String {
     html_unescape(&html2text::from_read(value.as_bytes(), 120))

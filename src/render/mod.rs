@@ -352,11 +352,7 @@ impl StreamRenderer {
                 self.end_active_stream_line()?;
                 self.finalize_reasoning_summary()?;
                 let mut stdout = io::stdout();
-                writeln!(
-                    stdout,
-                    "progress {}: {text}",
-                    self.display_tool_name(name)
-                )?;
+                writeln!(stdout, "progress {}: {text}", self.display_tool_name(name))?;
                 stdout.flush()?;
             } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
                 self.tool_stats
@@ -515,11 +511,7 @@ impl StreamRenderer {
     pub fn write_system_message(&mut self, message: &str) -> Result<()> {
         self.prepare_for_external_output()?;
         let mut stdout = io::stdout();
-        execute!(
-            stdout,
-            SetForegroundColor(Color::DarkGrey),
-            MoveToColumn(0)
-        )?;
+        execute!(stdout, SetForegroundColor(Color::DarkGrey), MoveToColumn(0))?;
         writeln!(stdout, "{message}")?;
         execute!(stdout, ResetColor)?;
         stdout.flush()?;
@@ -678,8 +670,8 @@ impl StreamRenderer {
     }
 
     fn subagent_reasoning_summary_text(&self) -> String {
-        let line_count = self.subagent_reasoning_lines
-            + usize::from(self.subagent_reasoning_line_open);
+        let line_count =
+            self.subagent_reasoning_lines + usize::from(self.subagent_reasoning_line_open);
         format!(
             "{} · {} {} · {} {}",
             t("thinking", "思考"),
@@ -793,7 +785,11 @@ impl StreamRenderer {
                 let display = self.display_tool_name(name);
                 let header = tool_status_text(&display, stats, is_subagent_tool(name));
                 let progress_text = stats.final_progress.as_ref().or(stats.progress.as_ref());
-                let progress_prefix = if stats.final_progress.is_some() { "✓" } else { "↳" };
+                let progress_prefix = if stats.final_progress.is_some() {
+                    "✓"
+                } else {
+                    "↳"
+                };
                 let is_final_progress = stats.final_progress.is_some();
                 progress_text.map_or(header.clone(), |message| {
                     let progress = message
@@ -1011,7 +1007,10 @@ fn is_silent_tool(name: &str) -> bool {
 fn is_subagent_tool(name: &str) -> bool {
     matches!(
         name,
-        "linux_input_method_diagnose" | "deep_research_linux_game_compatibility" | "deep_research" | "task"
+        "linux_input_method_diagnose"
+            | "deep_research_linux_game_compatibility"
+            | "deep_research"
+            | "task"
     )
 }
 
@@ -1990,21 +1989,14 @@ fn write_todo_table(stdout: &mut io::Stdout, output: &str) -> Result<bool> {
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("pending");
-        let content = item
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let content = item.get("content").and_then(Value::as_str).unwrap_or("");
         let cell = escape_table_cell(content);
         let cell = if status == "in_progress" {
             format!("{TERTIARY_STYLE}{cell}{RESET}")
         } else {
             cell
         };
-        lines.push(format!(
-            "| {} {} |",
-            todo_status_marker(status),
-            cell
-        ));
+        lines.push(format!("| {} {} |", todo_status_marker(status), cell));
     }
     write!(stdout, "{}", render_todo_table(&lines))?;
     Ok(true)
@@ -2343,7 +2335,10 @@ mod tests {
         let normal = render_table(&lines);
         let output = render_todo_table(&lines);
         let visible = strip_ansi_for_test(&output);
-        assert_eq!(visible_width(output.lines().next().unwrap()), visible_width(normal.lines().next().unwrap()));
+        assert_eq!(
+            visible_width(output.lines().next().unwrap()),
+            visible_width(normal.lines().next().unwrap())
+        );
         assert!(!output.contains(&format!("{BOLD_STYLE}#Todo{RESET}")));
         assert!(visible.contains("[✔]"));
         assert!(visible.contains("[·]"));
@@ -2521,10 +2516,7 @@ mod tests {
             progress: None,
             final_progress: None,
         };
-        assert_eq!(
-            tool_status_text("grep", &stats, false),
-            "grep×1 运行中"
-        );
+        assert_eq!(tool_status_text("grep", &stats, false), "grep×1 运行中");
     }
 
     #[test]
@@ -2536,10 +2528,7 @@ mod tests {
             progress: None,
             final_progress: None,
         };
-        assert_eq!(
-            tool_status_text("grep", &stats, false),
-            "grep×1 ok"
-        );
+        assert_eq!(tool_status_text("grep", &stats, false), "grep×1 ok");
     }
 
     #[test]

@@ -76,10 +76,7 @@ impl ChatMessage {
 
     pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
         let text = content.into();
-        let has_tool_calls = tool_calls
-            .as_ref()
-            .map(|c| !c.is_empty())
-            .unwrap_or(false);
+        let has_tool_calls = tool_calls.as_ref().map(|c| !c.is_empty()).unwrap_or(false);
         let content = if text.trim().is_empty() && has_tool_calls {
             None
         } else {

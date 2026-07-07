@@ -44,10 +44,7 @@ fn load_tools(args: Value, allowed_tools: &BTreeSet<String>) -> Result<String> {
 
     let mut loaded = Vec::new();
     for value in names {
-        let name = value
-            .as_str()
-            .unwrap_or_default()
-            .trim();
+        let name = value.as_str().unwrap_or_default().trim();
         if name.is_empty() {
             continue;
         }

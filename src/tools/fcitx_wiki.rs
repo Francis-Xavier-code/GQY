@@ -500,10 +500,16 @@ mod tests {
         let excerpt = fetch_page_excerpt(url).await;
         assert!(excerpt.is_ok(), "fetch failed: {:?}", excerpt.err());
         let text = excerpt.unwrap();
-        assert!(text.chars().count() > 100, "excerpt too short: {} chars", text.chars().count());
+        assert!(
+            text.chars().count() > 100,
+            "excerpt too short: {} chars",
+            text.chars().count()
+        );
         let lower = text.to_ascii_lowercase();
         assert!(
-            lower.contains("xmodifiers") || lower.contains("gtk_im_module") || lower.contains("qt_im_module"),
+            lower.contains("xmodifiers")
+                || lower.contains("gtk_im_module")
+                || lower.contains("qt_im_module"),
             "excerpt does not contain expected wiki keywords"
         );
         assert!(
@@ -523,7 +529,10 @@ mod tests {
         .unwrap();
 
         assert!(output.contains("页面摘录"));
-        assert!(!output.contains("\"页面摘录\": null"), "page_excerpt should not be null when include_page_excerpt is true");
+        assert!(
+            !output.contains("\"页面摘录\": null"),
+            "page_excerpt should not be null when include_page_excerpt is true"
+        );
     }
 
     #[tokio::test]

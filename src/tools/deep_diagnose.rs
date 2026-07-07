@@ -2,7 +2,9 @@ use super::subagent_runner::format_token_count;
 use super::{readable_tool_name, ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
 use crate::i18n::{is_zh, text as t};
-use crate::llm::{ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage};
+use crate::llm::{
+    ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage,
+};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -32,7 +34,13 @@ struct DiagnosisProgress {
 
 impl DiagnosisProgress {
     fn new(config: &AppConfig, progress: ToolProgress) -> Self {
-        let mode = match config.display.tool_calls.trim().to_ascii_lowercase().as_str() {
+        let mode = match config
+            .display
+            .tool_calls
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "hidden" => ProgressMode::Hidden,
             "full" => ProgressMode::Full,
             _ => ProgressMode::Summary,
@@ -52,7 +60,8 @@ impl DiagnosisProgress {
 
     fn reasoning(&self, text: &str) {
         if self.mode != ProgressMode::Hidden {
-            self.progress.report(format!("__subagent_reasoning__{}", text));
+            self.progress
+                .report(format!("__subagent_reasoning__{}", text));
         }
     }
 
@@ -276,12 +285,16 @@ async fn chat_with_tools(
             return Ok(result);
         }
         let result = client
-            .chat_stream(messages.clone(), definitions.clone(), |chunk: ChatStreamChunk| {
-                if chunk.kind == ChatStreamKind::Reasoning {
-                    progress.reasoning(&chunk.text);
-                }
-                Ok(())
-            })
+            .chat_stream(
+                messages.clone(),
+                definitions.clone(),
+                |chunk: ChatStreamChunk| {
+                    if chunk.kind == ChatStreamKind::Reasoning {
+                        progress.reasoning(&chunk.text);
+                    }
+                    Ok(())
+                },
+            )
             .await?;
         stats.add_usage_or_estimate(result.usage.as_ref(), &[]);
         if result.tool_calls.is_empty() {

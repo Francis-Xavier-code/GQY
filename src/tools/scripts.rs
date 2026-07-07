@@ -32,7 +32,10 @@ struct ScriptEntry {
 }
 
 pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
-    let dirs = [paths.system_scripts_dir.as_path(), paths.scripts_dir.as_path()];
+    let dirs = [
+        paths.system_scripts_dir.as_path(),
+        paths.scripts_dir.as_path(),
+    ];
     let entries = match scan_scripts(&dirs) {
         Ok(e) => e,
         Err(_) => return,
@@ -50,7 +53,10 @@ pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
 }
 
 pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &MiyuPaths) {
-    let dirs = [paths.system_scripts_dir.as_path(), paths.scripts_dir.as_path()];
+    let dirs = [
+        paths.system_scripts_dir.as_path(),
+        paths.scripts_dir.as_path(),
+    ];
     let entries = match scan_scripts(&dirs) {
         Ok(e) => e,
         Err(_) => return,
@@ -154,8 +160,7 @@ fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
         .unwrap_or("script")
         .to_string();
     let display_name = id.clone();
-    let description = extract_description(&raw)
-        .unwrap_or_else(|| format!("User script: {id}"));
+    let description = extract_description(&raw).unwrap_or_else(|| format!("User script: {id}"));
     let parameters = json!({
         "type": "object",
         "properties": {
@@ -228,20 +233,18 @@ fn entry_to_spec(entry: &ScriptEntry, scripts_dir: &Path) -> Result<ToolSpec> {
     } else {
         entry.parameters.clone()
     };
-    let timeout = entry.timeout_seconds.unwrap_or(SCRIPT_TIMEOUT_SECS).min(300);
+    let timeout = entry
+        .timeout_seconds
+        .unwrap_or(SCRIPT_TIMEOUT_SECS)
+        .min(300);
     let path_str = entry.path.clone();
     let scripts_dir = scripts_dir.to_path_buf();
 
-    let spec = ToolSpec::new(
-        id,
-        description,
-        parameters,
-        move |args| {
-            let path_str = path_str.clone();
-            let scripts_dir = scripts_dir.clone();
-            async move { run_script(&path_str, &scripts_dir, &args, timeout).await }
-        },
-    )
+    let spec = ToolSpec::new(id, description, parameters, move |args| {
+        let path_str = path_str.clone();
+        let scripts_dir = scripts_dir.clone();
+        async move { run_script(&path_str, &scripts_dir, &args, timeout).await }
+    })
     .writes()
     .with_display_name(display_name);
     Ok(spec)
@@ -308,7 +311,10 @@ fn clip_output(value: &str) -> String {
     } else {
         format!(
             "{}\n...[{} {MAX_SCRIPT_OUTPUT_CHARS} {}]",
-            value.chars().take(MAX_SCRIPT_OUTPUT_CHARS).collect::<String>(),
+            value
+                .chars()
+                .take(MAX_SCRIPT_OUTPUT_CHARS)
+                .collect::<String>(),
             t("truncated to", "已截断到"),
             t("chars", "字符")
         )
@@ -326,7 +332,11 @@ fn make_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn register_script_tools(registry: &mut ToolRegistry, scripts_dir: PathBuf, system_scripts_dir: PathBuf) {
+fn register_script_tools(
+    registry: &mut ToolRegistry,
+    scripts_dir: PathBuf,
+    system_scripts_dir: PathBuf,
+) {
     let scripts_dir_2 = scripts_dir.clone();
     let scripts_dir_3 = scripts_dir.clone();
     let system_scripts_dir_2 = system_scripts_dir.clone();
@@ -430,10 +440,16 @@ async fn register_script_handler(args: Value, scripts_dir: &Path) -> Result<Stri
     if id.is_empty() {
         bail!("id is required");
     }
-    if !id.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+    if !id
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_alphabetic())
+        .unwrap_or(false)
         || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
-        bail!("id must start with an ASCII letter and contain only ASCII alphanumeric and underscore");
+        bail!(
+            "id must start with an ASCII letter and contain only ASCII alphanumeric and underscore"
+        );
     }
     let display_name = args
         .get("display_name")
@@ -552,7 +568,11 @@ async fn unregister_script_handler(args: Value, scripts_dir: &Path) -> Result<St
     Ok(format!(
         "Script '{}' unregistered successfully{}.",
         id,
-        if deleted_file { " and file deleted" } else { "" }
+        if deleted_file {
+            " and file deleted"
+        } else {
+            ""
+        }
     ))
 }
 
@@ -568,9 +588,7 @@ async fn list_scripts_handler(scripts_dir: &Path, system_scripts_dir: &Path) -> 
         .iter()
         .map(|entry| {
             let path = Path::new(&entry.path);
-            let canon_path = path
-                .canonicalize()
-                .unwrap_or_else(|_| path.to_path_buf());
+            let canon_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             let source = if canon_path.starts_with(&canon_sys) {
                 "system"
             } else {
@@ -608,10 +626,7 @@ mod tests {
     #[test]
     fn extracts_chinese_description() {
         let raw = "#!/usr/bin/env python3\n功能介绍: 检查系统状态\n\nprint('ok')";
-        assert_eq!(
-            extract_description(raw),
-            Some("检查系统状态".to_string())
-        );
+        assert_eq!(extract_description(raw), Some("检查系统状态".to_string()));
     }
 
     #[test]
@@ -659,11 +674,7 @@ mod tests {
             r#"{"scripts":[{"id":"custom","display_name":"自定义","description":"Custom tool","path":"custom.sh"}]}"#,
         )
         .unwrap();
-        std::fs::write(
-            scripts_dir.join("custom.sh"),
-            "#!/bin/bash\necho custom",
-        )
-        .unwrap();
+        std::fs::write(scripts_dir.join("custom.sh"), "#!/bin/bash\necho custom").unwrap();
         std::fs::write(
             scripts_dir.join("auto.sh"),
             "#!/bin/bash\ndescription: Auto detected\n\necho auto",

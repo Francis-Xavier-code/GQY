@@ -245,10 +245,7 @@ impl ConversationDb {
 
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let affected = conn.execute(
-            "UPDATE turns SET hidden = 1 WHERE seq <= ?1",
-            params![seq],
-        )?;
+        let affected = conn.execute("UPDATE turns SET hidden = 1 WHERE seq <= ?1", params![seq])?;
         Ok(affected)
     }
 
@@ -280,10 +277,7 @@ impl ConversationDb {
                     token_total, token_usage_estimated
              FROM turns WHERE is_summary = 1 ORDER BY seq DESC LIMIT 1",
         )?;
-        let turn = stmt
-            .query_map([], map_turn_row)?
-            .next()
-            .transpose()?;
+        let turn = stmt.query_map([], map_turn_row)?.next().transpose()?;
         Ok(turn)
     }
 
@@ -370,10 +364,7 @@ impl ConversationDb {
             .optional()?;
         match last {
             Some((turn_id, user_content)) => {
-                conn.execute(
-                    "DELETE FROM turns WHERE turn_id = ?1",
-                    params![turn_id],
-                )?;
+                conn.execute("DELETE FROM turns WHERE turn_id = ?1", params![turn_id])?;
                 Ok((1, Some(user_content)))
             }
             None => Ok((0, None)),
@@ -394,9 +385,8 @@ impl ConversationDb {
     #[allow(dead_code)]
     pub fn running_turn_summaries(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT user_content FROM turns WHERE status = 'running' ORDER BY seq ASC",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT user_content FROM turns WHERE status = 'running' ORDER BY seq ASC")?;
         let summaries = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -416,9 +406,8 @@ impl ConversationDb {
 
     pub fn recover_stale_running_turns(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT turn_id, owner_pid FROM turns WHERE status = 'running'",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT turn_id, owner_pid FROM turns WHERE status = 'running'")?;
         let stale_turn_ids: Vec<String> = stmt
             .query_map([], |row| {
                 let turn_id: String = row.get(0)?;
@@ -430,7 +419,11 @@ impl ConversationDb {
                 let alive = owner_pid
                     .map(|pid| crate::alarm::process_exists(pid as u32))
                     .unwrap_or(false);
-                if alive { None } else { Some(turn_id) }
+                if alive {
+                    None
+                } else {
+                    Some(turn_id)
+                }
             })
             .collect();
         drop(stmt);
@@ -450,8 +443,8 @@ impl ConversationDb {
     }
 
     fn next_seq_locked(&self, conn: &Connection) -> Result<i64> {
-        let max_seq: i64 = conn
-            .query_row("SELECT COALESCE(MAX(seq), 0) FROM turns", [], |row| {
+        let max_seq: i64 =
+            conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM turns", [], |row| {
                 row.get(0)
             })?;
         Ok(max_seq + 1)
@@ -480,10 +473,7 @@ impl ConversationDb {
                 Err(_) => continue,
             };
             let role = entry.get("role").and_then(|v| v.as_str()).unwrap_or("");
-            let content = entry
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let timestamp = entry
                 .get("timestamp")
                 .and_then(|v| v.as_str())
@@ -575,8 +565,7 @@ pub fn interrupted_text() -> &'static str {
 
 fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
     let tool_reports_json: String = row.get(8)?;
-    let tool_reports: Vec<String> =
-        serde_json::from_str(&tool_reports_json).unwrap_or_default();
+    let tool_reports: Vec<String> = serde_json::from_str(&tool_reports_json).unwrap_or_default();
     let hidden: i64 = row.get(9)?;
     let is_summary: i64 = row.get(10)?;
     Ok(Turn {
@@ -597,7 +586,12 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
     })
 }
 
-fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
     for row in rows {

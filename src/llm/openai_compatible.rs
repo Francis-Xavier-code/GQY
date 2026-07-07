@@ -966,7 +966,8 @@ impl AnthropicToolAccumulator {
         while self.calls.len() <= index {
             self.calls.push(PartialToolCall::default());
         }
-        let call = &mut self.calls[index];        call.id = block.id.unwrap_or_else(|| format!("tool-{index}"));
+        let call = &mut self.calls[index];
+        call.id = block.id.unwrap_or_else(|| format!("tool-{index}"));
         call.kind = "function".to_string();
         call.name = block.name.unwrap_or_default();
     }

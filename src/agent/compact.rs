@@ -41,7 +41,9 @@ impl Compactor {
 
         let head: Vec<&Turn> = turns.iter().collect();
         let previous_summary = self.state.load_last_summary()?;
-        let prev_text = previous_summary.as_ref().map(|t| t.assistant_content.clone());
+        let prev_text = previous_summary
+            .as_ref()
+            .map(|t| t.assistant_content.clone());
 
         let usable = self
             .context_window
@@ -58,10 +60,18 @@ impl Compactor {
             let mut summaries = Vec::new();
             for segment in &segments {
                 let segment_text = turns_to_text(segment);
-                let s = compact_single_pass(&self.client, &segment_text, None, &mut |_| Ok(())).await?;
+                let s =
+                    compact_single_pass(&self.client, &segment_text, None, &mut |_| Ok(())).await?;
                 summaries.push(s);
             }
-            merge_summaries_tree(&self.client, &summaries, prev_text.as_deref(), usable, on_chunk).await?
+            merge_summaries_tree(
+                &self.client,
+                &summaries,
+                prev_text.as_deref(),
+                usable,
+                on_chunk,
+            )
+            .await?
         };
 
         let last_seq = turns.last().unwrap().seq;
@@ -128,9 +138,7 @@ where
         ChatMessage::system(COMPACT_SYSTEM_PROMPT.to_string()),
         ChatMessage::plain("user", &prompt),
     ];
-    let result = client
-        .chat_stream(messages, vec![], on_chunk)
-        .await?;
+    let result = client.chat_stream(messages, vec![], on_chunk).await?;
     Ok(result.content)
 }
 
@@ -159,9 +167,7 @@ where
         ChatMessage::system(COMPACT_SYSTEM_PROMPT.to_string()),
         ChatMessage::plain("user", &prompt),
     ];
-    let result = client
-        .chat_stream(messages, vec![], on_chunk)
-        .await?;
+    let result = client.chat_stream(messages, vec![], on_chunk).await?;
     Ok(result.content)
 }
 
@@ -230,7 +236,8 @@ where
             let s_tokens = estimate_tokens(s);
             if batch_tokens + s_tokens > usable_tokens && !batch.is_empty() {
                 let batch_text = batch.join("\n\n---\n\n");
-                let merged = compact_single_pass_text(client, &batch_text, None, &mut |_| Ok(())).await?;
+                let merged =
+                    compact_single_pass_text(client, &batch_text, None, &mut |_| Ok(())).await?;
                 next.push(merged);
                 batch.clear();
                 batch_tokens = 0;
@@ -240,7 +247,8 @@ where
         }
         if !batch.is_empty() {
             let batch_text = batch.join("\n\n---\n\n");
-            let merged = compact_single_pass_text(client, &batch_text, None, &mut |_| Ok(())).await?;
+            let merged =
+                compact_single_pass_text(client, &batch_text, None, &mut |_| Ok(())).await?;
             next.push(merged);
         }
 

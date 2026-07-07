@@ -1,8 +1,8 @@
 use anyhow::Result;
 use base64::Engine;
 use sha2::Digest;
-use std::path::{Path, PathBuf};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const MAX_CLIPBOARD_IMAGE_BYTES: usize = 10 * 1024 * 1024;
@@ -92,12 +92,16 @@ pub enum ClipboardContent {
 pub fn read_clipboard() -> Result<ClipboardContent> {
     let targets = list_clipboard_targets()?;
     let has_uri_list = targets.iter().any(|t| {
-        t == "text/uri-list" || t == "x-special/gnome-copied-files" || t == "application/glfw+clipboard-32678"
+        t == "text/uri-list"
+            || t == "x-special/gnome-copied-files"
+            || t == "application/glfw+clipboard-32678"
     });
-    let has_image = targets
-        .iter()
-        .any(|t| t.starts_with("image/"));
-    if has_uri_list || targets.iter().any(|t| t == "text/plain" || t == "TEXT" || t == "STRING" || t == "UTF8_STRING") {
+    let has_image = targets.iter().any(|t| t.starts_with("image/"));
+    if has_uri_list
+        || targets
+            .iter()
+            .any(|t| t == "text/plain" || t == "TEXT" || t == "STRING" || t == "UTF8_STRING")
+    {
         if let Some(text) = read_clipboard_text()? {
             if has_uri_list || text.starts_with("file://") || text.starts_with('/') {
                 if let Some(cp) = parse_clipboard_path(&text) {
@@ -122,10 +126,9 @@ fn list_clipboard_targets() -> Result<Vec<String>> {
     if let Some(targets) = try_targets_command("wl-paste", &["-l"])? {
         return Ok(targets);
     }
-    if let Some(targets) = try_targets_command(
-        "xclip",
-        &["-selection", "clipboard", "-t", "TARGETS", "-o"],
-    )? {
+    if let Some(targets) =
+        try_targets_command("xclip", &["-selection", "clipboard", "-t", "TARGETS", "-o"])?
+    {
         return Ok(targets);
     }
     Ok(Vec::new())

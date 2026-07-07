@@ -144,7 +144,8 @@ async fn fetch_detail(client: &reqwest::Client, game: &ScoredGame) -> Result<Val
     let html = fetch_text(client, &game.entry.url).await?;
     let text = html2text::from_read(html.as_bytes(), 120);
     let title = extract_title(&html).unwrap_or_else(|| game.entry.title.clone());
-    let summary = extract_meta_description(&html).or_else(|| first_nonempty_line_after(&text, &title));
+    let summary =
+        extract_meta_description(&html).or_else(|| first_nonempty_line_after(&text, &title));
     let verdict = extract_verdict(&html, &text);
     let recommended_proton = value_after_label(&text, "Recommended Proton")
         .or_else(|| value_after_label(&text, "Proton"));
@@ -160,8 +161,14 @@ async fn fetch_detail(client: &reqwest::Client, game: &ScoredGame) -> Result<Val
     let notes = extract_notes(summary.as_deref(), &text);
     let missing_fields = missing_fields(&[
         ("compatibility.verdict", verdict.as_deref()),
-        ("compatibility.recommendedProton", recommended_proton.as_deref()),
-        ("compatibility.steamDeck.status", steam_deck_status.as_deref()),
+        (
+            "compatibility.recommendedProton",
+            recommended_proton.as_deref(),
+        ),
+        (
+            "compatibility.steamDeck.status",
+            steam_deck_status.as_deref(),
+        ),
         ("metadata.lastVerified", last_verified.as_deref()),
         ("game.developer", developer.as_deref()),
         ("game.publisher", publisher.as_deref()),
@@ -217,7 +224,13 @@ async fn fetch_detail(client: &reqwest::Client, game: &ScoredGame) -> Result<Val
 }
 
 async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String> {
-    Ok(client.get(url).send().await?.error_for_status()?.text().await?)
+    Ok(client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?)
 }
 
 fn extract_games_from_list_page(html: &str) -> Vec<GameEntry> {
@@ -229,7 +242,9 @@ fn extract_games_from_list_page(html: &str) -> Vec<GameEntry> {
     let mut cursor = 0;
     while let Some(relative) = html[cursor..].find("<a") {
         let start = cursor + relative;
-        let Some(tag_end_rel) = html[start..].find('>') else { break };
+        let Some(tag_end_rel) = html[start..].find('>') else {
+            break;
+        };
         let tag_end = start + tag_end_rel + 1;
         let tag = &html[start..tag_end];
         let Some(path) = attr_value(tag, "href") else {
@@ -240,7 +255,9 @@ fn extract_games_from_list_page(html: &str) -> Vec<GameEntry> {
             cursor = tag_end;
             continue;
         }
-        let Some(close_rel) = html[tag_end..].find("</a>") else { break };
+        let Some(close_rel) = html[tag_end..].find("</a>") else {
+            break;
+        };
         let close = tag_end + close_rel;
         let inner = &html[tag_end..close];
         let title = extract_heading(inner).unwrap_or_else(|| strip_tags(inner));
@@ -261,9 +278,13 @@ fn extract_games_from_json_ld(html: &str) -> Vec<GameEntry> {
     let marker = "application/ld+json";
     while let Some(marker_rel) = html[cursor..].find(marker) {
         let marker_pos = cursor + marker_rel;
-        let Some(open_rel) = html[marker_pos..].find('>') else { break };
+        let Some(open_rel) = html[marker_pos..].find('>') else {
+            break;
+        };
         let json_start = marker_pos + open_rel + 1;
-        let Some(close_rel) = html[json_start..].find("</script>") else { break };
+        let Some(close_rel) = html[json_start..].find("</script>") else {
+            break;
+        };
         let json_end = json_start + close_rel;
         if let Ok(value) = serde_json::from_str::<Value>(&html[json_start..json_end]) {
             if value["@type"].as_str() == Some("ItemList") {
@@ -319,17 +340,21 @@ fn score_game(entry: GameEntry, query: &str) -> Option<ScoredGame> {
     let tokens = query.split_whitespace().collect::<Vec<_>>();
     let (score, reason) = match title.cmp(&query) {
         Ordering::Equal => (1000, "exact title match"),
-        _ if title.starts_with(&query) => (800 - entry.title.len() as i64, "title starts with query"),
+        _ if title.starts_with(&query) => {
+            (800 - entry.title.len() as i64, "title starts with query")
+        }
         _ if title.contains(&query) => (
             600 - title.find(&query).unwrap_or_default() as i64,
             "title contains query",
         ),
-        _ if tokens.len() > 1 && tokens.iter().all(|token| title.contains(token)) => {
-            (500 - (title.len() as i64 - query.len() as i64).abs(), "title contains all query terms")
-        }
-        _ if tokens.len() == 1 && tokens.iter().any(|token| title.contains(token)) => {
-            (100 - (title.len() as i64 - query.len() as i64).abs(), "title contains query term")
-        }
+        _ if tokens.len() > 1 && tokens.iter().all(|token| title.contains(token)) => (
+            500 - (title.len() as i64 - query.len() as i64).abs(),
+            "title contains all query terms",
+        ),
+        _ if tokens.len() == 1 && tokens.iter().any(|token| title.contains(token)) => (
+            100 - (title.len() as i64 - query.len() as i64).abs(),
+            "title contains query term",
+        ),
         _ => return None,
     };
     Some(ScoredGame {
@@ -402,11 +427,17 @@ fn absolute_url(path: &str) -> String {
 fn extract_heading(html: &str) -> Option<String> {
     for tag in ["h1", "h2", "h3"] {
         let start_marker = format!("<{tag}");
-        let Some(start) = html.find(&start_marker) else { continue };
-        let Some(open_end_rel) = html[start..].find('>') else { continue };
+        let Some(start) = html.find(&start_marker) else {
+            continue;
+        };
+        let Some(open_end_rel) = html[start..].find('>') else {
+            continue;
+        };
         let content_start = start + open_end_rel + 1;
         let close_marker = format!("</{tag}>");
-        let Some(close_rel) = html[content_start..].find(&close_marker) else { continue };
+        let Some(close_rel) = html[content_start..].find(&close_marker) else {
+            continue;
+        };
         let content = strip_tags(&html[content_start..content_start + close_rel]);
         if !content.is_empty() {
             return Some(content);
@@ -432,7 +463,9 @@ fn extract_title(html: &str) -> Option<String> {
 
 fn extract_meta_description(html: &str) -> Option<String> {
     let marker = "name=\"description\"";
-    let pos = html.find(marker).or_else(|| html.find("name='description'"))?;
+    let pos = html
+        .find(marker)
+        .or_else(|| html.find("name='description'"))?;
     let tag_end = html[pos..].find('>')?;
     attr_value(&html[pos..pos + tag_end], "content").map(|value| decode_entities(&value))
 }
@@ -535,7 +568,8 @@ fn extract_anticheat(text: &str) -> Value {
         || lower.contains("co-op multiplayer works")
     {
         Some(true)
-    } else if lower.contains("anti-cheat") && (lower.contains("broken") || lower.contains("denied")) {
+    } else if lower.contains("anti-cheat") && (lower.contains("broken") || lower.contains("denied"))
+    {
         Some(false)
     } else {
         None
@@ -550,9 +584,15 @@ fn extract_anticheat(text: &str) -> Value {
 
 fn anticheat_summary(name: Option<&str>, supported: Option<bool>) -> Option<String> {
     match (name, supported) {
-        (Some(name), Some(true)) => Some(format!("{name} appears to support Linux/Proton for this game based on the parsed page text.")),
-        (Some(name), Some(false)) => Some(format!("{name} appears to block or break Linux/Proton play based on the parsed page text.")),
-        (Some(name), None) => Some(format!("{name} is mentioned, but support status was not clear from the parsed page text.")),
+        (Some(name), Some(true)) => Some(format!(
+            "{name} appears to support Linux/Proton for this game based on the parsed page text."
+        )),
+        (Some(name), Some(false)) => Some(format!(
+            "{name} appears to block or break Linux/Proton play based on the parsed page text."
+        )),
+        (Some(name), None) => Some(format!(
+            "{name} is mentioned, but support status was not clear from the parsed page text."
+        )),
         _ => None,
     }
 }
@@ -658,7 +698,11 @@ fn missing_fields(fields: &[(&str, Option<&str>)]) -> Vec<String> {
     fields
         .iter()
         .filter_map(|(name, value)| {
-            if value.map(str::trim).filter(|value| !value.is_empty()).is_some() {
+            if value
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some()
+            {
                 None
             } else {
                 Some((*name).to_string())
@@ -669,7 +713,9 @@ fn missing_fields(fields: &[(&str, Option<&str>)]) -> Vec<String> {
 
 fn mentions_native_linux(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains("native linux") || lower.contains("native build") || lower.contains("runs natively")
+    lower.contains("native linux")
+        || lower.contains("native build")
+        || lower.contains("runs natively")
 }
 
 fn playable(verdict: Option<&str>) -> Option<bool> {
@@ -681,7 +727,11 @@ fn playable(verdict: Option<&str>) -> Option<bool> {
     }
 }
 
-fn verdict_label(verdict: Option<&str>, requires_proton: bool, native_linux: bool) -> Option<String> {
+fn verdict_label(
+    verdict: Option<&str>,
+    requires_proton: bool,
+    native_linux: bool,
+) -> Option<String> {
     match verdict {
         Some("Native") if native_linux => Some("Native Linux".to_string()),
         Some("Works") if requires_proton => Some("Works via Proton".to_string()),
@@ -757,6 +807,9 @@ mod tests {
     #[test]
     fn extracts_label_value() {
         let text = "Recommended Proton\n9.0-3\nLast verified\nMay 8, 2026";
-        assert_eq!(value_after_label(text, "Recommended Proton"), Some("9.0-3".to_string()));
+        assert_eq!(
+            value_after_label(text, "Recommended Proton"),
+            Some("9.0-3".to_string())
+        );
     }
 }

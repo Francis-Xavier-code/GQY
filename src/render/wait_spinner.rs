@@ -101,9 +101,7 @@ fn render_frame(frame: usize, state: &WaitSpinner) -> (String, u16) {
                 .map(|char_index| render_cell(char_index, scanner))
                 .collect::<String>()
         }
-        SpinnerStyle::Braille => {
-            paint_secondary(BRAILLE_FRAMES[frame % BRAILLE_FRAMES.len()])
-        }
+        SpinnerStyle::Braille => paint_secondary(BRAILLE_FRAMES[frame % BRAILLE_FRAMES.len()]),
     };
     let main_line = format!(
         "{} {}{}",
@@ -374,7 +372,11 @@ mod tests {
             .map(|i| {
                 let (frame, _) = render_frame(i, &spinner);
                 let first_char = frame.split_whitespace().next().unwrap_or("");
-                BRAILLE_FRAMES.iter().find(|&&b| first_char.contains(b)).copied().unwrap_or("")
+                BRAILLE_FRAMES
+                    .iter()
+                    .find(|&&b| first_char.contains(b))
+                    .copied()
+                    .unwrap_or("")
             })
             .collect();
 

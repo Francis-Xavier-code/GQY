@@ -219,9 +219,7 @@ impl ToolRegistry {
     }
 
     pub fn display_name(&self, name: &str) -> Option<String> {
-        self.tools
-            .get(name)
-            .and_then(|t| t.display_name.clone())
+        self.tools.get(name).and_then(|t| t.display_name.clone())
     }
 
     pub fn tool_names(&self) -> Vec<String> {

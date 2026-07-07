@@ -2983,7 +2983,7 @@ fn colorize_repl_placeholders(line: &str) -> String {
 
 fn colored_mode_label(mode: AgentMode) -> String {
     match mode {
-        AgentMode::Normal => "\x1b[38;5;208m[NORMAL]\x1b[0m".to_string(),
+        AgentMode::Normal => "\x1b[1m\x1b[34m[NORMAL]\x1b[0m".to_string(),
         AgentMode::Plan => "\x1b[36m[PLAN]\x1b[0m".to_string(),
     }
 }

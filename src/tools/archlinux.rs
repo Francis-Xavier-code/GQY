@@ -566,10 +566,7 @@ async fn archlinux_news(args: Value, state_dir: &std::path::Path) -> Result<Stri
         .build()?;
     let resp = client.get(ARCH_NEWS_FEED_URL).send().await?;
     if !resp.status().is_success() {
-        bail!(
-            "Arch news feed returned HTTP {}",
-            resp.status()
-        );
+        bail!("Arch news feed returned HTTP {}", resp.status());
     }
     let xml = resp.text().await?;
     let articles = parse_rss_feed(&xml, limit);
@@ -577,9 +574,11 @@ async fn archlinux_news(args: Value, state_dir: &std::path::Path) -> Result<Stri
     let cache_path = state_dir.join(ARCH_NEWS_CACHE_FILE);
     let last_seen_url: Option<String> = if cache_path.is_file() {
         let raw = std::fs::read_to_string(&cache_path)?;
-        serde_json::from_str::<Value>(&raw)
-            .ok()
-            .and_then(|v| v.get("last_seen_url").and_then(Value::as_str).map(String::from))
+        serde_json::from_str::<Value>(&raw).ok().and_then(|v| {
+            v.get("last_seen_url")
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
     } else {
         None
     };
@@ -735,7 +734,10 @@ fn tokenize_xml(xml: &str) -> Vec<XmlToken> {
                 chars.next();
             }
             let tag_content = tag_content.trim();
-            if tag_content.is_empty() || tag_content.starts_with('?') || tag_content.starts_with('!') {
+            if tag_content.is_empty()
+                || tag_content.starts_with('?')
+                || tag_content.starts_with('!')
+            {
                 continue;
             }
             let tag_name = tag_content
@@ -830,7 +832,10 @@ mod news_tests {
 
     #[test]
     fn decodes_xml_entities() {
-        assert_eq!(decode_xml_entities("a &amp; b &lt; c &gt; d"), "a & b < c > d");
+        assert_eq!(
+            decode_xml_entities("a &amp; b &lt; c &gt; d"),
+            "a & b < c > d"
+        );
         assert_eq!(decode_xml_entities("&quot;hi&quot;"), "\"hi\"");
     }
 }
