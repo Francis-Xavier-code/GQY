@@ -624,7 +624,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let mode = if cli.plan {
         AgentMode::Plan
     } else {
-        AgentMode::Yolo
+        AgentMode::Normal
     };
 
     crate::models_cache::try_load(&paths);
@@ -823,7 +823,11 @@ fn select_shell_hook() -> Result<Option<&'static str>> {
     }
     let _guard = ShellMenuGuard;
     loop {
-        queue!(stdout, MoveTo(0, menu_row), Clear(ClearType::FromCursorDown))?;
+        queue!(
+            stdout,
+            MoveTo(0, menu_row),
+            Clear(ClearType::FromCursorDown)
+        )?;
         for (index, (label, _)) in options.iter().enumerate() {
             if index == selected {
                 queue!(stdout, Print(format!("> {label}\n")))?;
@@ -1299,10 +1303,7 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
     match crate::clipboard::read_clipboard() {
         Ok(crate::clipboard::ClipboardContent::Image(img)) => {
             let path = img.write_temp_file(&paths.cache_dir, 0)?;
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("image");
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
             print!("[Image 1: {}]", filename);
             io::stdout().flush()?;
             Ok(())
@@ -1356,16 +1357,13 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
     let (clean_message, pasted_images) = extract_image_placeholders(&message);
 
     let result = if pasted_images.is_empty() {
-        run_chat_with_options(paths, clean_message, None, false, AgentMode::Yolo).await
+        run_chat_with_options(paths, clean_message, None, false, AgentMode::Normal).await
     } else {
         run_chat_with_images(paths, clean_message, pasted_images).await
     };
     drain_stdin();
     if let Err(err) = &result {
-        println!(
-            "\x1b[31m{}: {err}\x1b[0m",
-            t("error", "错误")
-        );
+        println!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
     }
     result
 }
@@ -1431,12 +1429,19 @@ async fn run_chat_with_images(
     let state = StateStore::new(paths)?;
     state.init_files()?;
     let client = OpenAiCompatibleClient::from_config(&config, paths)?;
-    let registry = build_tool_registry(&config, paths, AgentMode::Yolo)?;
+    let registry = build_tool_registry(&config, paths, AgentMode::Normal)?;
     let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
     let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
     let show_token_usage = config.display.show_token_usage;
-    let mut agent = Agent::new(config, paths, state.clone(), client, registry, AgentMode::Yolo)?;
+    let mut agent = Agent::new(
+        config,
+        paths,
+        state.clone(),
+        client,
+        registry,
+        AgentMode::Normal,
+    )?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, false, readable_tool_names);
     renderer.start_waiting()?;
@@ -1612,8 +1617,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             println!("{}: {}", t("mode", "模式"), mode.label());
             continue;
         }
-        if input.eq_ignore_ascii_case("/yolo") {
-            mode = AgentMode::Yolo;
+        if input.eq_ignore_ascii_case("/normal") {
+            mode = AgentMode::Normal;
             println!("{}: {}", t("mode", "模式"), mode.label());
             continue;
         }
@@ -1668,7 +1673,9 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         );
         renderer.start_waiting()?;
         let chat_result = {
-            let chat = agent.chat_stream_with_images(input, &pasted_images, |event| handle_agent_event(&mut renderer, event));
+            let chat = agent.chat_stream_with_images(input, &pasted_images, |event| {
+                handle_agent_event(&mut renderer, event)
+            });
             tokio::pin!(chat);
             tokio::select! {
                 result = &mut chat => result.map(Some),
@@ -1689,10 +1696,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             }
             Ok(None) => {}
             Err(err) => {
-                eprintln!(
-                    "\x1b[31m{}: {err}\x1b[0m",
-                    t("error", "错误")
-                );
+                eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
                 continue;
             }
         }
@@ -1735,8 +1739,8 @@ fn print_repl_help() {
         t("switch to read-only planning mode", "切换到只读计划模式")
     );
     println!(
-        "  /yolo       {}",
-        t("switch to YOLO mode", "切换到 YOLO 模式")
+        "  /normal     {}",
+        t("switch to normal mode", "切换到普通模式")
     );
     println!(
         "  /undo       {}",
@@ -1758,20 +1762,20 @@ fn print_repl_help() {
     println!(
         "  Tab         {}",
         t(
-            "toggle YOLO/PLAN, or complete slash commands",
-            "切换 YOLO/PLAN，或补全斜杠菜单"
+            "toggle NORMAL/PLAN, or complete slash commands",
+            "切换 NORMAL/PLAN，或补全斜杠菜单"
         )
     );
     println!("  Enter       {}", t("send message", "发送消息"));
     println!("  Ctrl+J      {}", t("insert newline", "插入换行"));
     println!(
         "  Ctrl+V      {}",
-        t("paste image or text from clipboard", "从剪贴板粘贴图片或文本")
+        t(
+            "paste image or text from clipboard",
+            "从剪贴板粘贴图片或文本"
+        )
     );
-    println!(
-        "  Ctrl+L      {}",
-        t("clear screen", "清屏")
-    );
+    println!("  Ctrl+L      {}", t("clear screen", "清屏"));
     println!(
         "  Up/Down     {}",
         t("browse input history", "切换输入历史")
@@ -1786,7 +1790,13 @@ fn read_repl_input(
     mut mode: AgentMode,
     prefill: Option<String>,
     history: &[String],
-) -> Result<Option<(AgentMode, String, Vec<Option<crate::clipboard::PastedImage>>)>> {
+) -> Result<
+    Option<(
+        AgentMode,
+        String,
+        Vec<Option<crate::clipboard::PastedImage>>,
+    )>,
+> {
     let mut stdout = io::stdout();
     let mut input = strip_terminal_control_sequences(&prefill.unwrap_or_default());
     let mut cursor = input.chars().count();
@@ -1839,10 +1849,10 @@ fn read_repl_input(
                             cursor = input.chars().count();
                         }
                     } else {
-                        mode = if mode == AgentMode::Yolo {
+                        mode = if mode == AgentMode::Normal {
                             AgentMode::Plan
                         } else {
-                            AgentMode::Yolo
+                            AgentMode::Normal
                         };
                     }
                     is_pasted = false;
@@ -2063,7 +2073,8 @@ fn read_repl_input(
                 }
                 KeyCode::Backspace => {
                     if cursor > 0 {
-                        if let Some((start, end)) = placeholder_before_or_at_cursor(&input, cursor) {
+                        if let Some((start, end)) = placeholder_before_or_at_cursor(&input, cursor)
+                        {
                             clear_placeholder_payload(
                                 &input,
                                 start,
@@ -2116,7 +2127,9 @@ fn read_repl_input(
                     if modifiers.contains(KeyModifiers::CONTROL)
                         && modifiers.contains(KeyModifiers::SHIFT) =>
                 {
-                    if let Some(selected) = placeholder_text_near_cursor(&input, cursor, &pasted_texts) {
+                    if let Some(selected) =
+                        placeholder_text_near_cursor(&input, cursor, &pasted_texts)
+                    {
                         let _ = crate::clipboard::write_clipboard_text(&selected)?;
                     }
                 }
@@ -2215,12 +2228,9 @@ fn read_repl_input(
             },
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
-                    if let Some(position) = mouse_position_to_repl_cursor(
-                        &input,
-                        input_row,
-                        mouse.row,
-                        mouse.column,
-                    ) {
+                    if let Some(position) =
+                        mouse_position_to_repl_cursor(&input, input_row, mouse.row, mouse.column)
+                    {
                         selection_anchor = Some(position);
                         selection_cursor = Some(position);
                     }
@@ -2313,8 +2323,12 @@ fn render_repl_input_with_selection(
     let lines = repl_input_lines(input);
     let prompt_prefix = format!("{} > ", colored_mode_label(mode));
     let plain_prefix = format!("[{}] > ", mode.label());
-    let display_lines =
-        repl_visible_input_lines(&plain_prefix, &lines, REPL_MAX_VISIBLE_INPUT_ROWS, is_pasted);
+    let display_lines = repl_visible_input_lines(
+        &plain_prefix,
+        &lines,
+        REPL_MAX_VISIBLE_INPUT_ROWS,
+        is_pasted,
+    );
     let display_lines = style_repl_input_lines(&lines, display_lines, selection);
     let current_rows = repl_render_rows(&plain_prefix, &display_lines, !suggestions.is_empty());
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
@@ -2538,7 +2552,7 @@ fn mouse_position_to_repl_cursor(
     mouse_col: u16,
 ) -> Option<usize> {
     let rel_row = mouse_row.checked_sub(input_row)? as usize;
-    let prefix = "[YOLO] > ";
+    let prefix = "[NORMAL] > ";
     let cols = terminal_cols();
     let input_len = input.chars().count();
 
@@ -2659,13 +2673,9 @@ fn find_repl_placeholders(input: &str) -> Vec<(usize, usize)> {
             && chars[i..i + 7].iter().collect::<String>() == "[Image "
         {
             Some(7)
-        } else if i + 8 <= chars.len()
-            && chars[i..i + 8].iter().collect::<String>() == "[Pasted "
-        {
+        } else if i + 8 <= chars.len() && chars[i..i + 8].iter().collect::<String>() == "[Pasted " {
             Some(8)
-        } else if i + 4 <= chars.len()
-            && chars[i..i + 4].iter().collect::<String>() == "[粘贴 "
-        {
+        } else if i + 4 <= chars.len() && chars[i..i + 4].iter().collect::<String>() == "[粘贴 " {
             Some(4)
         } else {
             None
@@ -2761,7 +2771,10 @@ fn parse_image_placeholder_index(input: &str, char_start: usize, char_end: usize
     let chars: Vec<char> = input.chars().collect();
     let segment: String = chars[char_start..char_end].iter().collect();
     let after_prefix = segment.strip_prefix("[Image ")?;
-    let num_str: String = after_prefix.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let num_str: String = after_prefix
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     num_str.parse::<usize>().ok()
 }
 
@@ -2775,7 +2788,10 @@ fn parse_pasted_text_placeholder_index(
     let after_prefix = segment
         .strip_prefix("[Pasted ")
         .or_else(|| segment.strip_prefix("[粘贴 "))?;
-    let num_str: String = after_prefix.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let num_str: String = after_prefix
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     num_str.parse::<usize>().ok()
 }
 
@@ -2824,7 +2840,12 @@ fn expand_pasted_text_placeholders(input: &str, pasted_texts: &[Option<PastedTex
     expanded
 }
 
-fn selected_repl_text(input: &str, start: usize, end: usize, pasted_texts: &[Option<PastedText>]) -> String {
+fn selected_repl_text(
+    input: &str,
+    start: usize,
+    end: usize,
+    pasted_texts: &[Option<PastedText>],
+) -> String {
     let chars: Vec<char> = input.chars().collect();
     let end = end.min(chars.len());
     let mut selected = String::new();
@@ -2962,7 +2983,7 @@ fn colorize_repl_placeholders(line: &str) -> String {
 
 fn colored_mode_label(mode: AgentMode) -> String {
     match mode {
-        AgentMode::Yolo => "\x1b[38;5;208m[YOLO]\x1b[0m".to_string(),
+        AgentMode::Normal => "\x1b[38;5;208m[NORMAL]\x1b[0m".to_string(),
         AgentMode::Plan => "\x1b[36m[PLAN]\x1b[0m".to_string(),
     }
 }
@@ -2972,7 +2993,7 @@ fn repl_commands() -> [&'static str; 8] {
         "/providers",
         "/config",
         "/plan",
-        "/yolo",
+        "/normal",
         "/undo",
         "/reset",
         "/help",
@@ -3089,7 +3110,7 @@ mod repl_input_tests {
         let lines = (0..20)
             .map(|index| format!("line {index}"))
             .collect::<Vec<_>>();
-        let visible = repl_visible_input_lines("[YOLO] > ", &lines, 12, true);
+        let visible = repl_visible_input_lines("[NORMAL] > ", &lines, 12, true);
 
         assert_eq!(visible.len(), 3);
         assert_eq!(visible[0], "line 0");
@@ -3168,7 +3189,10 @@ mod repl_input_tests {
 
     #[test]
     fn styles_selected_repl_line_without_extra_rows() {
-        assert_eq!(style_repl_line("abcdef", 0, Some((1, 4))), "a\x1b[7mbcd\x1b[0mef");
+        assert_eq!(
+            style_repl_line("abcdef", 0, Some((1, 4))),
+            "a\x1b[7mbcd\x1b[0mef"
+        );
         assert_eq!(style_repl_line("abcdef", 0, None), "abcdef");
     }
 
@@ -3179,9 +3203,18 @@ mod repl_input_tests {
             text: "alpha\nbeta\ngamma".to_string(),
         })];
 
-        assert_eq!(selected_repl_text(input, 1, 21, &pasted_texts), "alpha\nbeta\ngamma");
-        assert_eq!(selected_repl_text(input, 0, 23, &pasted_texts), "前alpha\nbeta\ngamma 后");
-        assert_eq!(selected_repl_text(input, 2, 5, &pasted_texts), "alpha\nbeta\ngamma");
+        assert_eq!(
+            selected_repl_text(input, 1, 21, &pasted_texts),
+            "alpha\nbeta\ngamma"
+        );
+        assert_eq!(
+            selected_repl_text(input, 0, 23, &pasted_texts),
+            "前alpha\nbeta\ngamma 后"
+        );
+        assert_eq!(
+            selected_repl_text(input, 2, 5, &pasted_texts),
+            "alpha\nbeta\ngamma"
+        );
     }
 
     #[test]
@@ -3508,7 +3541,7 @@ fn build_tool_registry(
 ) -> Result<tools::ToolRegistry> {
     let mut registry = if config.tools.enabled {
         match mode {
-            AgentMode::Yolo => tools::builtin_registry(config, paths),
+            AgentMode::Normal => tools::builtin_registry(config, paths),
             AgentMode::Plan => tools::readonly_registry(config, paths),
         }
     } else {

@@ -75,22 +75,22 @@ impl Drop for PendingTurnGuard {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum AgentMode {
-    Yolo,
+    Normal,
     Plan,
 }
 
 impl AgentMode {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Yolo => "YOLO",
+            Self::Normal => "NORMAL",
             Self::Plan => "PLAN",
         }
     }
 
-    fn reminder(self) -> &'static str {
+    fn reminder(self) -> Option<&'static str> {
         match self {
-            Self::Yolo => crate::prompts::YOLO_REMINDER,
-            Self::Plan => crate::prompts::PLAN_REMINDER,
+            Self::Normal => None,
+            Self::Plan => Some(crate::prompts::PLAN_REMINDER),
         }
     }
 }
@@ -150,7 +150,7 @@ impl Agent {
         mode: AgentMode,
     ) -> Result<Self> {
         let base_system_prompt = config.system_prompt(paths)?;
-        if mode == AgentMode::Yolo {
+        if mode == AgentMode::Normal {
             state.reset_if_prompt_changed(&base_system_prompt)?;
             state.recover_stale_turns()?;
         }
@@ -256,7 +256,8 @@ impl Agent {
                 .unwrap_or(0),
             rand::random::<u16>()
         );
-        self.state.start_turn(&turn_id, &input, std::process::id())?;
+        self.state
+            .start_turn(&turn_id, &input, std::process::id())?;
         let guard = PendingTurnGuard::new(self.state.clone(), turn_id.clone());
         let mut messages = self.chat_messages(&turn_id, &input)?;
         if !binary_images.is_empty() && self.current_model_supports_vision() {
@@ -385,11 +386,7 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
-        let check = overflow::OverflowCheck::new(
-            self.context_window,
-            self.trim_at_ratio,
-            None,
-        );
+        let check = overflow::OverflowCheck::new(self.context_window, self.trim_at_ratio, None);
         if !check.is_enabled() || !check.check_usage(usage) {
             return Ok(());
         }
@@ -406,9 +403,8 @@ impl Agent {
                     self.context_window.unwrap(),
                     check.reserved_tokens,
                 );
-                let mut on_chunk = |chunk: ChatStreamChunk| {
-                    on_event(AgentEvent::CompactChunk(chunk))
-                };
+                let mut on_chunk =
+                    |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
                 match compactor.perform_compact(&mut on_chunk).await {
                     Ok(_) => {
                         on_event(AgentEvent::CompactEnd)?;
@@ -548,12 +544,12 @@ impl Agent {
             let (chunk_tx, mut chunk_rx) =
                 tokio::sync::mpsc::unbounded_channel::<ChatStreamChunk>();
             let request_messages = messages.clone();
-            let llm_future = self
-                .client
-                .chat_stream(request_messages.clone(), definitions, move |chunk| {
-                    let _ = chunk_tx.send(chunk);
-                    Ok(())
-                });
+            let llm_future =
+                self.client
+                    .chat_stream(request_messages.clone(), definitions, move |chunk| {
+                        let _ = chunk_tx.send(chunk);
+                        Ok(())
+                    });
             tokio::pin!(llm_future);
             let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
             spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -809,7 +805,11 @@ impl Agent {
         Ok(Some(ChatMessage::plain("user", description)))
     }
 
-    fn chat_messages(&self, current_turn_id: &str, current_input: &str) -> Result<Vec<ChatMessage>> {
+    fn chat_messages(
+        &self,
+        current_turn_id: &str,
+        current_input: &str,
+    ) -> Result<Vec<ChatMessage>> {
         let mut messages = vec![ChatMessage::system(self.system_prompt.clone())];
         if let Some(summary) = memes::last_auto_meme_reminder(&self.config, &self.paths)? {
             messages.push(ChatMessage::system(summary));
@@ -834,7 +834,6 @@ impl Agent {
         messages.push(ChatMessage::plain("user", current_input));
         Ok(messages)
     }
-
 }
 
 #[derive(Default)]
@@ -1059,11 +1058,15 @@ fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     let runtime = terminal_runtime_context();
-    format!(
-        "{system_prompt}\n\n<system-reminder>\n当前系统时间：{}。用户询问当前时间时，优先使用这里的时间，不需要调用命令查询。\n当前工作目录：{cwd}。涉及相对路径、当前项目、文件操作时优先以此为准。\n{runtime}\n</system-reminder>\n\n{}",
+    let mut prompt = format!(
+        "{system_prompt}\n\n<system-reminder>\n当前系统时间：{}。用户询问当前时间时，优先使用这里的时间，不需要调用命令查询。\n当前工作目录：{cwd}。涉及相对路径、当前项目、文件操作时优先以此为准。\n{runtime}\n</system-reminder>",
         Local::now().format("%Y年%m月%d日 %H:%M"),
-        mode.reminder()
-    )
+    );
+    if let Some(reminder) = mode.reminder() {
+        prompt.push_str("\n\n");
+        prompt.push_str(reminder);
+    }
+    prompt
 }
 
 fn terminal_runtime_context() -> String {

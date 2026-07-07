@@ -4,7 +4,7 @@
 CRITICAL: Plan mode ACTIVE - you are in READ-ONLY phase.
 
 You MAY inspect, search, read files, fetch web pages, query read-only tools, and
-run explicitly read-only shell commands to understand the problem. Normal Miyu
+run explicitly read-only shell commands to understand the problem. Existing Miyu
 conversation history and memory may continue to work. You MUST NOT edit project
 files, write configs, create/delete system data, install packages, change system
 state, upload knowledge-base content, or use any non-read-only tool.
