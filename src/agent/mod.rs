@@ -1059,8 +1059,9 @@ fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
         .unwrap_or_else(|_| "unknown".to_string());
     let runtime = terminal_runtime_context();
     let mut prompt = format!(
-        "{system_prompt}\n\n<system-reminder>\n当前系统时间：{}。用户询问当前时间时，优先使用这里的时间，不需要调用命令查询。\n当前工作目录：{cwd}。涉及相对路径、当前项目、文件操作时优先以此为准。\n{runtime}\n</system-reminder>",
+        "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" {runtime}/>",
         Local::now().format("%Y年%m月%d日 %H:%M"),
+        xml_attr_escape(&cwd),
     );
     if let Some(reminder) = mode.reminder() {
         prompt.push_str("\n\n");
@@ -1101,11 +1102,20 @@ fn terminal_runtime_context() -> String {
     } else {
         terminal_parts.join(", ")
     };
-    if crate::i18n::is_zh() {
-        format!("当前运行环境：{environment}。当前 shell：{shell}。当前终端标识：{terminal}。")
-    } else {
-        format!("Current runtime environment: {environment}. Current shell: {shell}. Terminal identifiers: {terminal}.")
-    }
+    format!(
+        "env=\"{}\" shell=\"{}\" terminal=\"{}\"",
+        xml_attr_escape(environment),
+        xml_attr_escape(&shell),
+        xml_attr_escape(&terminal)
+    )
+}
+
+fn xml_attr_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn clean_user_visible_text(input: &str) -> String {
