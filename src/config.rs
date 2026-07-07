@@ -1505,7 +1505,7 @@ fn default_memes_max_image_mb() -> u64 {
 }
 
 fn default_memes_auto_send_probability() -> f32 {
-    0.2
+    0.1
 }
 
 fn default_memes_auto_send_min_confidence() -> f32 {
@@ -1731,7 +1731,7 @@ mod tests {
             "custom-persona"
         );
         assert!(memes.auto_send_enabled);
-        assert_eq!(memes.auto_send_probability, 0.2);
+        assert_eq!(memes.auto_send_probability, 0.1);
         assert_eq!(memes.auto_send_min_confidence, 0.8);
     }
 }
