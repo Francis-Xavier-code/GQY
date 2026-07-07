@@ -7,6 +7,7 @@ const PROMPT_MASK: &[u8] = b"MiyuPromptMask";
 fn main() {
     println!("cargo:rerun-if-changed=src/prompts/miyu.md");
     println!("cargo:rerun-if-changed=src/prompts/plan.md");
+    println!("cargo:rerun-if-changed=src/prompts/chat.md");
 
     let prompt = fs::read("src/prompts/miyu.md").expect("read src/prompts/miyu.md");
     let encoded = prompt

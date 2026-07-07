@@ -99,8 +99,9 @@ impl AgentMode {
 
     fn reminder(self) -> Option<&'static str> {
         match self {
-            Self::Normal | Self::Chat => None,
+            Self::Normal => None,
             Self::Plan => Some(crate::prompts::PLAN_REMINDER),
+            Self::Chat => Some(crate::prompts::CHAT_REMINDER),
         }
     }
 }
@@ -610,11 +611,12 @@ impl Agent {
                 })?;
                 {
                     let tools = self.tools.lock().unwrap();
-                    if self.mode == AgentMode::Plan
+                    if matches!(self.mode, AgentMode::Plan | AgentMode::Chat)
                         && tools.permission(&call.function.name)? != ToolPermission::ReadOnly
                     {
                         bail!(
-                            "Plan mode blocked non-read-only tool: {}",
+                            "{} mode blocked non-read-only tool: {}",
+                            self.mode.label(),
                             call.function.name
                         );
                     }
