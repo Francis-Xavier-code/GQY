@@ -1,5 +1,5 @@
 use super::{ToolRegistry, ToolSpec};
-use crate::i18n::text as t;
+use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,12 @@ struct ScriptEntry {
     parameters: Value,
     #[serde(default)]
     timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ScriptDescriptions {
+    zh: Option<String>,
+    en: Option<String>,
 }
 
 pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
@@ -98,6 +104,9 @@ fn scan_scripts(dirs: &[&Path]) -> Result<Vec<ScriptEntry>> {
             seen_paths.insert(canon);
             let mut entry = entry.clone();
             entry.path = path.to_string_lossy().to_string();
+            if entry.description.trim().is_empty() {
+                entry.description = description_from_script(&path, &entry.id);
+            }
             if let Some(&idx) = id_index.get(&entry.id) {
                 entries[idx] = entry;
             } else {
@@ -160,7 +169,8 @@ fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
         .unwrap_or("script")
         .to_string();
     let display_name = id.clone();
-    let description = extract_description(&raw).unwrap_or_else(|| format!("User script: {id}"));
+    let description = select_script_description(&extract_descriptions(&raw))
+        .unwrap_or_else(|| format!("User script: {id}"));
     let parameters = json!({
         "type": "object",
         "properties": {
@@ -186,20 +196,64 @@ fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
 }
 
 fn extract_description(raw: &str) -> Option<String> {
+    select_script_description(&extract_descriptions(raw))
+}
+
+fn description_from_script(path: &Path, id: &str) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| extract_description(&raw))
+        .unwrap_or_else(|| format!("User script: {id}"))
+}
+
+fn select_script_description(descriptions: &ScriptDescriptions) -> Option<String> {
+    let preferred = if is_zh() {
+        descriptions.zh.as_ref().or(descriptions.en.as_ref())
+    } else {
+        descriptions.en.as_ref().or(descriptions.zh.as_ref())
+    }?;
+    Some(preferred.clone())
+}
+
+fn extract_descriptions(raw: &str) -> ScriptDescriptions {
+    let mut descriptions = ScriptDescriptions::default();
     for line in raw.lines().skip(1) {
         let trimmed = line.trim_start_matches('#').trim();
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(desc) = trimmed.strip_prefix("description:") {
-            return Some(desc.trim().to_string());
-        }
-        if let Some(desc) = trimmed.strip_prefix("功能介绍:") {
-            return Some(desc.trim().to_string());
+        if let Some((key, desc)) = split_description_line(trimmed) {
+            match key {
+                DescriptionKey::Chinese => descriptions.zh = Some(desc.to_string()),
+                DescriptionKey::English => descriptions.en = Some(desc.to_string()),
+            }
+            continue;
         }
         if !trimmed.starts_with("#!") {
             break;
         }
+    }
+    descriptions
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum DescriptionKey {
+    Chinese,
+    English,
+}
+
+fn split_description_line(line: &str) -> Option<(DescriptionKey, &str)> {
+    let (raw_key, raw_value) = line.split_once(':').or_else(|| line.split_once('：'))?;
+    let key = raw_key.trim();
+    let value = raw_value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if key == "描述" || key == "功能介绍" {
+        return Some((DescriptionKey::Chinese, value));
+    }
+    if key.eq_ignore_ascii_case("description") {
+        return Some((DescriptionKey::English, value));
     }
     None
 }
@@ -360,7 +414,7 @@ fn register_script_tools(
                 },
                 "description": {
                     "type": "string",
-                    "description": t("Tool description shown to the AI.", "展示给 AI 的工具描述。")
+                    "description": t("Optional tool description override. If omitted, Miyu reads the script header lines `Description:`/`description:` or `描述：` and sends only one localized description to the AI.", "可选的工具描述覆盖。省略时 Miyu 会读取脚本头部的 `Description:`/`description:` 或 `描述：`，并只向 AI 提供一条本地化描述。")
                 },
                 "path": {
                     "type": "string",
@@ -375,7 +429,7 @@ fn register_script_tools(
                     "description": t("Optional timeout in seconds, max 300.", "可选超时时间，单位秒，最大 300。")
                 }
             },
-            "required": ["id", "display_name", "description", "path"],
+            "required": ["id", "path"],
             "additionalProperties": false
         }),
         move |args| {
@@ -457,10 +511,11 @@ async fn register_script_handler(args: Value, scripts_dir: &Path) -> Result<Stri
         .unwrap_or_default()
         .trim()
         .to_string();
-    let description = args
+    let description_override = args
         .get("description")
         .and_then(Value::as_str)
         .unwrap_or_default()
+        .trim()
         .to_string();
     let path = args
         .get("path")
@@ -476,6 +531,12 @@ async fn register_script_handler(args: Value, scripts_dir: &Path) -> Result<Stri
         bail!("script file not found: {}", script_path.display());
     }
     make_executable(&script_path)?;
+
+    let description = if description_override.is_empty() {
+        description_from_script(&script_path, &id)
+    } else {
+        description_override
+    };
 
     let parameters = args.get("parameters").cloned().unwrap_or(Value::Null);
     let timeout_seconds = args
@@ -630,6 +691,42 @@ mod tests {
     }
 
     #[test]
+    fn extracts_bilingual_script_descriptions() {
+        let raw = "#!/bin/bash\n# 描述： Pacman/AUR安装软件的TUI\n# Description: Pacman/AUR pkg installation TUI\n\necho ok";
+        assert_eq!(
+            extract_descriptions(raw),
+            ScriptDescriptions {
+                zh: Some("Pacman/AUR安装软件的TUI".to_string()),
+                en: Some("Pacman/AUR pkg installation TUI".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn extracts_lowercase_english_description() {
+        let raw = "#!/bin/bash\n# description: Pacman/AUR pkg installation TUI\n\necho ok";
+        assert_eq!(
+            extract_descriptions(raw),
+            ScriptDescriptions {
+                zh: None,
+                en: Some("Pacman/AUR pkg installation TUI".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn script_description_falls_back_when_locale_description_missing() {
+        let english_only = ScriptDescriptions {
+            zh: None,
+            en: Some("English only".to_string()),
+        };
+        assert_eq!(
+            select_script_description(&english_only),
+            Some("English only".to_string())
+        );
+    }
+
+    #[test]
     fn returns_none_when_no_description() {
         let raw = "#!/bin/bash\necho hello";
         assert_eq!(extract_description(raw), None);
@@ -685,6 +782,54 @@ mod tests {
         let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
         assert!(ids.contains(&"custom"));
         assert!(ids.contains(&"auto"));
+    }
+
+    #[test]
+    fn scan_fills_empty_index_description_from_script_header() {
+        let temp = tempfile::tempdir().unwrap();
+        let scripts_dir = temp.path();
+        std::fs::write(
+            scripts_dir.join("index.json"),
+            r#"{"scripts":[{"id":"custom","display_name":"自定义","description":"","path":"custom.sh"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            scripts_dir.join("custom.sh"),
+            "#!/bin/bash\n# Description: Custom header description\n\necho custom",
+        )
+        .unwrap();
+        let entries = scan_scripts(&[scripts_dir]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description, "Custom header description");
+    }
+
+    #[tokio::test]
+    async fn register_script_uses_header_description_when_omitted() {
+        let temp = tempfile::tempdir().unwrap();
+        let scripts_dir = temp.path();
+        std::fs::write(
+            scripts_dir.join("pkg.sh"),
+            "#!/bin/bash\n# Description: Pacman/AUR pkg installation TUI\n\necho ok",
+        )
+        .unwrap();
+
+        register_script_handler(
+            json!({
+                "id": "pkg_install",
+                "path": "pkg.sh"
+            }),
+            scripts_dir,
+        )
+        .await
+        .unwrap();
+
+        let raw = std::fs::read_to_string(scripts_dir.join("index.json")).unwrap();
+        let index: ScriptIndex = serde_json::from_str(&raw).unwrap();
+        assert_eq!(index.scripts.len(), 1);
+        assert_eq!(
+            index.scripts[0].description,
+            "Pacman/AUR pkg installation TUI"
+        );
     }
 
     #[test]
