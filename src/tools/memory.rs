@@ -136,7 +136,14 @@ async fn remember_fact(args: Value, config: AppConfig, paths: MiyuPaths) -> Resu
         .unwrap_or("conversation");
     let store = MemoryStore::new(&config, &paths);
     let id = store.remember_fact(content, source)?;
-    Ok(json!({ "ok": true, "id": id }).to_string())
+    Ok(json!({
+        "ok": true,
+        "id": id,
+        "source": source.trim(),
+        "content": content.trim(),
+        "message": t("Memory saved. The saved content is included here so the current conversation can refer to it accurately.", "记忆已保存。这里包含已保存内容，方便当前对话准确引用。")
+    })
+    .to_string())
 }
 
 async fn recall_memories(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {

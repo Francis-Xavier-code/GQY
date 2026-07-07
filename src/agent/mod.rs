@@ -77,19 +77,29 @@ impl Drop for PendingTurnGuard {
 pub enum AgentMode {
     Normal,
     Plan,
+    Chat,
 }
 
 impl AgentMode {
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Normal => "NORMAL",
-            Self::Plan => "PLAN",
+        if crate::i18n::is_zh() {
+            match self {
+                Self::Normal => "普通",
+                Self::Plan => "计划",
+                Self::Chat => "闲聊",
+            }
+        } else {
+            match self {
+                Self::Normal => "NORMAL",
+                Self::Plan => "PLAN",
+                Self::Chat => "CHAT",
+            }
         }
     }
 
     fn reminder(self) -> Option<&'static str> {
         match self {
-            Self::Normal => None,
+            Self::Normal | Self::Chat => None,
             Self::Plan => Some(crate::prompts::PLAN_REMINDER),
         }
     }
@@ -150,7 +160,7 @@ impl Agent {
         mode: AgentMode,
     ) -> Result<Self> {
         let base_system_prompt = config.system_prompt(paths)?;
-        if mode == AgentMode::Normal {
+        if matches!(mode, AgentMode::Normal | AgentMode::Chat) {
             state.reset_if_prompt_changed(&base_system_prompt)?;
             state.recover_stale_turns()?;
         }
@@ -314,15 +324,23 @@ impl Agent {
             );
             messages.push(ChatMessage::system(hint));
         }
-        if let Some(association) = self.memory.association(&input)? {
-            messages.insert(
-                1,
-                ChatMessage::system(self.memory.format_association(&association)),
-            );
+        if self.mode != AgentMode::Chat {
+            if let Some(association) = self.memory.association(&input)? {
+                messages.insert(
+                    1,
+                    ChatMessage::system(self.memory.format_association(&association)),
+                );
+            }
         }
         let mut on_event = on_event;
-        let meme_future =
-            memes::plan_auto_meme_before_reply(&self.config, &self.paths, &self.client, &input);
+        let meme_future = async {
+            if self.mode == AgentMode::Chat {
+                Ok(None)
+            } else {
+                memes::plan_auto_meme_before_reply(&self.config, &self.paths, &self.client, &input)
+                    .await
+            }
+        };
         tokio::pin!(meme_future);
         let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
         spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -904,6 +922,7 @@ fn estimate_result_tokens(result: &ChatResult) -> usize {
 fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {
     let field = match tool_name {
         "load_tools" => return compact_loaded_tools_report(output),
+        "remember_fact" => return compact_remembered_fact_report(output),
         "deep_research_linux_game_compatibility" => "final_report",
         "linux_input_method_diagnose" | "deep_diagnose" | "deep_research" => "final_answer",
         "task" => "result",
@@ -919,6 +938,32 @@ fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<Stri
                 .map(str::to_string)
         })
         .filter(|report| !report.is_empty())
+}
+
+fn compact_remembered_fact_report(output: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(output).ok()?;
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let content = value.get("content").and_then(Value::as_str)?.trim();
+    if content.is_empty() {
+        return None;
+    }
+    let mut report = serde_json::json!({
+        "remembered_fact": {
+            "content": content,
+        }
+    });
+    if let Some(id) = value.get("id").and_then(Value::as_i64) {
+        report["remembered_fact"]["id"] = serde_json::json!(id);
+    }
+    if let Some(source) = value.get("source").and_then(Value::as_str) {
+        let source = source.trim();
+        if !source.is_empty() {
+            report["remembered_fact"]["source"] = serde_json::json!(source);
+        }
+    }
+    serde_json::to_string(&report).ok()
 }
 
 fn compact_loaded_tools_report(output: &str) -> Option<String> {
@@ -1057,12 +1102,20 @@ fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
     let cwd = std::env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    let runtime = terminal_runtime_context();
-    let mut prompt = format!(
-        "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" {runtime}/>",
-        Local::now().format("%Y年%m月%d日 %H:%M"),
-        xml_attr_escape(&cwd),
-    );
+    let mut prompt = if mode == AgentMode::Chat {
+        format!(
+            "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\"/>",
+            Local::now().format("%Y年%m月%d日 %H:%M"),
+            xml_attr_escape(&cwd),
+        )
+    } else {
+        let runtime = terminal_runtime_context();
+        format!(
+            "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
+            Local::now().format("%Y年%m月%d日 %H:%M"),
+            xml_attr_escape(&cwd),
+        )
+    };
     if let Some(reminder) = mode.reminder() {
         prompt.push_str("\n\n");
         prompt.push_str(reminder);

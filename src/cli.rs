@@ -1258,23 +1258,28 @@ async fn run_config(paths: &MiyuPaths, args: ConfigArgs) -> Result<()> {
             let config = AppConfig::load(paths)?;
             let persona = config.prompt.active_persona.trim();
             let identity = config.prompt.active_identity.trim();
-            println!(
-                "base_prompt_source: {}",
-                if persona.is_empty() {
-                    "built-in"
+            let persona_path = (!persona.is_empty()).then(|| config.persona_path(paths, persona));
+            let legacy_prompt = config.custom_system_prompt(paths)?;
+            let legacy_prompt_path = config.system_prompt_path(paths);
+            let base_prompt_source =
+                if let Some(path) = persona_path.as_ref().filter(|path| path.exists()) {
+                    format!("persona ({})", path.display())
+                } else if !legacy_prompt.trim().is_empty() {
+                    format!("legacy_custom ({})", legacy_prompt_path.display())
                 } else {
-                    "persona"
-                }
-            );
+                    "built-in".to_string()
+                };
+            println!("base_prompt_source: {}", base_prompt_source);
             println!(
                 "active_persona: {}",
-                if persona.is_empty() { "Miyu" } else { persona }
+                if persona.is_empty() {
+                    "(none)"
+                } else {
+                    persona
+                }
             );
-            if !persona.is_empty() {
-                println!(
-                    "active_persona_file: {}",
-                    config.persona_path(paths, persona).display()
-                );
+            if let Some(path) = persona_path {
+                println!("active_persona_file: {}", path.display());
             }
             println!(
                 "active_identity: {}",
@@ -1587,8 +1592,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     println!(
         "\x1b[2m{}\x1b[0m",
         t(
-            "Tab toggles mode; Enter sends; Ctrl+J inserts newline; Ctrl+V pastes clipboard",
-            "Tab 切换模式；Enter 发送；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
+            "Tab cycles NORMAL/PLAN/CHAT; Enter sends; Ctrl+J inserts newline; Ctrl+V pastes clipboard",
+            "Tab 循环切换 普通/计划/闲聊；Enter 发送；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
         )
     );
     crate::default_kb::check_update_if_due(paths).ok();
@@ -1616,6 +1621,11 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         }
         if input.eq_ignore_ascii_case("/plan") {
             mode = AgentMode::Plan;
+            println!("{}: {}", t("mode", "模式"), mode.label());
+            continue;
+        }
+        if input.eq_ignore_ascii_case("/chat") {
+            mode = AgentMode::Chat;
             println!("{}: {}", t("mode", "模式"), mode.label());
             continue;
         }
@@ -1745,6 +1755,13 @@ fn print_repl_help() {
         t("switch to normal mode", "切换到普通模式")
     );
     println!(
+        "  /chat       {}",
+        t(
+            "switch to lightweight chat mode with web and memes only",
+            "切换到仅开放网络和表情的轻量闲聊模式"
+        )
+    );
+    println!(
         "  /undo       {}",
         t(
             "remove last turn and restore prompt",
@@ -1764,8 +1781,8 @@ fn print_repl_help() {
     println!(
         "  Tab         {}",
         t(
-            "toggle NORMAL/PLAN, or complete slash commands",
-            "切换 NORMAL/PLAN，或补全斜杠菜单"
+            "cycle NORMAL/PLAN/CHAT, or complete slash commands",
+            "循环切换 普通/计划/闲聊，或补全斜杠菜单"
         )
     );
     println!("  Enter       {}", t("send message", "发送消息"));
@@ -1849,10 +1866,10 @@ fn read_repl_input(
                             cursor = input.chars().count();
                         }
                     } else {
-                        mode = if mode == AgentMode::Normal {
-                            AgentMode::Plan
-                        } else {
-                            AgentMode::Normal
+                        mode = match mode {
+                            AgentMode::Normal => AgentMode::Plan,
+                            AgentMode::Plan => AgentMode::Chat,
+                            AgentMode::Chat => AgentMode::Normal,
                         };
                     }
                     is_pasted = false;
@@ -2799,18 +2816,21 @@ fn colorize_repl_placeholders(line: &str) -> String {
 }
 
 fn colored_mode_label(mode: AgentMode) -> String {
+    let label = mode.label();
     match mode {
-        AgentMode::Normal => "\x1b[1m\x1b[34m[NORMAL]\x1b[0m".to_string(),
-        AgentMode::Plan => "\x1b[36m[PLAN]\x1b[0m".to_string(),
+        AgentMode::Normal => format!("\x1b[1m\x1b[34m[{label}]\x1b[0m"),
+        AgentMode::Plan => format!("\x1b[1m\x1b[36m[{label}]\x1b[0m"),
+        AgentMode::Chat => format!("\x1b[1m\x1b[32m[{label}]\x1b[0m"),
     }
 }
 
-fn repl_commands() -> [&'static str; 8] {
+fn repl_commands() -> [&'static str; 9] {
     [
         "/providers",
         "/config",
         "/plan",
         "/normal",
+        "/chat",
         "/undo",
         "/reset",
         "/help",
@@ -3330,11 +3350,12 @@ fn build_tool_registry(
         match mode {
             AgentMode::Normal => tools::builtin_registry(config, paths),
             AgentMode::Plan => tools::readonly_registry(config, paths),
+            AgentMode::Chat => tools::chat_registry(config, paths),
         }
     } else {
         tools::ToolRegistry::new()
     };
-    if config.tools.enabled && config.skills.enabled {
+    if config.tools.enabled && config.skills.enabled && mode != AgentMode::Chat {
         tools::register_skills(&mut registry, config, paths)?;
     }
     tools::register_script_display_names(&registry);

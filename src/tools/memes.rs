@@ -100,60 +100,7 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths
     if !config.plugins.memes.enabled {
         return;
     }
-    registry.register(ToolSpec::new(
-        "search_meme",
-        t(
-            "Search the current persona's meme library by scene, mood, tags, or visible content. Use before showing a meme unless the user provided a specific meme id.",
-            "按场景、情绪、标签或画面内容搜索当前人格表情库。除非用户给了具体表情 id，否则发表情前先调用。",
-        ),
-        json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": t("Scene, mood, visible content, or user intent.", "场景、情绪、画面内容或用户意图。") },
-                "tags": { "type": "array", "items": { "type": "string" }, "description": t("Optional preferred tags.", "可选偏好标签。") },
-                "library": { "type": "string", "description": t("Optional meme library override.", "可选表情库覆盖。") },
-                "limit": { "type": "integer", "description": t("Maximum number of candidates, default 6.", "候选数量上限，默认 6。") }
-            },
-            "additionalProperties": false
-        }),
-        {
-            let config = config.clone();
-            let paths = paths.clone();
-            move |args| {
-                let config = config.clone();
-                let paths = paths.clone();
-                async move { search_meme(args, &config, &paths).await }
-            }
-        },
-    ));
-    registry.register(ToolSpec::new(
-        "show_meme",
-        t(
-            "Render a meme in the terminal with chafa. GIFs are shown as static previews unless animation is explicitly allowed in config.",
-            "发送表情包并使用 chafa 在终端渲染。GIF 默认显示静态预览，除非配置显式允许动画。",
-        ),
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string", "description": t("Meme sha256 id.", "表情 sha256 id。") },
-                "library": { "type": "string", "description": t("Optional meme library override.", "可选表情库覆盖。") },
-                "size": { "type": "string", "description": t("Optional chafa size, e.g. 40x15.", "可选 chafa 尺寸，例如 40x15。") },
-                "width": { "type": "integer", "description": t("Optional output width in terminal cells.", "可选终端单元格输出宽度。") },
-                "height": { "type": "integer", "description": t("Optional output height in terminal cells.", "可选终端单元格输出高度。") }
-            },
-            "required": ["id"],
-            "additionalProperties": false
-        }),
-        {
-            let config = config.clone();
-            let paths = paths.clone();
-            move |args| {
-                let config = config.clone();
-                let paths = paths.clone();
-                async move { show_meme(args, &config, &paths).await }
-            }
-        },
-    ));
+    register_search_and_show(registry, config.clone(), paths.clone());
     registry.register(
         ToolSpec::new(
             "add_meme",
@@ -252,6 +199,70 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths
         )
         .writes(),
     );
+}
+
+pub fn register_chat(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
+    if !config.plugins.memes.enabled {
+        return;
+    }
+    register_search_and_show(registry, config, paths);
+}
+
+fn register_search_and_show(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
+    registry.register(ToolSpec::new(
+        "search_meme",
+        t(
+            "Search the current persona's meme library by scene, mood, tags, or visible content. Use before showing a meme unless the user provided a specific meme id.",
+            "按场景、情绪、标签或画面内容搜索当前人格表情库。除非用户给了具体表情 id，否则发表情前先调用。",
+        ),
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": t("Scene, mood, visible content, or user intent.", "场景、情绪、画面内容或用户意图。") },
+                "tags": { "type": "array", "items": { "type": "string" }, "description": t("Optional preferred tags.", "可选偏好标签。") },
+                "library": { "type": "string", "description": t("Optional meme library override.", "可选表情库覆盖。") },
+                "limit": { "type": "integer", "description": t("Maximum number of candidates, default 6.", "候选数量上限，默认 6。") }
+            },
+            "additionalProperties": false
+        }),
+        {
+            let config = config.clone();
+            let paths = paths.clone();
+            move |args| {
+                let config = config.clone();
+                let paths = paths.clone();
+                async move { search_meme(args, &config, &paths).await }
+            }
+        },
+    ));
+    registry.register(ToolSpec::new(
+        "show_meme",
+        t(
+            "Render a meme in the terminal with chafa. GIFs are shown as static previews unless animation is explicitly allowed in config.",
+            "发送表情包并使用 chafa 在终端渲染。GIF 默认显示静态预览，除非配置显式允许动画。",
+        ),
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": t("Meme sha256 id.", "表情 sha256 id。") },
+                "library": { "type": "string", "description": t("Optional meme library override.", "可选表情库覆盖。") },
+                "size": { "type": "string", "description": t("Optional chafa size, e.g. 40x15.", "可选 chafa 尺寸，例如 40x15。") },
+                "width": { "type": "integer", "description": t("Optional output width in terminal cells.", "可选终端单元格输出宽度。") },
+                "height": { "type": "integer", "description": t("Optional output height in terminal cells.", "可选终端单元格输出高度。") }
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        }),
+        {
+            let config = config.clone();
+            let paths = paths.clone();
+            move |args| {
+                let config = config.clone();
+                let paths = paths.clone();
+                async move { show_meme(args, &config, &paths).await }
+            }
+        },
+    ));
 }
 
 async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {

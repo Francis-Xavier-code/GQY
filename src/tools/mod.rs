@@ -313,3 +313,15 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     }
     registry
 }
+
+pub fn chat_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    web::register_fetch(&mut registry);
+    if config.plugins.web.enabled {
+        web::register(&mut registry, config.plugins.web.clone());
+    }
+    if config.plugins.memes.enabled {
+        memes::register_chat(&mut registry, config.clone(), paths.clone());
+    }
+    registry
+}
