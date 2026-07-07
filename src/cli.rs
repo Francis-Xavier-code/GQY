@@ -12,8 +12,7 @@ use anyhow::{bail, Result};
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use crossterm::cursor::{self, Hide, MoveTo, Show};
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
 };
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType};
@@ -1063,7 +1062,10 @@ fn inline_fuzzy_select(items: &[String]) -> Result<Option<usize>> {
         }) = event::read()?
         {
             match code {
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('c')
+                    if modifiers.contains(KeyModifiers::CONTROL)
+                        && !modifiers.contains(KeyModifiers::SHIFT) =>
+                {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
                     return Ok(None);
                 }
@@ -1807,14 +1809,12 @@ fn read_repl_input(
         stdout.flush()?;
     }
     terminal::enable_raw_mode()?;
-    execute!(stdout, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(stdout, EnableBracketedPaste)?;
     let (_, mut input_row) = cursor::position()?;
     let mut rendered_rows = 0u16;
     let mut is_pasted = false;
     let mut pasted_images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
     let mut pasted_texts: Vec<Option<PastedText>> = Vec::new();
-    let mut selection_anchor = None::<usize>;
-    let mut selection_cursor = None::<usize>;
     render_repl_input(
         &mut stdout,
         &mut input_row,
@@ -1983,7 +1983,7 @@ fn read_repl_input(
                     input = strip_terminal_control_sequences(&input);
                     input = expand_pasted_text_placeholders(&input, &pasted_texts);
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
-                    execute!(stdout, DisableMouseCapture, DisableBracketedPaste)?;
+                    execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(Some((mode, input, pasted_images)));
                 }
@@ -2000,7 +2000,10 @@ fn read_repl_input(
                         is_pasted,
                     )?;
                 }
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('c')
+                    if modifiers.contains(KeyModifiers::CONTROL)
+                        && !modifiers.contains(KeyModifiers::SHIFT) =>
+                {
                     if !input.is_empty() {
                         input.clear();
                         cursor = 0;
@@ -2019,7 +2022,7 @@ fn read_repl_input(
                         continue;
                     }
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
-                    execute!(stdout, DisableMouseCapture, DisableBracketedPaste)?;
+                    execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(None);
                 }
@@ -2027,7 +2030,7 @@ fn read_repl_input(
                     if modifiers.contains(KeyModifiers::CONTROL) && input.is_empty() =>
                 {
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
-                    execute!(stdout, DisableMouseCapture, DisableBracketedPaste)?;
+                    execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(None);
                 }
@@ -2226,63 +2229,6 @@ fn read_repl_input(
                 }
                 _ => {}
             },
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if let Some(position) =
-                        mouse_position_to_repl_cursor(&input, input_row, mouse.row, mouse.column)
-                    {
-                        selection_anchor = Some(position);
-                        selection_cursor = Some(position);
-                    }
-                }
-                MouseEventKind::Drag(MouseButton::Left) => {
-                    if selection_anchor.is_some() {
-                        selection_cursor = mouse_position_to_repl_cursor(
-                            &input,
-                            input_row,
-                            mouse.row,
-                            mouse.column,
-                        );
-                        render_repl_input_with_selection(
-                            &mut stdout,
-                            &mut input_row,
-                            &mut rendered_rows,
-                            mode,
-                            &input,
-                            cursor,
-                            is_pasted,
-                            selection_range(selection_anchor, selection_cursor),
-                        )?;
-                    }
-                }
-                MouseEventKind::Up(MouseButton::Left) => {
-                    let mut copied = false;
-                    if let (Some(anchor), Some(current)) = (selection_anchor, selection_cursor) {
-                        let start = anchor.min(current);
-                        let end = anchor.max(current);
-                        if start != end {
-                            let selected = selected_repl_text(&input, start, end, &pasted_texts);
-                            if !selected.is_empty() {
-                                copied = crate::clipboard::write_clipboard_text(&selected)?;
-                            }
-                        }
-                    }
-                    selection_anchor = None;
-                    selection_cursor = None;
-                    if copied {
-                        render_repl_input(
-                            &mut stdout,
-                            &mut input_row,
-                            &mut rendered_rows,
-                            mode,
-                            &input,
-                            cursor,
-                            is_pasted,
-                        )?;
-                    }
-                }
-                _ => {}
-            },
             _ => {}
         }
     }
@@ -2297,28 +2243,6 @@ fn render_repl_input(
     cursor: usize,
     is_pasted: bool,
 ) -> Result<()> {
-    render_repl_input_with_selection(
-        stdout,
-        input_row,
-        rendered_rows,
-        mode,
-        input,
-        cursor,
-        is_pasted,
-        None,
-    )
-}
-
-fn render_repl_input_with_selection(
-    stdout: &mut io::Stdout,
-    input_row: &mut u16,
-    rendered_rows: &mut u16,
-    mode: AgentMode,
-    input: &str,
-    cursor: usize,
-    is_pasted: bool,
-    selection: Option<(usize, usize)>,
-) -> Result<()> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
     let prompt_prefix = format!("{} > ", colored_mode_label(mode));
@@ -2329,7 +2253,10 @@ fn render_repl_input_with_selection(
         REPL_MAX_VISIBLE_INPUT_ROWS,
         is_pasted,
     );
-    let display_lines = style_repl_input_lines(&lines, display_lines, selection);
+    let display_lines: Vec<String> = display_lines
+        .iter()
+        .map(|line| colorize_repl_placeholders(line))
+        .collect();
     let current_rows = repl_render_rows(&plain_prefix, &display_lines, !suggestions.is_empty());
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
@@ -2378,62 +2305,6 @@ fn render_repl_input_with_selection(
     stdout.flush()?;
     *rendered_rows = current_rows;
     Ok(())
-}
-
-fn selection_range(start: Option<usize>, end: Option<usize>) -> Option<(usize, usize)> {
-    let start = start?;
-    let end = end?;
-    (start != end).then_some((start.min(end), start.max(end)))
-}
-
-fn style_repl_input_lines(
-    raw_lines: &[String],
-    display_lines: Vec<String>,
-    selection: Option<(usize, usize)>,
-) -> Vec<String> {
-    if selection.is_none() || raw_lines.len() != display_lines.len() {
-        return display_lines
-            .iter()
-            .map(|line| colorize_repl_placeholders(line))
-            .collect();
-    }
-
-    let mut line_start = 0usize;
-    display_lines
-        .iter()
-        .map(|line| {
-            let styled = style_repl_line(line, line_start, selection);
-            line_start += line.chars().count() + 1;
-            styled
-        })
-        .collect()
-}
-
-fn style_repl_line(line: &str, line_start: usize, selection: Option<(usize, usize)>) -> String {
-    let Some((selection_start, selection_end)) = selection else {
-        return colorize_repl_placeholders(line);
-    };
-    let line_end = line_start + line.chars().count();
-    if selection_end <= line_start || selection_start >= line_end {
-        return colorize_repl_placeholders(line);
-    }
-
-    let start = selection_start.saturating_sub(line_start);
-    let end = (selection_end - line_start).min(line.chars().count());
-    let mut result = String::new();
-    for (index, ch) in line.chars().enumerate() {
-        if index == start {
-            result.push_str("\x1b[7m");
-        }
-        if index == end {
-            result.push_str("\x1b[0m");
-        }
-        result.push(ch);
-    }
-    if end == line.chars().count() {
-        result.push_str("\x1b[0m");
-    }
-    result
 }
 
 fn repl_visible_input_lines(
@@ -2543,28 +2414,6 @@ fn repl_cursor_position_for_cols(
         row_offset += width / cols + 1;
     }
     (visible_width(prefix).min(u16::MAX as usize) as u16, 0)
-}
-
-fn mouse_position_to_repl_cursor(
-    input: &str,
-    input_row: u16,
-    mouse_row: u16,
-    mouse_col: u16,
-) -> Option<usize> {
-    let rel_row = mouse_row.checked_sub(input_row)? as usize;
-    let prefix = "[NORMAL] > ";
-    let cols = terminal_cols();
-    let input_len = input.chars().count();
-
-    for cursor in 0..=input_len {
-        let (col, row) = repl_cursor_position_for_cols(prefix, input, cursor, cols);
-        let row = row as usize;
-        let col = col as usize;
-        if row > rel_row || (row == rel_row && col >= mouse_col as usize) {
-            return Some(cursor);
-        }
-    }
-    Some(input_len)
 }
 
 fn insert_char_at_cursor(value: &mut String, cursor: &mut usize, ch: char) {
@@ -2838,38 +2687,6 @@ fn expand_pasted_text_placeholders(input: &str, pasted_texts: &[Option<PastedTex
     }
     expanded.extend(&chars[last_end..]);
     expanded
-}
-
-fn selected_repl_text(
-    input: &str,
-    start: usize,
-    end: usize,
-    pasted_texts: &[Option<PastedText>],
-) -> String {
-    let chars: Vec<char> = input.chars().collect();
-    let end = end.min(chars.len());
-    let mut selected = String::new();
-    let mut cursor = start.min(end);
-
-    for (placeholder_start, placeholder_end, index) in find_pasted_text_placeholders(input) {
-        if placeholder_end <= cursor || placeholder_start >= end {
-            continue;
-        }
-        let plain_end = placeholder_start.max(cursor).min(end);
-        if cursor < plain_end {
-            selected.extend(&chars[cursor..plain_end]);
-        }
-        if let Some(Some(pasted_text)) = index.checked_sub(1).and_then(|i| pasted_texts.get(i)) {
-            selected.push_str(&pasted_text.text);
-        } else {
-            selected.extend(&chars[placeholder_start.max(start)..placeholder_end.min(end)]);
-        }
-        cursor = placeholder_end.min(end);
-    }
-    if cursor < end {
-        selected.extend(&chars[cursor..end]);
-    }
-    selected
 }
 
 fn placeholder_text_near_cursor(
@@ -3185,36 +3002,6 @@ mod repl_input_tests {
         let colored = colorize_repl_placeholders("[Image 1] [Pasted 1: ~3 lines]");
         assert!(colored.contains("\x1b[35m[Image 1]\x1b[0m"));
         assert!(colored.contains("\x1b[35m[Pasted 1: ~3 lines]\x1b[0m"));
-    }
-
-    #[test]
-    fn styles_selected_repl_line_without_extra_rows() {
-        assert_eq!(
-            style_repl_line("abcdef", 0, Some((1, 4))),
-            "a\x1b[7mbcd\x1b[0mef"
-        );
-        assert_eq!(style_repl_line("abcdef", 0, None), "abcdef");
-    }
-
-    #[test]
-    fn selected_text_expands_pasted_placeholder() {
-        let input = "前[Pasted 1: ~3 lines] 后";
-        let pasted_texts = vec![Some(PastedText {
-            text: "alpha\nbeta\ngamma".to_string(),
-        })];
-
-        assert_eq!(
-            selected_repl_text(input, 1, 21, &pasted_texts),
-            "alpha\nbeta\ngamma"
-        );
-        assert_eq!(
-            selected_repl_text(input, 0, 23, &pasted_texts),
-            "前alpha\nbeta\ngamma 后"
-        );
-        assert_eq!(
-            selected_repl_text(input, 2, 5, &pasted_texts),
-            "alpha\nbeta\ngamma"
-        );
     }
 
     #[test]

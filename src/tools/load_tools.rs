@@ -5,9 +5,10 @@ use std::collections::BTreeSet;
 
 pub fn register(registry: &mut ToolRegistry) {
     let allowed_tools = registry.tool_names().into_iter().collect::<BTreeSet<_>>();
+    let loadable_tools = loadable_tools(&allowed_tools);
     let description = format!(
-        "按需加载内置工具的完整说明和参数 schema。重要：available_tools 列表中的工具在使用前必须先通过 load_tools 加载；未加载前不要直接调用这些工具。如果需要使用列表中的某个工具，请先调用 load_tools，参数为 {{\"names\":[\"工具名\"]}}。加载成功后，后续轮次可以直接调用对应工具。加载后的内容会作为工具结果保留在当前对话上下文中。\n\n{}",
-        available_tools_xml(&allowed_tools)
+        "按需加载部分内置工具的完整说明和参数 schema。重要：只有下面 <available_tools> 列表里的内置工具需要、也可以通过 load_tools 加载；未列出的工具已经在顶层工具列表中可直接调用，尤其是用户脚本工具和系统脚本工具，不要对脚本工具调用 load_tools。如果要使用列表中的某个工具，请先调用 load_tools，参数为 {{\"names\":[\"工具名\"]}}。加载成功后，后续轮次可以直接调用对应工具。\n\n{}",
+        available_tools_xml(&loadable_tools)
     );
     registry.register(
         ToolSpec::new(
@@ -19,14 +20,14 @@ pub fn register(registry: &mut ToolRegistry) {
                     "names": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "要加载的工具名称列表。available_tools 列表中的工具只有通过 load_tools 加载后才可以使用。"
+                        "description": "要加载的内置工具名称列表。只允许填写 available_tools 列表里的工具；脚本工具不需要 load_tools，应该直接调用。"
                     }
                 },
                 "required": ["names"]
             }),
             move |args| {
-                let allowed_tools = allowed_tools.clone();
-                async move { load_tools(args, &allowed_tools) }
+                let loadable_tools = loadable_tools.clone();
+                async move { load_tools(args, &loadable_tools) }
             },
         )
         .with_display_name("加载工具"),
@@ -49,7 +50,9 @@ fn load_tools(args: Value, allowed_tools: &BTreeSet<String>) -> Result<String> {
             continue;
         }
         if !allowed_tools.contains(name) {
-            bail!("tool is not available in the current mode: {name}");
+            bail!(
+                "tool cannot be loaded with load_tools: {name}. Only tools listed in available_tools can be loaded; script tools and top-level tools should be called directly."
+            );
         }
         let Some(desc) = tool_descriptions::get(name) else {
             bail!("unknown tool: {name}");
@@ -69,6 +72,14 @@ fn load_tools(args: Value, allowed_tools: &BTreeSet<String>) -> Result<String> {
     }))?)
 }
 
+fn loadable_tools(allowed_tools: &BTreeSet<String>) -> BTreeSet<String> {
+    tool_descriptions::on_demand_descriptions()
+        .iter()
+        .filter(|desc| allowed_tools.contains(&desc.name))
+        .map(|desc| desc.name.clone())
+        .collect()
+}
+
 fn available_tools_xml(allowed_tools: &BTreeSet<String>) -> String {
     let items = tool_descriptions::on_demand_descriptions()
         .iter()
@@ -84,6 +95,28 @@ fn available_tools_xml(allowed_tools: &BTreeSet<String>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!("<available_tools>\n{items}\n</available_tools>")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loadable_tools_excludes_registered_scripts() {
+        let allowed = BTreeSet::from(["get_weather".to_string(), "battery-care".to_string()]);
+        let loadable = loadable_tools(&allowed);
+
+        assert!(loadable.contains("get_weather"));
+        assert!(!loadable.contains("battery-care"));
+    }
+
+    #[test]
+    fn load_tools_rejects_script_like_unlisted_tool() {
+        let allowed = BTreeSet::from(["read_file".to_string()]);
+        let err = load_tools(json!({"names": ["battery-care"]}), &allowed).unwrap_err();
+
+        assert!(err.to_string().contains("script tools"));
+    }
 }
 
 fn xml_escape(text: &str) -> String {
