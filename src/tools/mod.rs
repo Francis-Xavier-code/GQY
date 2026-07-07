@@ -17,6 +17,7 @@ pub mod knowledge_base;
 mod linux_game;
 mod man;
 pub(crate) mod memes;
+mod load_tools;
 mod memory;
 mod moegirl;
 mod package_advisor;
@@ -26,6 +27,7 @@ mod scripts;
 mod skills;
 mod subagent_runner;
 mod task;
+pub mod tool_descriptions;
 mod todowrite;
 pub mod vision;
 mod weather;
@@ -57,6 +59,23 @@ pub fn register_script_display_names(registry: &ToolRegistry) {
 }
 
 pub fn readable_tool_name(name: &str) -> String {
+    if let Some(skill) = name.strip_prefix("load_skill:") {
+        return format!("加载技能：{skill}");
+    }
+    if let Some(tools) = name.strip_prefix("load_tools:") {
+        let display = tools
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| {
+                tool_descriptions::get(name)
+                    .map(|desc| desc.display_name.clone())
+                    .unwrap_or_else(|| name.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("、");
+        return format!("加载工具：{display}");
+    }
     if let Ok(guard) = SCRIPT_DISPLAY_NAMES.read() {
         if let Some(map) = guard.as_ref() {
             if let Some(dn) = map.get(name) {
@@ -78,8 +97,8 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "list_directory" => "列目录",
         "create_directory" => "创建目录",
         "trash_path" => "移入回收站",
-        "find_files" | "glob" => "查找文件",
-        "search_text" | "grep" => "搜索文本",
+        "glob" => "查找文件",
+        "grep" => "搜索文本",
         "get_current_directory" => "当前目录",
         "get_current_time" => "当前时间",
         "check_issue" => "检查问题",
@@ -140,6 +159,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "draw_fortune_lot" => "吉凶占",
         "roll_dice" => "掷骰子",
         "load_skill" => "加载技能",
+        "load_tools" => "加载工具",
         "register_script" => "注册脚本",
         "unregister_script" => "注销脚本",
         "list_scripts" => "列出脚本",
@@ -149,7 +169,6 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "install_aur_package" => "安装 AUR 包",
         "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
         "deep_research_linux_game_compatibility" => "Linux 游戏兼容性调查",
-        "gather_linux_game_compatibility_signals" => "收集游戏兼容性",
         "register_linux_game_evidence" => "登记兼容性证据",
         "register_deep_research_topic_title" => "注册研究标题",
         "register_deep_research_reference" => "注册引用来源",
@@ -236,6 +255,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     scripts::register(&mut registry, paths);
+    if config.tools.loading_mode == "lazy" {
+        load_tools::register(&mut registry);
+    }
     registry
 }
 
@@ -277,6 +299,9 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     }
     if config.memory_config().enabled {
         memory::register_readonly(&mut registry, config.clone(), paths.clone());
+    }
+    if config.tools.loading_mode == "lazy" {
+        load_tools::register(&mut registry);
     }
     registry
 }

@@ -1435,7 +1435,8 @@ async fn run_chat_with_images(
     let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
     let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
-    let mut agent = Agent::new(config, paths, state, client, registry, AgentMode::Yolo)?;
+    let show_token_usage = config.display.show_token_usage;
+    let mut agent = Agent::new(config, paths, state.clone(), client, registry, AgentMode::Yolo)?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, false, readable_tool_names);
     renderer.start_waiting()?;
@@ -1445,7 +1446,8 @@ async fn run_chat_with_images(
         })
         .await;
     renderer.finish()?;
-    result?;
+    let result = result?;
+    print_chat_token_usage(&result, show_token_usage, state.token_total()?)?;
     Ok(())
 }
 
@@ -1537,7 +1539,8 @@ async fn run_chat_with_options(
         render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
     };
     let readable_tool_names = config.display.readable_tool_names;
-    let mut agent = Agent::new(config, paths, state, client, registry, mode)?;
+    let show_token_usage = config.display.show_token_usage && !plain;
+    let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain, readable_tool_names);
     renderer.start_waiting()?;
@@ -1545,7 +1548,22 @@ async fn run_chat_with_options(
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
         .await;
     renderer.finish()?;
-    result?;
+    let result = result?;
+    print_chat_token_usage(&result, show_token_usage, state.token_total()?)?;
+    Ok(())
+}
+
+fn print_chat_token_usage(
+    result: &crate::llm::ChatResult,
+    enabled: bool,
+    session_token_total: u64,
+) -> Result<()> {
+    if enabled {
+        if let Some(usage) = &result.usage {
+            let turn_tokens = render::usage_total(usage);
+            render::print_token_usage(turn_tokens, session_token_total, result.usage_estimated)?;
+        }
+    }
     Ok(())
 }
 
@@ -1653,20 +1671,30 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             let chat = agent.chat_stream_with_images(input, &pasted_images, |event| handle_agent_event(&mut renderer, event));
             tokio::pin!(chat);
             tokio::select! {
-                result = &mut chat => result.map(|_| ()),
+                result = &mut chat => result.map(Some),
                 signal = tokio::signal::ctrl_c() => {
                     signal?;
-                    Ok(())
+                    Ok(None)
                 }
             }
         };
         renderer.finish()?;
-        if let Err(err) = chat_result {
-            eprintln!(
-                "\x1b[31m{}: {err}\x1b[0m",
-                t("error", "错误")
-            );
-            continue;
+        match chat_result {
+            Ok(Some(result)) => {
+                print_chat_token_usage(
+                    &result,
+                    config.display.show_token_usage,
+                    state.token_total()?,
+                )?;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!(
+                    "\x1b[31m{}: {err}\x1b[0m",
+                    t("error", "错误")
+                );
+                continue;
+            }
         }
     }
     Ok(())
@@ -3228,6 +3256,7 @@ fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
                     entry.reasoning
                 },
                 usage: None,
+                usage_estimated: false,
                 tool_calls: Vec::new(),
             };
             render::print_assistant_response(&response, !args.no_thinking)?;

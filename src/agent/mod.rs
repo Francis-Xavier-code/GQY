@@ -16,6 +16,7 @@ use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
 use anyhow::{bail, Result};
 use chrono::Local;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,9 +37,20 @@ impl PendingTurnGuard {
         }
     }
 
-    pub fn complete(mut self, content: &str, reasoning: Option<&str>) -> Result<()> {
-        self.state
-            .complete_turn(&self.turn_id, content, reasoning)?;
+    pub fn complete(
+        mut self,
+        content: &str,
+        reasoning: Option<&str>,
+        token_total: Option<u64>,
+        token_usage_estimated: bool,
+    ) -> Result<()> {
+        self.state.complete_turn_with_usage(
+            &self.turn_id,
+            content,
+            reasoning,
+            token_total,
+            token_usage_estimated,
+        )?;
         self.completed = true;
         Ok(())
     }
@@ -354,7 +366,13 @@ impl Agent {
             self.state
                 .append_tool_report_context(&turn_id, &tool_name, &report)?;
         }
-        guard.complete(&result.content, result.reasoning.as_deref())?;
+        let token_total = result.usage.as_ref().map(Usage::effective_total_tokens);
+        guard.complete(
+            &result.content,
+            result.reasoning.as_deref(),
+            token_total,
+            result.usage_estimated,
+        )?;
         self.memory.process_after_turn(&input, &result.content)?;
         if let Some(usage) = &result.usage {
             self.state.add_usage(usage)?;
@@ -488,6 +506,8 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         let mut tool_round = 0usize;
+        let mut loaded_tools = loaded_tools_from_messages(messages);
+        let mut usage_accumulator = UsageAccumulator::default();
         loop {
             if self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds {
                 let content = format!(
@@ -498,10 +518,12 @@ impl Agent {
                     kind: ChatStreamKind::Content,
                     text: content.clone(),
                 }))?;
+                let usage = usage_accumulator.usage();
                 return Ok(ChatResult {
                     content,
                     reasoning: None,
-                    usage: None,
+                    usage,
+                    usage_estimated: usage_accumulator.estimated,
                     tool_calls: Vec::new(),
                 });
             }
@@ -513,16 +535,22 @@ impl Agent {
             }
 
             let definitions = if self.tools_enabled {
-                self.tools.lock().unwrap().definitions()
+                let tools = self.tools.lock().unwrap();
+                if self.config.tools.loading_mode == "lazy" {
+                    tools.lazy_definitions(&loaded_tools)
+                } else {
+                    tools.definitions()
+                }
             } else {
                 Vec::new()
             };
 
             let (chunk_tx, mut chunk_rx) =
                 tokio::sync::mpsc::unbounded_channel::<ChatStreamChunk>();
+            let request_messages = messages.clone();
             let llm_future = self
                 .client
-                .chat_stream(messages.clone(), definitions, move |chunk| {
+                .chat_stream(request_messages.clone(), definitions, move |chunk| {
                     let _ = chunk_tx.send(chunk);
                     Ok(())
                 });
@@ -546,7 +574,13 @@ impl Agent {
             while let Ok(chunk) = chunk_rx.try_recv() {
                 on_event(AgentEvent::Chunk(chunk))?;
             }
+            usage_accumulator.add_result(&result, &request_messages);
             if result.tool_calls.is_empty() || !self.tools_enabled {
+                let mut result = result;
+                if let Some(usage) = usage_accumulator.usage() {
+                    result.usage = Some(usage);
+                    result.usage_estimated = usage_accumulator.estimated;
+                }
                 return Ok(result);
             }
             messages.push(ChatMessage::assistant(
@@ -554,9 +588,10 @@ impl Agent {
                 Some(result.tool_calls.clone()),
             ));
             for call in result.tool_calls {
+                let event_name = tool_event_name(&call.function.name, &call.function.arguments);
                 used_tools.push(call.function.name.clone());
                 on_event(AgentEvent::ToolCall {
-                    name: call.function.name.clone(),
+                    name: event_name.clone(),
                     arguments: call.function.arguments.clone(),
                 })?;
                 {
@@ -569,13 +604,30 @@ impl Agent {
                             call.function.name
                         );
                     }
+                    if self.config.tools.loading_mode == "lazy"
+                        && call.function.name != "load_tools"
+                        && tools.requires_lazy_load(&call.function.name, &loaded_tools)
+                    {
+                        let output = format!(
+                            "tool error: 工具 `{}` 尚未加载。请先调用 load_tools，参数为 {{\"names\":[\"{}\"]}}。",
+                            call.function.name,
+                            call.function.name,
+                        );
+                        on_event(AgentEvent::ToolResult {
+                            name: event_name.clone(),
+                            ok: false,
+                            output: output.clone(),
+                        })?;
+                        messages.push(ChatMessage::tool(call.id, output));
+                        continue;
+                    }
                 }
                 if call.function.name == "install_aur_package"
                     && used_tools.iter().any(|name| name == "review_aur_package")
                 {
                     let output = "tool error: install_aur_package cannot run in the same turn as review_aur_package; ask the user to confirm installation first".to_string();
                     on_event(AgentEvent::ToolResult {
-                        name: call.function.name.clone(),
+                        name: event_name.clone(),
                         ok: false,
                         output: output.clone(),
                     })?;
@@ -596,7 +648,7 @@ impl Agent {
                     Err(err) => {
                         let output = format!("tool error: {err}");
                         on_event(AgentEvent::ToolResult {
-                            name: call.function.name.clone(),
+                            name: event_name.clone(),
                             ok: false,
                             output: output.clone(),
                         })?;
@@ -615,7 +667,7 @@ impl Agent {
                                 Ok(output) => {
                                     while let Ok(message) = progress_rx.try_recv() {
                                         on_event(AgentEvent::ToolProgress {
-                                            name: call.function.name.clone(),
+                                            name: event_name.clone(),
                                             message,
                                         })?;
                                     }
@@ -624,12 +676,12 @@ impl Agent {
                                 Err(err) => {
                                     while let Ok(message) = progress_rx.try_recv() {
                                         on_event(AgentEvent::ToolProgress {
-                                            name: call.function.name.clone(),
+                                            name: event_name.clone(),
                                             message,
                                         })?;
                                     }
                                     on_event(AgentEvent::ToolResult {
-                                        name: call.function.name.clone(),
+                                        name: event_name.clone(),
                                         ok: false,
                                         output: format!("tool error: {err}"),
                                     })?;
@@ -639,7 +691,7 @@ impl Agent {
                         }
                         Some(message) = progress_rx.recv() => {
                             on_event(AgentEvent::ToolProgress {
-                                name: call.function.name.clone(),
+                                name: event_name.clone(),
                                 message,
                             })?;
                         }
@@ -654,6 +706,11 @@ impl Agent {
                     None
                 };
                 messages.push(ChatMessage::tool(call.id, output.clone()));
+                if tool_succeeded && call.function.name == "load_tools" {
+                    for name in tool_names_arg(&call.function.arguments) {
+                        loaded_tools.insert(name);
+                    }
+                }
                 if let Some(img) = clipboard_image {
                     let supports_vision = self.current_model_supports_vision();
                     let uses_vision_fallback =
@@ -671,7 +728,7 @@ impl Agent {
                             "The current model does not support images and the vision plugin is disabled, so the clipboard image cannot be analyzed."
                         };
                         on_event(AgentEvent::ToolProgress {
-                            name: call.function.name.clone(),
+                            name: event_name.clone(),
                             message: message.to_string(),
                         })?;
                     }
@@ -696,7 +753,7 @@ impl Agent {
                                 _ = progress_interval.tick() => {
                                     progress_tick = progress_tick.wrapping_add(1);
                                     on_event(AgentEvent::ToolProgress {
-                                        name: call.function.name.clone(),
+                                        name: event_name.clone(),
                                         message: vision_analysis_progress(progress_tick),
                                     })?;
                                 }
@@ -714,7 +771,7 @@ impl Agent {
                 }
                 if tool_succeeded {
                     on_event(AgentEvent::ToolResult {
-                        name: call.function.name.clone(),
+                        name: event_name.clone(),
                         ok: true,
                         output: output.clone(),
                     })?;
@@ -777,10 +834,77 @@ impl Agent {
         messages.push(ChatMessage::plain("user", current_input));
         Ok(messages)
     }
+
+}
+
+#[derive(Default)]
+struct UsageAccumulator {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    has_usage: bool,
+    estimated: bool,
+}
+
+impl UsageAccumulator {
+    fn add_result(&mut self, result: &ChatResult, request_messages: &[ChatMessage]) {
+        if let Some(usage) = &result.usage {
+            self.add_usage(usage, false);
+            return;
+        }
+
+        let prompt_tokens = overflow::estimate_messages_tokens(request_messages) as u64;
+        let completion_tokens = estimate_result_tokens(result) as u64;
+        self.add_usage(
+            &Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            },
+            true,
+        );
+    }
+
+    fn add_usage(&mut self, usage: &Usage, estimated: bool) {
+        self.prompt_tokens = self.prompt_tokens.saturating_add(usage.prompt_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(usage.completion_tokens);
+        let total = if usage.total_tokens > 0 {
+            usage.total_tokens
+        } else {
+            usage.prompt_tokens.saturating_add(usage.completion_tokens)
+        };
+        self.total_tokens = self.total_tokens.saturating_add(total);
+        self.has_usage = true;
+        self.estimated |= estimated;
+    }
+
+    fn usage(&self) -> Option<Usage> {
+        self.has_usage.then_some(Usage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            total_tokens: self.total_tokens,
+        })
+    }
+}
+
+fn estimate_result_tokens(result: &ChatResult) -> usize {
+    let mut text = String::new();
+    text.push_str(&result.content);
+    if let Some(reasoning) = &result.reasoning {
+        text.push_str(reasoning);
+    }
+    for call in &result.tool_calls {
+        text.push_str(&call.function.name);
+        text.push_str(&call.function.arguments);
+    }
+    overflow::estimate_tokens(&text)
 }
 
 fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {
     let field = match tool_name {
+        "load_tools" => return compact_loaded_tools_report(output),
         "deep_research_linux_game_compatibility" => "final_report",
         "linux_input_method_diagnose" | "deep_diagnose" | "deep_research" => "final_answer",
         "task" => "result",
@@ -796,6 +920,95 @@ fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<Stri
                 .map(str::to_string)
         })
         .filter(|report| !report.is_empty())
+}
+
+fn compact_loaded_tools_report(output: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(output).ok()?;
+    let names = value
+        .get("loaded_tools")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&serde_json::json!({ "loaded_tools": names })).ok()
+}
+
+fn loaded_tools_from_messages(messages: &[ChatMessage]) -> BTreeSet<String> {
+    let mut loaded = BTreeSet::new();
+    for message in messages {
+        let Some(ChatContent::Text(text)) = message.content.as_ref() else {
+            continue;
+        };
+        collect_loaded_tools_from_text(text, &mut loaded);
+    }
+    loaded
+}
+
+fn collect_loaded_tools_from_text(text: &str, loaded: &mut BTreeSet<String>) {
+    let mut rest = text;
+    let start_tag = "<previous_tool_report name=\"load_tools\">";
+    let end_tag = "</previous_tool_report>";
+    while let Some(start) = rest.find(start_tag) {
+        let body_start = start + start_tag.len();
+        let Some(end) = rest[body_start..].find(end_tag) else {
+            break;
+        };
+        let body = &rest[body_start..body_start + end];
+        if let Ok(value) = serde_json::from_str::<Value>(body.trim()) {
+            if let Some(names) = value.get("loaded_tools").and_then(Value::as_array) {
+                for name in names.iter().filter_map(Value::as_str) {
+                    if !name.trim().is_empty() {
+                        loaded.insert(name.trim().to_string());
+                    }
+                }
+            }
+        }
+        rest = &rest[body_start + end + end_tag.len()..];
+    }
+}
+
+fn tool_event_name(name: &str, arguments: &str) -> String {
+    let Ok(args) = serde_json::from_str::<Value>(arguments) else {
+        return name.to_string();
+    };
+    match name {
+        "load_skill" => args
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|skill| format!("load_skill:{skill}"))
+            .unwrap_or_else(|| name.to_string()),
+        "load_tools" => args
+            .get("names")
+            .and_then(Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .filter(|tools| !tools.is_empty())
+            .map(|tools| format!("load_tools:{tools}"))
+            .unwrap_or_else(|| name.to_string()),
+        _ => name.to_string(),
+    }
+}
+
+fn tool_names_arg(arguments: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|args| args.get("names").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(str::trim).map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 fn clipboard_binary_image_from_tool_result(
@@ -931,6 +1144,29 @@ mod tests {
         let input = "继续<system_reminder>hidden";
 
         assert_eq!(clean_user_visible_text(input), "继续");
+    }
+
+    #[test]
+    fn formats_dynamic_load_tool_names() {
+        assert_eq!(
+            tool_event_name("load_skill", r#"{"name":"web-search"}"#),
+            "load_skill:web-search"
+        );
+        assert_eq!(
+            tool_event_name("load_tools", r#"{"names":["get_weather","todoupdate"]}"#),
+            "load_tools:get_weather,todoupdate"
+        );
+    }
+
+    #[test]
+    fn restores_loaded_tools_from_previous_tool_report() {
+        let messages = vec![ChatMessage::plain(
+            "assistant",
+            "<previous_tool_report name=\"load_tools\">\n{\"loaded_tools\":[\"get_weather\",\"todoupdate\"]}\n</previous_tool_report>",
+        )];
+        let loaded = loaded_tools_from_messages(&messages);
+        assert!(loaded.contains("get_weather"));
+        assert!(loaded.contains("todoupdate"));
     }
 
     #[test]

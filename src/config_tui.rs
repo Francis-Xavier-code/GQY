@@ -1782,6 +1782,7 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
     let mut fields = vec![
         Field::boolean("工具启用", config.tools.enabled),
         Field::new("工具最大轮数", config.tools.max_rounds.to_string()),
+        Field::new("工具信息如何传入", config.tools.loading_mode.clone()).choices(&["full", "lazy"]),
         Field::boolean("Skills 启用", config.skills.enabled),
         Field::boolean("允许执行命令", config.skills.allow_command_execution),
         Field::new("显示思考过程", config.display.reasoning.clone())
@@ -1789,18 +1790,21 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         Field::new("显示工具调用信息", config.display.tool_calls.clone())
             .choices(&["summary", "full", "hidden"]),
         Field::boolean("工具名可读显示", config.display.readable_tool_names),
+        Field::boolean("显示对话 Token 计数", config.display.show_token_usage),
         Field::new("上下文到达上限后", config.context.on_overflow.clone())
             .choices(&["pop", "compact"]),
     ];
     if run_form(stdout, " GLOBAL SETTINGS ", &mut fields)? {
         config.tools.enabled = parse_bool_field(&fields[0].value)?;
         config.tools.max_rounds = fields[1].value.trim().parse::<usize>()?;
-        config.skills.enabled = parse_bool_field(&fields[2].value)?;
-        config.skills.allow_command_execution = parse_bool_field(&fields[3].value)?;
-        config.display.reasoning = fields[4].value.trim().to_string();
-        config.display.tool_calls = fields[5].value.trim().to_string();
-        config.display.readable_tool_names = parse_bool_field(&fields[6].value)?;
-        config.context.on_overflow = fields[7].value.trim().to_string();
+        config.tools.loading_mode = fields[2].value.trim().to_string();
+        config.skills.enabled = parse_bool_field(&fields[3].value)?;
+        config.skills.allow_command_execution = parse_bool_field(&fields[4].value)?;
+        config.display.reasoning = fields[5].value.trim().to_string();
+        config.display.tool_calls = fields[6].value.trim().to_string();
+        config.display.readable_tool_names = parse_bool_field(&fields[7].value)?;
+        config.display.show_token_usage = parse_bool_field(&fields[8].value)?;
+        config.context.on_overflow = fields[9].value.trim().to_string();
     }
     Ok(())
 }
