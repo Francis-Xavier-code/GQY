@@ -37,6 +37,18 @@ struct ScriptDescriptions {
     en: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ScriptMetadata {
+    descriptions: ScriptDescriptions,
+    display_names: ScriptDisplayNames,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ScriptDisplayNames {
+    zh: Option<String>,
+    en: Option<String>,
+}
+
 pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
     let dirs = [
         paths.system_scripts_dir.as_path(),
@@ -168,8 +180,10 @@ fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
         .and_then(|n| n.to_str())
         .unwrap_or("script")
         .to_string();
-    let display_name = id.clone();
-    let description = select_script_description(&extract_descriptions(&raw))
+    let metadata = extract_metadata(&raw);
+    let display_name =
+        select_script_display_name(&metadata.display_names).unwrap_or_else(|| id.clone());
+    let description = select_script_description(&metadata.descriptions)
         .unwrap_or_else(|| format!("User script: {id}"));
     let parameters = json!({
         "type": "object",
@@ -196,7 +210,7 @@ fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
 }
 
 fn extract_description(raw: &str) -> Option<String> {
-    select_script_description(&extract_descriptions(raw))
+    select_script_description(&extract_metadata(raw).descriptions)
 }
 
 fn description_from_script(path: &Path, id: &str) -> String {
@@ -215,8 +229,17 @@ fn select_script_description(descriptions: &ScriptDescriptions) -> Option<String
     Some(preferred.clone())
 }
 
-fn extract_descriptions(raw: &str) -> ScriptDescriptions {
-    let mut descriptions = ScriptDescriptions::default();
+fn select_script_display_name(display_names: &ScriptDisplayNames) -> Option<String> {
+    let preferred = if is_zh() {
+        display_names.zh.as_ref().or(display_names.en.as_ref())
+    } else {
+        display_names.en.as_ref().or(display_names.zh.as_ref())
+    }?;
+    Some(preferred.clone())
+}
+
+fn extract_metadata(raw: &str) -> ScriptMetadata {
+    let mut metadata = ScriptMetadata::default();
     for line in raw.lines().skip(1) {
         let trimmed = line.trim_start_matches('#').trim();
         if trimmed.is_empty() {
@@ -224,8 +247,19 @@ fn extract_descriptions(raw: &str) -> ScriptDescriptions {
         }
         if let Some((key, desc)) = split_description_line(trimmed) {
             match key {
-                DescriptionKey::Chinese => descriptions.zh = Some(desc.to_string()),
-                DescriptionKey::English => descriptions.en = Some(desc.to_string()),
+                DescriptionKey::Chinese => metadata.descriptions.zh = Some(desc.to_string()),
+                DescriptionKey::English => metadata.descriptions.en = Some(desc.to_string()),
+            }
+            continue;
+        }
+        if let Some((key, display_name)) = split_display_name_line(trimmed) {
+            match key {
+                DisplayNameKey::Chinese => {
+                    metadata.display_names.zh = Some(display_name.to_string())
+                }
+                DisplayNameKey::English => {
+                    metadata.display_names.en = Some(display_name.to_string())
+                }
             }
             continue;
         }
@@ -233,11 +267,17 @@ fn extract_descriptions(raw: &str) -> ScriptDescriptions {
             break;
         }
     }
-    descriptions
+    metadata
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum DescriptionKey {
+    Chinese,
+    English,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum DisplayNameKey {
     Chinese,
     English,
 }
@@ -254,6 +294,22 @@ fn split_description_line(line: &str) -> Option<(DescriptionKey, &str)> {
     }
     if key.eq_ignore_ascii_case("description") {
         return Some((DescriptionKey::English, value));
+    }
+    None
+}
+
+fn split_display_name_line(line: &str) -> Option<(DisplayNameKey, &str)> {
+    let (raw_key, raw_value) = line.split_once(':').or_else(|| line.split_once('：'))?;
+    let key = raw_key.trim();
+    let value = raw_value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if key == "显示名称" || key == "工具名称" {
+        return Some((DisplayNameKey::Chinese, value));
+    }
+    if key.eq_ignore_ascii_case("display_name") || key.eq_ignore_ascii_case("display name") {
+        return Some((DisplayNameKey::English, value));
     }
     None
 }
@@ -694,7 +750,7 @@ mod tests {
     fn extracts_bilingual_script_descriptions() {
         let raw = "#!/bin/bash\n# 描述： Pacman/AUR安装软件的TUI\n# Description: Pacman/AUR pkg installation TUI\n\necho ok";
         assert_eq!(
-            extract_descriptions(raw),
+            extract_metadata(raw).descriptions,
             ScriptDescriptions {
                 zh: Some("Pacman/AUR安装软件的TUI".to_string()),
                 en: Some("Pacman/AUR pkg installation TUI".to_string()),
@@ -706,7 +762,7 @@ mod tests {
     fn extracts_lowercase_english_description() {
         let raw = "#!/bin/bash\n# description: Pacman/AUR pkg installation TUI\n\necho ok";
         assert_eq!(
-            extract_descriptions(raw),
+            extract_metadata(raw).descriptions,
             ScriptDescriptions {
                 zh: None,
                 en: Some("Pacman/AUR pkg installation TUI".to_string()),
@@ -746,6 +802,32 @@ mod tests {
         assert_eq!(entry.display_name, "hello");
         assert_eq!(entry.description, "Say hello");
         assert_eq!(entry.path, "hello.sh");
+    }
+
+    #[test]
+    fn extracts_script_display_name_metadata() {
+        let raw = "#!/bin/bash\n# 显示名称：电池护理\n# 描述：管理电池充电阈值\n\necho ok";
+        let metadata = extract_metadata(raw);
+        assert_eq!(metadata.display_names.zh, Some("电池护理".to_string()));
+        assert_eq!(
+            metadata.descriptions.zh,
+            Some("管理电池充电阈值".to_string())
+        );
+    }
+
+    #[test]
+    fn auto_detect_uses_script_display_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("battery-care.sh");
+        std::fs::write(
+            &script_path,
+            "#!/bin/bash\n# 显示名称：电池护理\n# 描述：管理电池充电阈值\n\necho ok",
+        )
+        .unwrap();
+        let entry = auto_detect_script(&script_path).unwrap();
+        assert_eq!(entry.id, "battery-care");
+        assert_eq!(entry.display_name, "电池护理");
+        assert_eq!(entry.description, "管理电池充电阈值");
     }
 
     #[test]

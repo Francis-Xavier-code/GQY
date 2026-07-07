@@ -151,6 +151,85 @@ contains_word() {
   return 1
 }
 
+json_string_value() {
+  local input="$1" key="$2" pattern
+  pattern="\"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+  [[ "$input" =~ $pattern ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+json_number_value() {
+  local input="$1" key="$2" pattern
+  pattern="\"$key\"[[:space:]]*:[[:space:]]*([0-9]+)"
+  [[ "$input" =~ $pattern ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+json_bool_true() {
+  local input="$1" key="$2" pattern
+  pattern="\"$key\"[[:space:]]*:[[:space:]]*true"
+  [[ "$input" =~ $pattern ]]
+}
+
+json_first_arg() {
+  local input="$1" pattern
+  pattern='"args"[[:space:]]*:[[:space:]]*\[[[:space:]]*"([^"]*)"'
+  [[ "$input" =~ $pattern ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+argv_from_stdin() {
+  local input="$1" command value start stop sysfs_root first_arg
+  input="$(one_line "$input")"
+  [[ -n "$input" ]] || return 1
+
+  if [[ "$input" != *'{'* && "$input" != *'['* && "$input" != *':'* ]]; then
+    printf '%s\n' $input
+    return 0
+  fi
+
+  json_bool_true "$input" dry_run && printf '%s\n' --dry-run
+  json_bool_true "$input" dryRun && printf '%s\n' --dry-run
+
+  sysfs_root="$(json_string_value "$input" sysfs_root)"
+  [[ -z "$sysfs_root" ]] && sysfs_root="$(json_string_value "$input" sysfsRoot)"
+  if [[ -n "$sysfs_root" ]]; then
+    printf '%s\n%s\n' --sysfs-root "$sysfs_root"
+  fi
+
+  first_arg="$(json_first_arg "$input")"
+  if [[ -n "$first_arg" ]]; then
+    printf '%s\n' "$first_arg"
+    return 0
+  fi
+
+  command="$(json_string_value "$input" command)"
+  [[ -z "$command" ]] && command="$(json_string_value "$input" cmd)"
+  [[ -z "$command" ]] && command="$(json_string_value "$input" action)"
+  [[ -z "$command" ]] && command="status"
+
+  case "$command" in
+    status|doctor|reset|help)
+      printf '%s\n' "$command"
+      ;;
+    limit)
+      value="$(json_number_value "$input" value)"
+      [[ -z "$value" ]] && value="$(json_number_value "$input" limit)"
+      [[ -n "$value" ]] || die "JSON limit command requires value or limit"
+      printf '%s\n%s\n' limit "$value"
+      ;;
+    set)
+      start="$(json_number_value "$input" start)"
+      stop="$(json_number_value "$input" stop)"
+      [[ -z "$stop" ]] && stop="$(json_number_value "$input" end)"
+      [[ -n "$start" || -n "$stop" ]] || die "JSON set command requires start and/or stop"
+      printf '%s\n' set
+      [[ -n "$start" ]] && printf '%s\n%s\n' --start "$start"
+      [[ -n "$stop" ]] && printf '%s\n%s\n' --stop "$stop"
+      ;;
+    *)
+      die "unknown JSON command: $command"
+      ;;
+  esac
+}
+
 add_backend() {
   BACKEND+=("$1")
   LABEL+=("$2")
@@ -900,6 +979,13 @@ parse_global_options() {
 }
 
 declare -a REMAINING_ARGS
+if [[ $# -eq 0 && ! -t 0 ]]; then
+  mapfile -t STDIN_ARGS < <(argv_from_stdin "$(cat)" 2>/dev/null || true)
+  if ((${#STDIN_ARGS[@]} > 0)); then
+    set -- "${STDIN_ARGS[@]}"
+  fi
+fi
+
 parse_global_options "$@"
 set -- "${REMAINING_ARGS[@]}"
 
