@@ -10,8 +10,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+use std::time::SystemTime;
 
 const BUILTIN_MEMES_DIR: &str = "/usr/share/miyu/memes";
+
+static MEME_LIBRARY_CACHE: OnceLock<RwLock<Option<MemeLibraryCache>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct MemeIndex {
@@ -94,6 +98,21 @@ struct AutoSendDecision {
 enum MemeSource {
     Builtin,
     User,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemeLibraryCacheKey {
+    library: String,
+    builtin_index: PathBuf,
+    user_index: PathBuf,
+    builtin_mtime: Option<SystemTime>,
+    user_mtime: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone)]
+struct MemeLibraryCache {
+    key: MemeLibraryCacheKey,
+    memes: Vec<LoadedMeme>,
 }
 
 pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
@@ -678,8 +697,23 @@ fn rank_memes(
 fn load_library(paths: &MiyuPaths, library: &str) -> Result<Vec<LoadedMeme>> {
     let builtin_dir = builtin_library_dir(library);
     let user_dir = user_library_dir(paths, library);
-    let builtin = load_index(&builtin_dir.join("index.json"))?.unwrap_or_default();
-    let user = load_index(&user_dir.join("index.json"))?.unwrap_or_default();
+    let builtin_index = builtin_dir.join("index.json");
+    let user_index = user_dir.join("index.json");
+    let key = MemeLibraryCacheKey {
+        library: sanitize_library(library),
+        builtin_mtime: index_mtime(&builtin_index),
+        user_mtime: index_mtime(&user_index),
+        builtin_index: builtin_index.clone(),
+        user_index: user_index.clone(),
+    };
+    let cache = MEME_LIBRARY_CACHE.get_or_init(|| RwLock::new(None));
+    if let Some(cached) = cache.read().unwrap().as_ref() {
+        if cached.key == key {
+            return Ok(cached.memes.clone());
+        }
+    }
+    let builtin = load_index(&builtin_index)?.unwrap_or_default();
+    let user = load_index(&user_index)?.unwrap_or_default();
     let disabled = user.disabled_ids;
     let mut user_ids = Vec::new();
     let mut result = Vec::new();
@@ -706,7 +740,17 @@ fn load_library(paths: &MiyuPaths, library: &str) -> Result<Vec<LoadedMeme>> {
             source: MemeSource::Builtin,
         });
     }
+    *cache.write().unwrap() = Some(MemeLibraryCache {
+        key,
+        memes: result.clone(),
+    });
     Ok(result)
+}
+
+fn index_mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
 }
 
 fn find_meme(paths: &MiyuPaths, library: &str, id: &str) -> Result<Option<LoadedMeme>> {
@@ -849,39 +893,74 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
 
 fn score_meme(item: &MemeItem, query: &str, tags: &[String]) -> f32 {
     let query = normalize(&format!("{query} {}", tags.join(" ")));
-    if query.is_empty() {
+    let terms = search_terms(&query);
+    if terms.is_empty() {
         return 0.1;
     }
-    let haystack = normalize(&format!(
-        "{} {} {} {} {} {}",
-        item.name.zh,
-        item.name.en,
-        item.description,
-        item.usage,
-        item.avoid,
-        item.tags.join(" ")
-    ));
-    let mut score = 0.0;
-    for term in query.split_whitespace() {
-        if haystack.contains(term) {
-            score += if item.tags.iter().any(|tag| normalize(tag).contains(term)) {
-                2.0
-            } else {
-                1.0
-            };
+    let name = normalize(&format!("{} {}", item.name.zh, item.name.en));
+    let description = normalize(&item.description);
+    let usage = normalize(&item.usage);
+    let avoid = normalize(&item.avoid);
+    let tag_text = normalize(&item.tags.join(" "));
+    let mut score: f32 = 0.0;
+    for term in terms {
+        if tag_text.contains(&term) {
+            score += 3.0;
+        }
+        if name.contains(&term) {
+            score += 2.5;
+        }
+        if usage.contains(&term) {
+            score += 2.0;
+        }
+        if description.contains(&term) {
+            score += 1.2;
+        }
+        if !avoid.is_empty() && avoid.contains(&term) {
+            score -= 2.5;
         }
     }
-    if haystack.contains(&query) {
+    let haystack = format!("{name} {description} {usage} {tag_text}");
+    if !query.is_empty() && haystack.contains(&query) {
         score += 2.0;
     }
-    score
+    score.max(0.0)
+}
+
+fn search_terms(query: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for token in query.split_whitespace() {
+        if token.chars().count() > 1 {
+            terms.push(token.to_string());
+        }
+        if token.chars().any(|ch| !ch.is_ascii()) {
+            let chars = token.chars().collect::<Vec<_>>();
+            for pair in chars.windows(2) {
+                terms.push(pair.iter().collect());
+            }
+        }
+    }
+    terms.sort();
+    terms.dedup();
+    terms
 }
 
 fn normalize(value: &str) -> String {
     value
         .to_ascii_lowercase()
         .chars()
-        .map(|ch| if ch.is_ascii_punctuation() { ' ' } else { ch })
+        .map(|ch| {
+            if ch.is_ascii_punctuation()
+                || matches!(
+                    ch,
+                    '，' | '。' | '！' | '？' | '、' | '；' | '：' | '（' | '）' | '“' | '”'
+                )
+            {
+                ' '
+            } else {
+                ch
+            }
+        })
         .collect::<String>()
 }
 
