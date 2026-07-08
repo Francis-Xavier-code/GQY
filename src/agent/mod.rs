@@ -186,6 +186,49 @@ impl Agent {
         })
     }
 
+    pub fn prepare_for_turn(&mut self) -> Result<()> {
+        let base_system_prompt = self.config.system_prompt(&self.paths)?;
+        if matches!(self.mode, AgentMode::Normal | AgentMode::Chat) {
+            self.state.reset_if_prompt_changed(&base_system_prompt)?;
+            self.state.recover_stale_turns()?;
+        }
+        self.system_prompt = with_current_time(base_system_prompt, self.mode);
+        Ok(())
+    }
+
+    pub fn mode(&self) -> AgentMode {
+        self.mode
+    }
+
+    pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
+        self.mode = mode;
+        self.tools = Arc::new(Mutex::new(tools));
+    }
+
+    pub fn reload_config(
+        &mut self,
+        config: AppConfig,
+        client: OpenAiCompatibleClient,
+    ) -> Result<()> {
+        self.config = config;
+        self.client = client;
+        self.tools_enabled = self.config.tools.enabled;
+        self.max_tool_rounds = self.config.tools.max_rounds;
+        self.trim_at_ratio = self.config.context.trim_at_ratio;
+        self.trim_batch_ratio = self.config.context.trim_batch_ratio;
+        self.context_window = self.config.active_context_window()?;
+        self.on_overflow = self.config.context.on_overflow.clone();
+        self.memory = MemoryStore::new(&self.config, &self.paths);
+        self.memory.init()?;
+        self.prepare_for_turn()
+    }
+
+    pub fn reset_memory(&mut self) -> Result<()> {
+        self.memory = MemoryStore::new(&self.config, &self.paths);
+        self.memory.init()?;
+        Ok(())
+    }
+
     pub async fn chat_stream<F>(&mut self, input: &str, on_event: F) -> Result<ChatResult>
     where
         F: FnMut(AgentEvent) -> Result<()>,

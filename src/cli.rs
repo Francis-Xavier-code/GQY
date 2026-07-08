@@ -1622,6 +1622,15 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
         println!("\x1b[2m{message}\x1b[0m");
     }
+    let initial_registry = build_tool_registry(&config, paths, mode)?;
+    let mut agent = Agent::new(
+        config.clone(),
+        paths,
+        state.clone(),
+        client.clone(),
+        initial_registry,
+        mode,
+    )?;
     loop {
         let (input, pasted_images) =
             match read_repl_input(paths, mode, prefill.take(), &input_history)? {
@@ -1660,12 +1669,18 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if input.eq_ignore_ascii_case("/providers") {
             run_providers(paths, ProvidersArgs { index: None })?;
             reload_repl_config(paths, &mut config, &mut client)?;
+            let registry = build_tool_registry(&config, paths, mode)?;
+            agent.reload_config(config.clone(), client.clone())?;
+            agent.switch_mode(mode, registry);
             println!("{}", t("configuration reloaded", "配置已重新加载"));
             continue;
         }
         if input.eq_ignore_ascii_case("/config") {
             crate::config_tui::run(paths)?;
             reload_repl_config(paths, &mut config, &mut client)?;
+            let registry = build_tool_registry(&config, paths, mode)?;
+            agent.reload_config(config.clone(), client.clone())?;
+            agent.switch_mode(mode, registry);
             println!("{}", t("configuration reloaded", "配置已重新加载"));
             continue;
         }
@@ -1683,21 +1698,18 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if input.eq_ignore_ascii_case("/reset all") {
             run_reset(paths, Some("all"))?;
             input_history.clear();
+            agent.reset_memory()?;
             continue;
         }
         if input.is_empty() {
             continue;
         }
         input_history.push(input.to_string());
-        let registry = build_tool_registry(&config, paths, mode)?;
-        let mut agent = Agent::new(
-            config.clone(),
-            paths,
-            state.clone(),
-            client.clone(),
-            registry,
-            mode,
-        )?;
+        if agent.mode() != mode {
+            let registry = build_tool_registry(&config, paths, mode)?;
+            agent.switch_mode(mode, registry);
+        }
+        agent.prepare_for_turn()?;
         let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
         let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
         let mut renderer = render::StreamRenderer::new(
