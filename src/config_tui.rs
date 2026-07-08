@@ -1640,7 +1640,7 @@ struct ModelInfo {
 }
 
 fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
-    let choices = config.provider_model_choices();
+    let mut choices = config.provider_model_choices();
     if choices.is_empty() {
         message(stdout, "没有可用 Provider，请先添加。")?;
         return Ok(());
@@ -1666,7 +1666,7 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
             " SELECT PROVIDER/MODEL ",
             &options,
             selected,
-            "[Enter]选择 [q]返回",
+            "[Enter]选择 [d]移除 [q]返回",
         )?;
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
@@ -1678,6 +1678,16 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
                     &choices[selected].model,
                 )?;
                 return Ok(());
+            }
+            KeyCode::Char('d') => {
+                let choice = choices[selected].clone();
+                config.remove_active_provider_model(&choice.provider_id, &choice.model)?;
+                choices = config.provider_model_choices();
+                if choices.is_empty() {
+                    message(stdout, "已移除激活模型，当前没有可用模型。")?;
+                    return Ok(());
+                }
+                selected = selected.min(choices.len().saturating_sub(1));
             }
             _ => {}
         }

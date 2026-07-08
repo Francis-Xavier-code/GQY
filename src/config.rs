@@ -1184,6 +1184,24 @@ impl AppConfig {
         Ok(())
     }
 
+    pub fn remove_active_provider_model(&mut self, provider_id: &str, model: &str) -> Result<()> {
+        let provider = self
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+            .with_context(|| format!("provider not found: {provider_id}"))?;
+        if model.trim().is_empty() {
+            bail!("model cannot be empty");
+        }
+        provider.models.retain(|item| item != model);
+        provider.model_context_window.remove(model);
+        provider.model_modalities.remove(model);
+        if provider.default_model == model {
+            provider.default_model = provider.models.first().cloned().unwrap_or_default();
+        }
+        Ok(())
+    }
+
     pub fn active_context_window(&self) -> Result<Option<usize>> {
         let provider = self.provider(None)?;
         let model = &provider.default_model;
@@ -1720,6 +1738,49 @@ mod tests {
 
         assert!(provider.models.is_empty());
         assert!(provider.default_model.is_empty());
+    }
+
+    #[test]
+    fn remove_active_provider_model_clears_removed_current_model() {
+        let mut config = AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
+        config.providers[0].models = vec!["old-model".to_string(), "next-model".to_string()];
+        config.providers[0].default_model = "old-model".to_string();
+        config.providers[0]
+            .model_context_window
+            .insert("old-model".to_string(), 8192);
+        config.providers[0]
+            .model_modalities
+            .insert("old-model".to_string(), vec!["text".to_string()]);
+
+        config
+            .remove_active_provider_model(&provider_id, "old-model")
+            .unwrap();
+
+        assert_eq!(config.providers[0].models, vec!["next-model"]);
+        assert_eq!(config.providers[0].default_model, "next-model");
+        assert!(!config.providers[0]
+            .model_context_window
+            .contains_key("old-model"));
+        assert!(!config.providers[0]
+            .model_modalities
+            .contains_key("old-model"));
+    }
+
+    #[test]
+    fn remove_active_provider_model_clears_last_current_model() {
+        let mut config = AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
+        config.providers[0].models = vec!["old-model".to_string()];
+        config.providers[0].default_model = "old-model".to_string();
+
+        config
+            .remove_active_provider_model(&provider_id, "old-model")
+            .unwrap();
+
+        assert!(config.providers[0].models.is_empty());
+        assert!(config.providers[0].default_model.is_empty());
+        assert!(config.provider_model_choices().is_empty());
     }
 
     #[test]
