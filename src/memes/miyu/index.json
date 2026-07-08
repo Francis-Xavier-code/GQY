@@ -309,6 +309,94 @@
       "usage": "适合不知道答案、无法判断、信息不足、想诚实承认不会但带一点幽默时使用。",
       "avoid": "用户需要严肃排障、必须给出确定结论、或承认不知道会显得敷衍时不要使用。",
       "tags": ["优质解答", "我不知道", "不知道", "不会", "信息不足", "诚实", "反差"]
+    },
+    {
+      "id": "sha256:11f2a58efa5673cfca435ce15795f56841c26a29a121053bbb41659230590ffe",
+      "name": { "zh": "别担心我来助你", "en": "Don't Worry I Will Help" },
+      "file": "images/expr_11f2a58efa5673cf.jpg",
+      "mime_type": "image/jpeg",
+      "animated": false,
+      "description": "豚鼠/仓鼠站在木屋前，张着嘴举起小手，另一只手握着一把长叉，底部写“我来助你”。画面像主动出手支援，气势可靠又可爱。",
+      "usage": "适合用户需要帮助、准备接手问题、安抚对方“别担心我来”的时候使用。",
+      "avoid": "用户需要严肃、精确、长步骤排障时不要只用表情敷衍；真实紧急场景应先给方案。",
+      "tags": ["我来助你", "别担心", "帮忙", "支援", "接手", "可靠", "可爱"]
+    },
+    {
+      "id": "sha256:c4960ebd588ced655e86b87eb7e2de05bfbc6599f609480979464c64862ebdf8",
+      "name": { "zh": "Deepin 西装系统", "en": "Deepin Suit System" },
+      "file": "images/expr_c4960ebd588ced65.jpg",
+      "mime_type": "image/jpeg",
+      "animated": false,
+      "description": "白底图上方写“正在操作西装系统”，中间是戴墨镜、礼帽并打领带的 Linux 企鹅，下方有 Deepin 标志和 Deepin 字样。画面用于调侃 deepin 的精致外观和“西装系统”梗。",
+      "usage": "适合聊 deepin、Linux 桌面美化、国产发行版、西装系统梗时讽刺或调侃。",
+      "avoid": "严肃发行版评测、用户真的在排障 deepin、需要客观专业建议时不要用来嘲讽。",
+      "tags": ["deepin", "西装系统", "Linux", "企鹅", "国产发行版", "桌面美化", "嘲讽"]
+    },
+    {
+      "id": "sha256:5e6d70f5af6009f0d0495f9f62f9280d8845217e10988e6e77f5d57a83ab3bf0",
+      "name": { "zh": "我的评价是寄", "en": "My Verdict Is It's Over" },
+      "file": "images/expr_5e6d70f5af6009f0.png",
+      "mime_type": "image/png",
+      "animated": false,
+      "description": "白底大字表情，上方是夸张立体红字“我的评价是”，中间一个巨大的“寄”。表达事情已经寄了、完蛋了、没救了。",
+      "usage": "适合小范围玩笑里表示方案翻车、事情完蛋、出大问题、暂时没辙。",
+      "avoid": "用户真的焦虑、事故严重、需要安抚或解决步骤时不要直接用。",
+      "tags": ["寄", "完蛋", "出问题", "没辙", "翻车", "解决不了", "大问题"]
+    },
+    {
+      "id": "sha256:5fa668471cbb26ea0fe31633b3b08f325a74ceee5a8394862d0492146efb342d",
+      "name": { "zh": "现在是上班时间吧", "en": "Isn't It Work Time" },
+      "file": "images/expr_5fa668471cbb26ea.jpg",
+      "mime_type": "image/jpeg",
+      "animated": false,
+      "description": "灰发猫耳小人低着头，表情像被领导盯住；上方文字写“我没猜错的话现在是上班时间吧”，下方写“领导”。用于调侃工作日上班时间摸鱼。",
+      "usage": "适合工作日上班时间用户来闲聊、摸鱼、突然找 AI 聊天时调侃。",
+      "avoid": "用户在处理正事、紧急工作、正式任务或情绪紧张时不要打断。",
+      "tags": ["上班时间", "摸鱼", "领导", "工作日", "打工人", "上班", "调侃"]
+    },
+    {
+      "id": "sha256:05cfb324d4318bb107e1d0800a9331181f1280ebb1d648556aa35f33a8bde9e4",
+      "name": { "zh": "熊猫看戏", "en": "Panda Watching Drama" },
+      "file": "images/expr_05cfb324d4318bb1.gif",
+      "mime_type": "image/gif",
+      "animated": true,
+      "description": "熊猫趴在木桩上托着脸看向前方，底部写“看戏”。画面是吃瓜、围观、坐看热闹的状态。",
+      "usage": "适合围观冲突、吃瓜、看事情发展、看热闹不嫌事大时使用。",
+      "avoid": "用户本人正在遭遇问题、需要实际帮助或场景严肃时不要只看戏。GIF 默认静态预览。",
+      "tags": ["看戏", "吃瓜", "围观", "看热闹", "坐看", "不嫌事大", "熊猫", "GIF"]
+    },
+    {
+      "id": "sha256:fa291e31db962da1e6a0b0399926f37e3d924308920138aa71ab92bd92a4cd3e",
+      "name": { "zh": "你不会百度吗", "en": "Can You Not Baidu It" },
+      "file": "images/expr_fa291e31db962da1.jpg",
+      "mime_type": "image/jpeg",
+      "animated": false,
+      "description": "百度首页截图旁边有粉发角色指向搜索框，搜索框旁标注“1.输入你的问题”“2.点击它”，底部写“草泥马你不会百度吗？”。语气很冲，用来吐槽伸手党。",
+      "usage": "适合熟人语境下，用户反复问极容易自行搜索的问题、明显伸手党、让人不想再代搜时使用。",
+      "avoid": "默认不建议自动使用；用户真诚求助、不熟、需要耐心帮助、正式场合或容易冒犯时不要使用。",
+      "tags": ["百度", "自己搜", "伸手党", "不会百度吗", "不想搜索", "吐槽", "粗口"]
+    },
+    {
+      "id": "sha256:b5370e0f9f231bd89d1732a53257dcdfc63a166bf655d6c7b0690786d0431477",
+      "name": { "zh": "你在说锤子呢", "en": "What Are You Talking About" },
+      "file": "images/expr_b5370e0f9f231bd8.jpg",
+      "mime_type": "image/jpeg",
+      "animated": false,
+      "description": "卡通小头像闭眼笑，旁边挂着巨大蓝色汗滴。没有文字，但表情明显是汗、无语、听不懂、尴尬。",
+      "usage": "适合用户表达跳跃、逻辑混乱、说法奇怪、让人听不懂或汗颜时使用。",
+      "avoid": "用户认真求助、情绪低落、需要耐心澄清或正式解释时不要嘲讽。",
+      "tags": ["汗", "无语", "你在说什么", "锤子", "听不懂", "尴尬", "困惑"]
+    },
+    {
+      "id": "sha256:8cabd8614c876d32498cc129221932da41febf2c5bc276d4cb20a0734f9f984e",
+      "name": { "zh": "问题解答价位表", "en": "Question Detail Price List" },
+      "file": "images/expr_8cabd8614c876d32.jpg",
+      "mime_type": "image/jpeg",
+      "animated": false,
+      "description": "彩色价位表写着：问题描述≤10字 500CNY，问题描述≤20字 300CNY，问题描述+截图 80CNY，详细问题描述+截图/日志 免费。用于吐槽问题描述太少。",
+      "usage": "适合用户只给很少信息、没有截图/日志/上下文，需要提示补充详细描述时使用。",
+      "avoid": "用户已经给出充分信息、问题紧急、或需要先直接排查时不要用来阴阳怪气。",
+      "tags": ["问题描述", "截图", "日志", "补充信息", "信息不足", "提问方式", "价位表"]
     }
   ]
 }
