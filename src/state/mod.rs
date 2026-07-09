@@ -110,7 +110,7 @@ impl StateStore {
     }
 
     pub fn mark_interrupted_turn_if_needed(&self) -> Result<bool> {
-        Ok(false)
+        self.conv_db.mark_interrupted_running_turns()
     }
 
     pub fn recover_stale_turns(&self) -> Result<usize> {
@@ -149,6 +149,10 @@ impl StateStore {
 
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
         self.conv_db.hide_turns_before_seq(seq)
+    }
+
+    pub fn delete_hidden_turns(&self) -> Result<usize> {
+        self.conv_db.delete_hidden_turns()
     }
 
     pub fn insert_summary_turn(
@@ -256,6 +260,7 @@ fn prompt_fingerprint(system_prompt: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[allow(dead_code)]
 fn turn_chars(turn: &Turn) -> usize {
     turn.user_content.chars().count()
         + turn.assistant_content.chars().count()
@@ -273,7 +278,13 @@ fn turn_chars(turn: &Turn) -> usize {
 }
 
 fn turn_estimated_tokens(turn: &Turn) -> usize {
-    (turn_chars(turn) / 4).max(1)
+    crate::agent::overflow::estimate_tokens(&format!(
+        "{}{}{}{}",
+        turn.user_content,
+        turn.assistant_content,
+        turn.assistant_reasoning.as_deref().unwrap_or(""),
+        turn.tool_reports.join("")
+    ))
 }
 
 fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {

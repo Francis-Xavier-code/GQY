@@ -121,6 +121,11 @@ pub struct ProviderConfig {
         skip_serializing_if = "is_default_temperature"
     )]
     pub temperature: f32,
+    #[serde(
+        default = "default_anthropic_max_tokens",
+        skip_serializing_if = "is_default_anthropic_max_tokens"
+    )]
+    pub anthropic_max_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -840,6 +845,7 @@ impl ProviderConfig {
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
+            anthropic_max_tokens: default_anthropic_max_tokens(),
         }
     }
 
@@ -856,6 +862,7 @@ impl ProviderConfig {
             default_model: "gpt-4o-mini".to_string(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
+            anthropic_max_tokens: default_anthropic_max_tokens(),
         }
     }
 
@@ -895,6 +902,7 @@ impl ProviderConfig {
             default_model: String::new(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
+            anthropic_max_tokens: default_anthropic_max_tokens(),
         }
     }
 
@@ -1128,6 +1136,39 @@ impl AppConfig {
         }
         if self.plugins.knowledge_base.embedding_timeout_seconds == 0 {
             bail!("plugins.knowledge_base.embedding_timeout_seconds must be greater than 0");
+        }
+        if !(0.0..=2.0).contains(&self.provider(None)?.temperature) {
+            bail!("provider temperature must be between 0.0 and 2.0");
+        }
+        for provider in &self.providers {
+            if provider.timeout_seconds == 0 {
+                bail!("provider {} timeout_seconds must be greater than 0", provider.id);
+            }
+            if !(0.0..=2.0).contains(&provider.temperature) {
+                bail!("provider {} temperature must be between 0.0 and 2.0", provider.id);
+            }
+            if provider.anthropic_max_tokens == 0 {
+                bail!("provider {} anthropic_max_tokens must be greater than 0", provider.id);
+            }
+        }
+        if !(0.0..=1.0).contains(&self.plugins.memes.auto_send_probability) {
+            bail!("plugins.memes.auto_send_probability must be between 0.0 and 1.0");
+        }
+        if self.plugins.memes.width_percent == 0 || self.plugins.memes.width_percent > 100 {
+            bail!("plugins.memes.width_percent must be between 1 and 100");
+        }
+        if self.plugins.memes.height_percent == 0 || self.plugins.memes.height_percent > 100 {
+            bail!("plugins.memes.height_percent must be between 1 and 100");
+        }
+        let mem = self.memory_config();
+        if mem.forgetting_half_life_days <= 0.0 {
+            bail!("memory.forgetting_half_life_days must be greater than 0");
+        }
+        if mem.forget_after_days == 0 {
+            bail!("memory.forget_after_days must be greater than 0");
+        }
+        if !(0.0..=1.0).contains(&self.plugins.knowledge_base.semantic_min_score) {
+            bail!("plugins.knowledge_base.semantic_min_score must be between 0.0 and 1.0");
         }
         self.provider(None)?;
         Ok(())
@@ -1439,6 +1480,14 @@ fn is_default_timeout(value: &u64) -> bool {
 
 fn is_default_temperature(value: &f32) -> bool {
     (*value - default_temperature()).abs() < f32::EPSILON
+}
+
+fn default_anthropic_max_tokens() -> u32 {
+    4096
+}
+
+fn is_default_anthropic_max_tokens(value: &u32) -> bool {
+    *value == default_anthropic_max_tokens()
 }
 
 fn default_provider_protocol() -> String {

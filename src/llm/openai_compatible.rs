@@ -199,7 +199,7 @@ impl OpenAiCompatibleClient {
             messages: lower_anthropic_messages(messages),
             tools: (!tools.is_empty()).then(|| lower_anthropic_tools(tools)),
             stream: true,
-            max_tokens: 4096,
+            max_tokens: self.provider.anthropic_max_tokens,
             temperature: Some(self.provider.temperature),
         };
         let url = format!("{}/messages", self.provider.base_url.trim_end_matches('/'));
@@ -2385,6 +2385,7 @@ mod tests {
             default_model: String::new(),
             timeout_seconds: 60,
             temperature: 0.7,
+            anthropic_max_tokens: 4096,
         }
     }
 }

@@ -1748,6 +1748,7 @@ fn edit_provider_form(
         default_model,
         timeout_seconds: fields[7].value.trim().parse().unwrap_or(60),
         temperature: fields[8].value.trim().parse().unwrap_or(0.7),
+        anthropic_max_tokens: 4096,
     }))
 }
 

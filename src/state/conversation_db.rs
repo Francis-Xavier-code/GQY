@@ -249,6 +249,13 @@ impl ConversationDb {
         Ok(affected)
     }
 
+    pub fn delete_hidden_turns(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let affected =
+            conn.execute("DELETE FROM turns WHERE hidden = 1 AND is_summary = 0", [])?;
+        Ok(affected)
+    }
+
     pub fn insert_summary_turn(
         &self,
         summary: &str,
@@ -409,6 +416,17 @@ impl ConversationDb {
             .query_map(params![exclude_turn_id], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(summaries)
+    }
+
+    pub fn mark_interrupted_running_turns(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let affected = conn.execute(
+            "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2, status = 'interrupted'
+             WHERE status = 'running'",
+            params![INTERRUPTED_TEXT, now],
+        )?;
+        Ok(affected > 0)
     }
 
     pub fn recover_stale_running_turns(&self) -> Result<usize> {
