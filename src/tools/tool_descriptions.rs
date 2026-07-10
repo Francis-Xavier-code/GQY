@@ -9,7 +9,6 @@ pub struct ToolDescription {
     pub display_name: String,
     pub description: String,
     pub parameters: Value,
-    pub permission: String,
     pub always_loaded: bool,
 }
 
@@ -48,7 +47,6 @@ macro_rules! tool_description_files {
             include_str!("descriptions/install_aur_package.json"),
             include_str!("descriptions/linux_input_method_diagnose.json"),
             include_str!("descriptions/list_alarms.json"),
-            include_str!("descriptions/list_scripts.json"),
             include_str!("descriptions/load_skill.json"),
             include_str!("descriptions/online_man_get_page.json"),
             include_str!("descriptions/online_man_search.json"),
@@ -108,13 +106,4 @@ pub fn all() -> &'static HashMap<String, ToolDescription> {
 
 pub fn get(name: &str) -> Option<&'static ToolDescription> {
     all().get(name)
-}
-
-pub fn on_demand_descriptions() -> Vec<&'static ToolDescription> {
-    let mut items = all()
-        .values()
-        .filter(|desc| !desc.always_loaded)
-        .collect::<Vec<_>>();
-    items.sort_by(|a, b| a.name.cmp(&b.name));
-    items
 }

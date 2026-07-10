@@ -37,6 +37,7 @@ pub struct ToolSpec {
     pub permission: ToolPermission,
     pub display_name: Option<String>,
     pub always_loaded: bool,
+    pub is_script: bool,
     handler: ToolHandler,
 }
 
@@ -64,6 +65,7 @@ impl ToolSpec {
             permission: ToolPermission::ReadOnly,
             display_name: None,
             always_loaded: true,
+            is_script: false,
             handler: Arc::new(move |args, _progress| Box::pin(handler(args))),
         }
     }
@@ -85,6 +87,7 @@ impl ToolSpec {
             permission: ToolPermission::ReadOnly,
             display_name: None,
             always_loaded: true,
+            is_script: false,
             handler: Arc::new(move |args, progress| Box::pin(handler(args, progress))),
         }
     }
@@ -96,6 +99,16 @@ impl ToolSpec {
 
     pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
         self.display_name = Some(display_name.into());
+        self
+    }
+
+    pub fn with_always_loaded(mut self, always_loaded: bool) -> Self {
+        self.always_loaded = always_loaded;
+        self
+    }
+
+    pub fn script(mut self) -> Self {
+        self.is_script = true;
         self
     }
 
@@ -132,9 +145,17 @@ impl ToolSpec {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnregisteredScript {
+    pub name: String,
+    pub path: String,
+}
+
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, ToolSpec>,
+    script_tool_names: BTreeSet<String>,
+    unregistered_scripts: Vec<UnregisteredScript>,
 }
 
 impl ToolRegistry {
@@ -147,26 +168,77 @@ impl ToolRegistry {
         self.tools.insert(tool.name.clone(), tool);
     }
 
+    pub fn replace_script_tools(
+        &mut self,
+        scripts: Vec<ToolSpec>,
+        mut unregistered: Vec<UnregisteredScript>,
+    ) -> Result<()> {
+        let mut names = BTreeSet::new();
+        let mut accepted = Vec::new();
+        for script in scripts {
+            if !script.is_script {
+                bail!("script tool is missing script origin: {}", script.name);
+            }
+            if !names.insert(script.name.clone()) {
+                bail!("duplicate script id: {}", script.name);
+            }
+            if script.name == "load_tools"
+                || crate::tools::tool_descriptions::get(&script.name).is_some()
+                || (self.tools.contains_key(&script.name)
+                    && !self.script_tool_names.contains(&script.name))
+            {
+                continue;
+            }
+            accepted.push(script);
+        }
+
+        for name in &self.script_tool_names {
+            self.tools.remove(name);
+        }
+        self.script_tool_names.clear();
+
+        for script in accepted {
+            self.script_tool_names.insert(script.name.clone());
+            self.tools.insert(script.name.clone(), script);
+        }
+
+        unregistered.sort_by(|a, b| a.name.cmp(&b.name).then(a.path.cmp(&b.path)));
+        self.unregistered_scripts = unregistered;
+        Ok(())
+    }
+
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(ToolSpec::definition).collect()
+        let mut definitions = self
+            .tools
+            .values()
+            .map(ToolSpec::definition)
+            .collect::<Vec<_>>();
+        definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
+        definitions
     }
 
     pub fn lazy_definitions(&self, loaded: &BTreeSet<String>) -> Vec<ToolDefinition> {
-        self.tools
+        let mut definitions = self
+            .tools
             .values()
             .filter(|tool| tool.always_loaded || loaded.contains(&tool.name))
-            .map(ToolSpec::definition)
-            .collect()
+            .map(|tool| {
+                let mut definition = tool.definition();
+                if tool.name == "load_tools" {
+                    definition.function.description =
+                        super::load_tools::dynamic_description(self, loaded);
+                }
+                definition
+            })
+            .collect::<Vec<_>>();
+        definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
+        definitions
     }
 
     pub fn requires_lazy_load(&self, name: &str, loaded: &BTreeSet<String>) -> bool {
         self.tools
             .get(name)
-            .map(|tool| {
-                !tool.always_loaded
-                    && !loaded.contains(name)
-                    && crate::tools::tool_descriptions::get(name).is_some()
-            })
+            .map(|tool| !tool.always_loaded && !loaded.contains(name))
             .unwrap_or(false)
     }
 
@@ -194,6 +266,9 @@ impl ToolRegistry {
         } else {
             serde_json::from_str(arguments)?
         };
+        if name == "load_tools" {
+            return super::load_tools::execute(args, self);
+        }
         tool.call(args, ToolProgress::default()).await
     }
 
@@ -211,6 +286,10 @@ impl ToolRegistry {
         } else {
             serde_json::from_str(arguments)?
         };
+        if name == "load_tools" {
+            let result = super::load_tools::execute(args, self);
+            return Ok(Box::pin(async move { result }));
+        }
         Ok(tool.call_future(args, ToolProgress::new(sender)))
     }
 
@@ -224,6 +303,22 @@ impl ToolRegistry {
 
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+
+    pub(crate) fn loadable_tools(&self, loaded: &BTreeSet<String>) -> Vec<&ToolSpec> {
+        let mut tools = self
+            .tools
+            .values()
+            .filter(|tool| {
+                tool.name != "load_tools" && !tool.always_loaded && !loaded.contains(&tool.name)
+            })
+            .collect::<Vec<_>>();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        tools
+    }
+
+    pub(crate) fn unregistered_scripts(&self) -> &[UnregisteredScript] {
+        &self.unregistered_scripts
     }
 
     pub fn clone_filtered(&self, allowed: &[&str]) -> ToolRegistry {

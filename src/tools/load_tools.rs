@@ -1,40 +1,57 @@
-use super::{tool_descriptions, ToolRegistry, ToolSpec};
+use super::{ToolPermission, ToolRegistry, ToolSpec};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+const BASE_DESCRIPTION: &str = "按需加载工具或脚本的完整说明和参数 schema。<available_tools> 是可加载的内置工具，<available_scripts> 是可加载的脚本工具；请使用 {\"names\":[\"名称\"]} 加载。<unregistered_scripts> 中的文件尚未注册为工具，不能直接加载或调用；需要先读取对应路径并使用 register_script 注册。";
+
 pub fn register(registry: &mut ToolRegistry) {
-    let allowed_tools = registry.tool_names().into_iter().collect::<BTreeSet<_>>();
-    let loadable_tools = loadable_tools(&allowed_tools);
-    let description = format!(
-        "按需加载部分内置工具的完整说明和参数 schema。重要：只有下面 <available_tools> 列表里的内置工具需要、也可以通过 load_tools 加载；未列出的工具已经在顶层工具列表中可直接调用，尤其是用户脚本工具和系统脚本工具，不要对脚本工具调用 load_tools。如果要使用列表中的某个工具，请先调用 load_tools，参数为 {{\"names\":[\"工具名\"]}}。加载成功后，后续轮次可以直接调用对应工具。\n\n{}",
-        available_tools_xml(&loadable_tools)
-    );
     registry.register(
         ToolSpec::new(
             "load_tools",
-            description,
+            BASE_DESCRIPTION,
             json!({
                 "type": "object",
                 "properties": {
                     "names": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "要加载的内置工具名称列表。只允许填写 available_tools 列表里的工具；脚本工具不需要 load_tools，应该直接调用。"
+                        "description": "要加载的内置工具或脚本工具名称列表。只允许填写 available_tools 或 available_scripts 中的名称。"
                     }
                 },
-                "required": ["names"]
+                "required": ["names"],
+                "additionalProperties": false
             }),
-            move |args| {
-                let loadable_tools = loadable_tools.clone();
-                async move { load_tools(args, &loadable_tools) }
+            |_args| async {
+                bail!("load_tools must be executed through the active tool registry")
             },
         )
         .with_display_name("加载工具"),
     );
 }
 
-fn load_tools(args: Value, allowed_tools: &BTreeSet<String>) -> Result<String> {
+pub(super) fn dynamic_description(registry: &ToolRegistry, loaded: &BTreeSet<String>) -> String {
+    let loadable = registry.loadable_tools(loaded);
+    let builtins = loadable
+        .iter()
+        .copied()
+        .filter(|tool| !tool.is_script)
+        .collect::<Vec<_>>();
+    let scripts = loadable
+        .iter()
+        .copied()
+        .filter(|tool| tool.is_script)
+        .collect::<Vec<_>>();
+
+    format!(
+        "{BASE_DESCRIPTION}\n\n{}\n{}\n{}",
+        tools_xml("available_tools", "tool", &builtins),
+        tools_xml("available_scripts", "script", &scripts),
+        unregistered_scripts_xml(registry),
+    )
+}
+
+pub(super) fn execute(args: Value, registry: &ToolRegistry) -> Result<String> {
     let names = args
         .get("names")
         .and_then(Value::as_array)
@@ -44,57 +61,81 @@ fn load_tools(args: Value, allowed_tools: &BTreeSet<String>) -> Result<String> {
     }
 
     let mut loaded = Vec::new();
+    let mut seen = BTreeSet::new();
     for value in names {
         let name = value.as_str().unwrap_or_default().trim();
-        if name.is_empty() {
+        if name.is_empty() || !seen.insert(name.to_string()) {
             continue;
         }
-        if !allowed_tools.contains(name) {
+        let Some(tool) = registry.get(name) else {
+            bail!("unknown tool or script: {name}");
+        };
+        if tool.name == "load_tools" || tool.always_loaded {
             bail!(
-                "tool cannot be loaded with load_tools: {name}. Only tools listed in available_tools can be loaded; script tools and top-level tools should be called directly."
+                "tool cannot be loaded with load_tools: {name}. Only names listed in available_tools or available_scripts can be loaded."
             );
         }
-        let Some(desc) = tool_descriptions::get(name) else {
-            bail!("unknown tool: {name}");
-        };
         loaded.push(json!({
-            "name": desc.name,
-            "display_name": desc.display_name,
-            "description": desc.description,
-            "parameters": desc.parameters,
-            "permission": desc.permission,
+            "name": tool.name,
+            "display_name": tool.display_name.as_deref().unwrap_or(&tool.name),
+            "description": tool.description,
+            "parameters": tool.parameters,
+            "permission": match tool.permission {
+                ToolPermission::ReadOnly => "readonly",
+                ToolPermission::Writes => "writes",
+            },
+            "kind": if tool.is_script { "script" } else { "tool" },
         }));
+    }
+
+    if loaded.is_empty() {
+        bail!("names must contain at least one loadable tool or script");
     }
 
     Ok(serde_json::to_string_pretty(&json!({
         "loaded_tools": loaded,
-        "note": "这些工具的完整定义已加载到当前对话上下文；后续可以直接按对应 name 调用。"
+        "note": "完整定义将在下一轮工具列表中生效，可直接按 name 调用。"
     }))?)
 }
 
-fn loadable_tools(allowed_tools: &BTreeSet<String>) -> BTreeSet<String> {
-    tool_descriptions::on_demand_descriptions()
+fn tools_xml(tag: &str, item_tag: &str, tools: &[&ToolSpec]) -> String {
+    let items = tools
         .iter()
-        .filter(|desc| allowed_tools.contains(&desc.name))
-        .map(|desc| desc.name.clone())
-        .collect()
-}
-
-fn available_tools_xml(allowed_tools: &BTreeSet<String>) -> String {
-    let items = tool_descriptions::on_demand_descriptions()
-        .iter()
-        .filter(|desc| allowed_tools.contains(&desc.name))
-        .map(|desc| {
+        .map(|tool| {
             format!(
-                "  <tool>\n    <name>{}</name>\n    <display_name>{}</display_name>\n    <description>{}</description>\n  </tool>",
-                xml_escape(&desc.name),
-                xml_escape(&desc.display_name),
-                xml_escape(&desc.description)
+                "  <{item_tag}>\n    <name>{}</name>\n    <display_name>{}</display_name>\n    <description>{}</description>\n  </{item_tag}>",
+                xml_escape(&tool.name),
+                xml_escape(tool.display_name.as_deref().unwrap_or(&tool.name)),
+                xml_escape(&tool.description),
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("<available_tools>\n{items}\n</available_tools>")
+    format!("<{tag}>\n{items}\n</{tag}>")
+}
+
+fn unregistered_scripts_xml(registry: &ToolRegistry) -> String {
+    let items = registry
+        .unregistered_scripts()
+        .iter()
+        .map(|script| {
+            format!(
+                "  <script>\n    <name>{}</name>\n    <path>{}</path>\n  </script>",
+                xml_escape(&script.name),
+                xml_escape(&script.path),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("<unregistered_scripts>\n{items}\n</unregistered_scripts>")
+}
+
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]
@@ -102,25 +143,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loadable_tools_excludes_registered_scripts() {
-        let allowed = BTreeSet::from(["get_weather".to_string(), "battery-care".to_string()]);
-        let loadable = loadable_tools(&allowed);
+    fn description_separates_builtin_scripts_and_unregistered_files() {
+        let mut registry = ToolRegistry::new();
+        register(&mut registry);
+        registry.register(
+            ToolSpec::new(
+                "custom_builtin",
+                "Built in",
+                json!({"type":"object","properties":{}}),
+                |_| async { Ok(String::new()) },
+            )
+            .with_always_loaded(false),
+        );
+        registry
+            .replace_script_tools(
+                vec![ToolSpec::new(
+                    "lazy_script",
+                    "Lazy script",
+                    json!({"type":"object","properties":{"query":{"type":"string"}}}),
+                    |_| async { Ok(String::new()) },
+                )
+                .script()
+                .with_always_loaded(false)],
+                vec![super::super::registry::UnregisteredScript {
+                    name: "unknown_script".to_string(),
+                    path: "unknown-script".to_string(),
+                }],
+            )
+            .unwrap();
 
-        assert!(loadable.contains("get_weather"));
-        assert!(!loadable.contains("battery-care"));
+        let description = dynamic_description(&registry, &BTreeSet::new());
+        assert!(description.contains("<available_tools>"));
+        assert!(description.contains("custom_builtin"));
+        assert!(description.contains("<available_scripts>"));
+        assert!(description.contains("lazy_script"));
+        assert!(description.contains("<unregistered_scripts>"));
+        assert!(description.contains("unknown-script"));
     }
 
-    #[test]
-    fn load_tools_rejects_script_like_unlisted_tool() {
-        let allowed = BTreeSet::from(["read_file".to_string()]);
-        let err = load_tools(json!({"names": ["battery-care"]}), &allowed).unwrap_err();
+    #[tokio::test]
+    async fn registry_loads_dynamic_script_definition() {
+        let mut registry = ToolRegistry::new();
+        register(&mut registry);
+        registry
+            .replace_script_tools(
+                vec![ToolSpec::new(
+                    "lazy_script",
+                    "Lazy script",
+                    json!({"type":"object","properties":{}}),
+                    |_| async { Ok(String::new()) },
+                )
+                .script()
+                .with_always_loaded(false)],
+                Vec::new(),
+            )
+            .unwrap();
 
-        assert!(err.to_string().contains("script tools"));
+        let output = registry
+            .call("load_tools", r#"{"names":["lazy_script"]}"#)
+            .await
+            .unwrap();
+        assert!(output.contains("lazy_script"));
+        assert!(output.contains("\"kind\": \"script\""));
     }
-}
-
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }

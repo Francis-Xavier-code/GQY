@@ -568,9 +568,10 @@ impl Agent {
             }
             tool_round += 1;
 
-            {
+            if self.mode == AgentMode::Normal {
                 let mut tools = self.tools.lock().unwrap();
                 tools::rescan_scripts(&mut tools, &self.paths);
+                tools::register_script_display_names(&tools);
             }
 
             let definitions = if self.tools_enabled {
