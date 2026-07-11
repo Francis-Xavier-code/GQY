@@ -104,12 +104,16 @@ pub(crate) fn format_token_usage_inline(
         "?".to_string()
     };
 
-    format!(
-        "{} · {}/{} ({usage_ratio})",
-        format_compact_count(turn_tokens),
+    let session = format!(
+        "{}/{} ({usage_ratio})",
         format_compact_count(session_tokens),
         context,
-    )
+    );
+    if turn_tokens == 0 {
+        session
+    } else {
+        format!("{} · {session}", format_compact_count(turn_tokens))
+    }
 }
 
 pub fn usage_total(usage: &Usage) -> u64 {
@@ -2339,6 +2343,18 @@ mod tests {
     fn list_markers_use_tertiary_color() {
         assert!(render_markdown_line("- item").contains(&format!("{TERTIARY_STYLE}-{RESET}")));
         assert!(render_markdown_line("1. item").contains(&format!("{TERTIARY_STYLE}1.{RESET}")));
+    }
+
+    #[test]
+    fn token_usage_hides_zero_turn_tokens() {
+        assert_eq!(
+            format_token_usage_inline(0, 1_300, Some(272_000)),
+            "1.3k/272k (0.5%)"
+        );
+        assert_eq!(
+            format_token_usage_inline(1_300, 1_300, Some(272_000)),
+            "1.3k · 1.3k/272k (0.5%)"
+        );
     }
 
     #[test]

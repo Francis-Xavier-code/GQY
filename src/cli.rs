@@ -1857,6 +1857,52 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             prefill = prompt;
             continue;
         }
+        if input.eq_ignore_ascii_case("/compact") {
+            let reasoning_mode =
+                render::ReasoningDisplayMode::from_config(&config.display.reasoning);
+            let tool_call_mode =
+                render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+            let mut renderer = render::StreamRenderer::new(
+                reasoning_mode,
+                tool_call_mode,
+                false,
+                config.display.readable_tool_names,
+            );
+            match agent
+                .compact_now(|event| handle_agent_event(&mut renderer, event))
+                .await
+            {
+                Ok(Some(result)) => {
+                    renderer.finish()?;
+                    footer.update_token_usage(
+                        &result,
+                        state.token_total()?,
+                        agent.context_window(),
+                    );
+                    if config.display.show_token_usage {
+                        print_chat_token_usage(
+                            &result,
+                            true,
+                            state.token_total()?,
+                            agent.context_window(),
+                        )?;
+                    }
+                }
+                Ok(None) => {
+                    renderer.finish()?;
+                    println!(
+                        "\x1b[2m{}\x1b[0m",
+                        t("nothing to compact", "没有可压缩的上下文")
+                    );
+                    footer.update_session_tokens(state.token_total()?);
+                }
+                Err(err) => {
+                    renderer.finish()?;
+                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                }
+            }
+            continue;
+        }
         if input.eq_ignore_ascii_case("/reset") {
             run_reset(paths, None)?;
             input_history.clear();
@@ -1993,6 +2039,13 @@ fn print_repl_help() {
         t(
             "remove last turn and restore prompt",
             "撤销上一轮并恢复输入"
+        )
+    );
+    println!(
+        "  /compact   {}",
+        t(
+            "compact current conversation context now",
+            "立即压缩当前会话上下文"
         )
     );
     println!(
@@ -2552,14 +2605,11 @@ fn render_repl_input_with_footer(
     let mut row_offset = 0u16;
     queue!(stdout, MoveTo(0, *input_row), Print(&prompt_prefix))?;
     row_offset = row_offset.saturating_add(1);
-    for (index, line) in display_lines.iter().enumerate() {
+    for line in &display_lines {
         let row = (*input_row).saturating_add(row_offset);
         queue!(stdout, MoveTo(0, row))?;
         queue!(stdout, Print(&prompt_prefix), Print(line))?;
-        row_offset = row_offset.saturating_add(repl_line_rows(
-            if index == 0 { plain_prefix } else { "" },
-            line,
-        ));
+        row_offset = row_offset.saturating_add(repl_line_rows(&plain_prefix, line));
     }
     queue!(
         stdout,
@@ -2584,7 +2634,8 @@ fn render_repl_input_with_footer(
         repl_cursor_position(&plain_prefix, input, cursor)
     } else {
         let last_line = display_lines.last().map(String::as_str).unwrap_or_default();
-        let col = (visible_width(last_line) % terminal_cols()) as u16;
+        let col =
+            ((visible_width(&plain_prefix) + visible_width(last_line)) % terminal_cols()) as u16;
         (
             col,
             repl_prompt_rows(&plain_prefix, &display_lines).saturating_sub(1),
@@ -2760,8 +2811,8 @@ fn repl_line_rows_for_cols(prefix: &str, line: &str, cols: usize) -> u16 {
 fn repl_prompt_rows_for_cols(prefix: &str, lines: &[String], cols: usize) -> u16 {
     let cols = cols.max(1);
     let mut rows = 0usize;
-    for (index, line) in lines.iter().enumerate() {
-        rows += repl_line_rows_for_cols(if index == 0 { prefix } else { "" }, line, cols) as usize;
+    for line in lines {
+        rows += repl_line_rows_for_cols(prefix, line, cols) as usize;
     }
     rows.max(1).min(u16::MAX as usize) as u16
 }
@@ -2778,11 +2829,7 @@ fn repl_cursor_position_for_cols(
     let last_index = lines.len().saturating_sub(1);
     let mut row_offset = 0usize;
     for (index, line) in lines.iter().enumerate() {
-        let width = if index == 0 {
-            visible_width(prefix) + visible_width(line)
-        } else {
-            visible_width(line)
-        };
+        let width = visible_width(prefix) + visible_width(line);
         if index == last_index {
             return (
                 (width % cols).min(u16::MAX as usize) as u16,
@@ -3176,7 +3223,7 @@ fn colorize_repl_placeholders(line: &str) -> String {
     result
 }
 
-fn repl_commands() -> [&'static str; 9] {
+fn repl_commands() -> [&'static str; 10] {
     [
         "/providers",
         "/config",
@@ -3184,6 +3231,7 @@ fn repl_commands() -> [&'static str; 9] {
         "/normal",
         "/chat",
         "/undo",
+        "/compact",
         "/reset",
         "/help",
         "/exit",
@@ -3235,8 +3283,34 @@ mod repl_input_tests {
     }
 
     #[test]
+    fn cursor_position_keeps_prefix_after_newline() {
+        assert_eq!(repl_cursor_position_for_cols("  ", "123\n", 4, 10), (2, 1));
+        assert_eq!(
+            repl_cursor_position_for_cols("  ", "123\n456", 7, 10),
+            (5, 1)
+        );
+    }
+
+    #[test]
+    fn prompt_rows_include_prefix_on_each_line() {
+        assert_eq!(
+            repl_prompt_rows_for_cols("  ", &["12".into(), "34".into()], 5),
+            2
+        );
+        assert_eq!(
+            repl_prompt_rows_for_cols("  ", &["123".into(), "34".into()], 5),
+            3
+        );
+    }
+
+    #[test]
     fn reset_is_a_repl_command() {
         assert!(repl_commands().contains(&"/reset"));
+    }
+
+    #[test]
+    fn compact_is_a_repl_command() {
+        assert!(repl_commands().contains(&"/compact"));
     }
 
     #[test]

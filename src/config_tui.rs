@@ -1825,7 +1825,10 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         Field::new("显示工具调用信息", config.display.tool_calls.clone())
             .choices(&["summary", "full", "hidden"]),
         Field::boolean("工具名可读显示", config.display.readable_tool_names),
-        Field::boolean("显示对话 Token 计数", config.display.show_token_usage),
+        Field::boolean(
+            "Shell 无缝对话显示 Token 计数",
+            config.display.show_token_usage,
+        ),
         Field::new("上下文到达上限后", config.context.on_overflow.clone())
             .choices(&["pop", "compact"]),
     ];

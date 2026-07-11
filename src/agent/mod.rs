@@ -425,6 +425,50 @@ impl Agent {
         }))
     }
 
+    pub async fn compact_now<F>(&self, on_event: F) -> Result<Option<ChatResult>>
+    where
+        F: FnMut(AgentEvent) -> Result<()>,
+    {
+        let mut on_event = on_event;
+        let Some(context_window) = self.context_window else {
+            bail!("当前模型未配置上下文窗口，无法压缩上下文");
+        };
+        let visible_count = self.state.load_visible_turns()?.len();
+        if visible_count == 0 {
+            return Ok(None);
+        }
+        let check = overflow::OverflowCheck::new(self.context_window, self.trim_at_ratio, None);
+        on_event(AgentEvent::CompactStart)?;
+        let compactor = compact::Compactor::new(
+            self.client.clone(),
+            self.state.clone(),
+            context_window,
+            check.reserved_tokens,
+        );
+        let mut on_chunk = |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
+        let compact = match compactor.perform_compact(&mut on_chunk).await {
+            Ok(result) => {
+                on_event(AgentEvent::CompactEnd)?;
+                result
+            }
+            Err(err) => {
+                on_event(AgentEvent::CompactEnd)?;
+                return Err(err);
+            }
+        };
+        let Some(compact) = compact else {
+            return Ok(None);
+        };
+        self.state.add_auxiliary_usage(&compact.usage)?;
+        Ok(Some(ChatResult {
+            content: String::new(),
+            reasoning: None,
+            usage: Some(compact.usage),
+            usage_estimated: compact.usage_estimated,
+            tool_calls: Vec::new(),
+        }))
+    }
+
     async fn handle_overflow<F>(
         &self,
         usage: &Usage,

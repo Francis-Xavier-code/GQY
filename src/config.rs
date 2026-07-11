@@ -712,7 +712,7 @@ impl Default for MemesPluginConfig {
             height_percent: default_memes_height_percent(),
             max_image_mb: default_memes_max_image_mb(),
             allow_gif_animation: false,
-            auto_send_enabled: true,
+            auto_send_enabled: false,
             auto_send_probability: default_memes_auto_send_probability(),
         }
     }
@@ -1758,7 +1758,7 @@ fn default_trim_batch_ratio() -> f32 {
 }
 
 fn default_on_overflow() -> String {
-    "pop".to_string()
+    "compact".to_string()
 }
 
 #[cfg(unix)]
@@ -1864,7 +1864,7 @@ mod tests {
             memes.library_for_persona("Custom Persona"),
             "custom-persona"
         );
-        assert!(memes.auto_send_enabled);
+        assert!(!memes.auto_send_enabled);
         assert_eq!(memes.auto_send_probability, 0.2);
     }
 }
