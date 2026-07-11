@@ -375,6 +375,7 @@ impl Agent {
         let mut persisted_tool_reports = Vec::new();
         let result = self
             .chat_with_tools(
+                &turn_id,
                 &mut messages,
                 &mut used_tools,
                 &mut persisted_tool_reports,
@@ -535,6 +536,7 @@ impl Agent {
 
     async fn chat_with_tools<F>(
         &self,
+        current_turn_id: &str,
         messages: &mut Vec<ChatMessage>,
         used_tools: &mut Vec<String>,
         persisted_tool_reports: &mut Vec<(String, String)>,
@@ -544,7 +546,7 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         let mut tool_round = 0usize;
-        let mut loaded_tools = loaded_tools_from_messages(messages);
+        let mut loaded_tools = self.initial_loaded_tools(messages)?;
         let mut usage_accumulator = UsageAccumulator::default();
         loop {
             if self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds {
@@ -575,7 +577,7 @@ impl Agent {
 
             let definitions = if self.tools_enabled {
                 let tools = self.tools.lock().unwrap();
-                if self.config.tools.loading_mode == "lazy" {
+                if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
                     tools.lazy_definitions(&loaded_tools)
                 } else {
                     tools.definitions()
@@ -644,22 +646,32 @@ impl Agent {
                             call.function.name
                         );
                     }
-                    if self.config.tools.loading_mode == "lazy"
+                    if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode)
                         && call.function.name != "load_tools"
                         && tools.requires_lazy_load(&call.function.name, &loaded_tools)
                     {
-                        let output = format!(
-                            "tool error: 工具 `{}` 尚未加载。请先调用 load_tools，参数为 {{\"names\":[\"{}\"]}}。",
-                            call.function.name,
-                            call.function.name,
-                        );
-                        on_event(AgentEvent::ToolResult {
-                            name: event_name.clone(),
-                            ok: false,
-                            output: output.clone(),
-                        })?;
-                        messages.push(ChatMessage::tool(call.id, output));
-                        continue;
+                        if tools.can_auto_load_direct_call(&call.function.name) {
+                            loaded_tools.insert(call.function.name.clone());
+                            if self.config.tools.persist_loaded_tools {
+                                self.state.add_session_loaded_tools(
+                                    &[call.function.name.clone()],
+                                    Some(current_turn_id),
+                                )?;
+                            }
+                        } else {
+                            let output = format!(
+                                "tool error: 工具 `{}` 尚未加载。请先调用 load_tools，参数为 {{\"names\":[\"{}\"]}}。",
+                                call.function.name,
+                                call.function.name,
+                            );
+                            on_event(AgentEvent::ToolResult {
+                                name: event_name.clone(),
+                                ok: false,
+                                output: output.clone(),
+                            })?;
+                            messages.push(ChatMessage::tool(call.id, output));
+                            continue;
+                        }
                     }
                 }
                 if call.function.name == "install_aur_package"
@@ -747,8 +759,15 @@ impl Agent {
                 };
                 messages.push(ChatMessage::tool(call.id, output.clone()));
                 if tool_succeeded && call.function.name == "load_tools" {
-                    for name in tool_names_arg(&call.function.arguments) {
-                        loaded_tools.insert(name);
+                    let loaded = loaded_items_from_output(&output);
+                    for name in &loaded.tools {
+                        loaded_tools.insert(name.clone());
+                    }
+                    if self.config.tools.persist_loaded_tools {
+                        self.state
+                            .add_session_loaded_tools(&loaded.tools, Some(current_turn_id))?;
+                        self.state
+                            .add_session_loaded_targets(&loaded.targets, Some(current_turn_id))?;
                     }
                 }
                 if let Some(img) = clipboard_image {
@@ -823,6 +842,26 @@ impl Agent {
                 }
             }
         }
+    }
+
+    fn initial_loaded_tools(&self, messages: &[ChatMessage]) -> Result<BTreeSet<String>> {
+        if !self.config.tools.persist_loaded_tools {
+            return Ok(BTreeSet::new());
+        }
+        let mut loaded = self.state.load_session_loaded_tools()?;
+        if loaded.is_empty() {
+            loaded = loaded_tools_from_messages(messages);
+            if !loaded.is_empty() {
+                let names = loaded.iter().cloned().collect::<Vec<_>>();
+                self.state.add_session_loaded_tools(&names, None)?;
+            }
+        }
+        if !loaded.is_empty() {
+            let tools = self.tools.lock().unwrap();
+            let available = tools.tool_names().into_iter().collect::<BTreeSet<_>>();
+            loaded.retain(|name| available.contains(name));
+        }
+        Ok(loaded)
     }
 
     async fn clipboard_image_message(&self, img: ClipboardImage) -> Result<Option<ChatMessage>> {
@@ -1010,13 +1049,60 @@ fn compact_loaded_tools_report(output: &str) -> Option<String> {
         .get("loaded_tools")
         .and_then(Value::as_array)?
         .iter()
-        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("name").and_then(Value::as_str))
+        })
         .map(str::to_string)
         .collect::<Vec<_>>();
     if names.is_empty() {
         return None;
     }
     serde_json::to_string(&serde_json::json!({ "loaded_tools": names })).ok()
+}
+
+#[derive(Default)]
+struct LoadedItems {
+    targets: Vec<String>,
+    tools: Vec<String>,
+}
+
+fn loaded_items_from_output(output: &str) -> LoadedItems {
+    let Ok(value) = serde_json::from_str::<Value>(output) else {
+        return LoadedItems::default();
+    };
+    let targets = value
+        .get("loaded_targets")
+        .and_then(Value::as_array)
+        .map(|items| string_array_items(items))
+        .unwrap_or_default();
+    let tools = value
+        .get("loaded_tools")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .or_else(|| item.get("name").and_then(Value::as_str))
+                })
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    LoadedItems { targets, tools }
+}
+
+fn string_array_items(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn compact_sent_meme_report(output: &str) -> Option<String> {
@@ -1131,17 +1217,6 @@ fn tool_event_name(name: &str, arguments: &str) -> String {
             .unwrap_or_else(|| name.to_string()),
         _ => name.to_string(),
     }
-}
-
-fn tool_names_arg(arguments: &str) -> Vec<String> {
-    serde_json::from_str::<Value>(arguments)
-        .ok()
-        .and_then(|args| args.get("names").and_then(Value::as_array).cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|value| value.as_str().map(str::trim).map(str::to_string))
-        .filter(|value| !value.is_empty())
-        .collect()
 }
 
 fn clipboard_binary_image_from_tool_result(

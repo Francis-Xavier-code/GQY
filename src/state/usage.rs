@@ -109,7 +109,10 @@ mod tests {
         let usage_snapshot = snapshot(&path).unwrap();
         assert_eq!(usage_snapshot.last_usage.unwrap().total_tokens, 15);
         assert_eq!(
-            usage_snapshot.last_conversation_usage.unwrap().prompt_tokens,
+            usage_snapshot
+                .last_conversation_usage
+                .unwrap()
+                .prompt_tokens,
             10
         );
 

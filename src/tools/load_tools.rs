@@ -1,9 +1,9 @@
-use super::{ToolPermission, ToolRegistry, ToolSpec};
+use super::{ToolRegistry, ToolSpec};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-const BASE_DESCRIPTION: &str = "按需加载工具或脚本的完整说明和参数 schema。<available_tools> 是可加载的内置工具，<available_scripts> 是可加载的脚本工具；请使用 {\"names\":[\"名称\"]} 加载。<unregistered_scripts> 中的文件尚未注册为工具，不能直接加载或调用；需要先读取对应路径并使用 register_script 注册。";
+const BASE_DESCRIPTION: &str = "按需加载工具、脚本或工具组的完整说明和参数 schema。请从 <available_load_targets> 中选择 <name>，并使用 {\"names\":[\"名称\"]} 加载。type=tool/script 表示加载单个工具；type=group 表示加载该组所有未加载工具。<unregistered_scripts> 中的文件尚未注册为工具，不能直接加载或调用；需要先读取对应路径并使用 register_script 注册。";
 
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(
@@ -16,7 +16,7 @@ pub fn register(registry: &mut ToolRegistry) {
                     "names": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "要加载的内置工具或脚本工具名称列表。只允许填写 available_tools 或 available_scripts 中的名称。"
+                        "description": "要加载的工具、脚本或工具组名称列表。只允许填写 available_load_targets 中的 name，例如 web_search 或 group:gaming。"
                     }
                 },
                 "required": ["names"],
@@ -31,22 +31,9 @@ pub fn register(registry: &mut ToolRegistry) {
 }
 
 pub(super) fn dynamic_description(registry: &ToolRegistry, loaded: &BTreeSet<String>) -> String {
-    let loadable = registry.loadable_tools(loaded);
-    let builtins = loadable
-        .iter()
-        .copied()
-        .filter(|tool| !tool.is_script)
-        .collect::<Vec<_>>();
-    let scripts = loadable
-        .iter()
-        .copied()
-        .filter(|tool| tool.is_script)
-        .collect::<Vec<_>>();
-
     format!(
-        "{BASE_DESCRIPTION}\n\n{}\n{}\n{}",
-        tools_xml("available_tools", "tool", &builtins),
-        tools_xml("available_scripts", "script", &scripts),
+        "{BASE_DESCRIPTION}\n\n{}\n{}",
+        registry.load_targets_xml(loaded),
         unregistered_scripts_xml(registry),
     )
 }
@@ -60,58 +47,23 @@ pub(super) fn execute(args: Value, registry: &ToolRegistry) -> Result<String> {
         bail!("names must not be empty");
     }
 
-    let mut loaded = Vec::new();
-    let mut seen = BTreeSet::new();
-    for value in names {
-        let name = value.as_str().unwrap_or_default().trim();
-        if name.is_empty() || !seen.insert(name.to_string()) {
-            continue;
-        }
-        let Some(tool) = registry.get(name) else {
-            bail!("unknown tool or script: {name}");
-        };
-        if tool.name == "load_tools" || tool.always_loaded {
-            bail!(
-                "tool cannot be loaded with load_tools: {name}. Only names listed in available_tools or available_scripts can be loaded."
-            );
-        }
-        loaded.push(json!({
-            "name": tool.name,
-            "display_name": tool.display_name.as_deref().unwrap_or(&tool.name),
-            "description": tool.description,
-            "parameters": tool.parameters,
-            "permission": match tool.permission {
-                ToolPermission::ReadOnly => "readonly",
-                ToolPermission::Writes => "writes",
-            },
-            "kind": if tool.is_script { "script" } else { "tool" },
-        }));
-    }
+    let requested = names
+        .iter()
+        .filter_map(|value| value.as_str().map(str::trim).map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let (loaded_targets, loaded_tools) =
+        registry.expand_load_targets(&requested, &BTreeSet::new())?;
 
-    if loaded.is_empty() {
-        bail!("names must contain at least one loadable tool or script");
+    if loaded_tools.is_empty() {
+        bail!("names must contain at least one loadable tool, script, or group");
     }
 
     Ok(serde_json::to_string_pretty(&json!({
-        "loaded_tools": loaded,
-        "note": "完整定义将在下一轮工具列表中生效，可直接按 name 调用。"
+        "loaded_targets": loaded_targets,
+        "loaded_tools": loaded_tools,
+        "note": "loaded"
     }))?)
-}
-
-fn tools_xml(tag: &str, item_tag: &str, tools: &[&ToolSpec]) -> String {
-    let items = tools
-        .iter()
-        .map(|tool| {
-            format!(
-                "  <{item_tag}>\n    <name>{}</name>\n    <display_name>{}</display_name>\n    <description>{}</description>\n  </{item_tag}>",
-                xml_escape(&tool.name),
-                xml_escape(tool.display_name.as_deref().unwrap_or(&tool.name)),
-                xml_escape(&tool.description),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("<{tag}>\n{items}\n</{tag}>")
 }
 
 fn unregistered_scripts_xml(registry: &ToolRegistry) -> String {
@@ -140,6 +92,7 @@ fn xml_escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tool_descriptions::LoadPolicy;
     use super::*;
 
     #[test]
@@ -173,9 +126,8 @@ mod tests {
             .unwrap();
 
         let description = dynamic_description(&registry, &BTreeSet::new());
-        assert!(description.contains("<available_tools>"));
+        assert!(description.contains("<available_load_targets>"));
         assert!(description.contains("custom_builtin"));
-        assert!(description.contains("<available_scripts>"));
         assert!(description.contains("lazy_script"));
         assert!(description.contains("<unregistered_scripts>"));
         assert!(description.contains("unknown-script"));
@@ -204,6 +156,45 @@ mod tests {
             .await
             .unwrap();
         assert!(output.contains("lazy_script"));
-        assert!(output.contains("\"kind\": \"script\""));
+        assert!(output.contains("\"loaded_tools\""));
+    }
+
+    #[tokio::test]
+    async fn registry_loads_group_target_definition() {
+        let mut registry = ToolRegistry::new();
+        register(&mut registry);
+        registry.register(
+            ToolSpec::new(
+                "protondb_query",
+                "Query ProtonDB compatibility",
+                json!({"type":"object","properties":{"game":{"type":"string"}}}),
+                |_| async { Ok(String::new()) },
+            )
+            .with_always_loaded(false)
+            .with_load_policy(LoadPolicy::Group)
+            .with_groups(vec!["gaming".to_string()]),
+        );
+
+        let description = dynamic_description(&registry, &BTreeSet::new());
+        assert!(description.contains("group:gaming"));
+        assert!(description.contains("protondb_query"));
+
+        let output = registry
+            .call("load_tools", r#"{"names":["group:gaming"]}"#)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(
+            value["loaded_targets"].as_array().unwrap()[0]
+                .as_str()
+                .unwrap(),
+            "group:gaming"
+        );
+        assert_eq!(
+            value["loaded_tools"].as_array().unwrap()[0]
+                .as_str()
+                .unwrap(),
+            "protondb_query"
+        );
     }
 }

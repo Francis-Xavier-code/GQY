@@ -177,6 +177,8 @@ pub struct ToolsConfig {
     pub max_rounds: usize,
     #[serde(default = "default_tools_loading_mode")]
     pub loading_mode: String,
+    #[serde(default = "default_true")]
+    pub persist_loaded_tools: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -784,6 +786,7 @@ impl Default for ToolsConfig {
             enabled: default_true(),
             max_rounds: 0,
             loading_mode: default_tools_loading_mode(),
+            persist_loaded_tools: default_true(),
         }
     }
 }
@@ -1142,13 +1145,22 @@ impl AppConfig {
         }
         for provider in &self.providers {
             if provider.timeout_seconds == 0 {
-                bail!("provider {} timeout_seconds must be greater than 0", provider.id);
+                bail!(
+                    "provider {} timeout_seconds must be greater than 0",
+                    provider.id
+                );
             }
             if !(0.0..=2.0).contains(&provider.temperature) {
-                bail!("provider {} temperature must be between 0.0 and 2.0", provider.id);
+                bail!(
+                    "provider {} temperature must be between 0.0 and 2.0",
+                    provider.id
+                );
             }
             if provider.anthropic_max_tokens == 0 {
-                bail!("provider {} anthropic_max_tokens must be greater than 0", provider.id);
+                bail!(
+                    "provider {} anthropic_max_tokens must be greater than 0",
+                    provider.id
+                );
             }
         }
         if !(0.0..=1.0).contains(&self.plugins.memes.auto_send_probability) {
@@ -1503,7 +1515,7 @@ fn default_true() -> bool {
 }
 
 fn default_tools_loading_mode() -> String {
-    "lazy".to_string()
+    "hybrid".to_string()
 }
 
 fn default_reasoning_display() -> String {

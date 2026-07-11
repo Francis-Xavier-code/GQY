@@ -1,7 +1,21 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadPolicy {
+    Summary,
+    Group,
+    Hidden,
+}
+
+impl Default for LoadPolicy {
+    fn default() -> Self {
+        Self::Summary
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolDescription {
@@ -10,9 +24,21 @@ pub struct ToolDescription {
     pub description: String,
     pub parameters: Value,
     pub always_loaded: bool,
+    #[serde(default)]
+    pub load_policy: LoadPolicy,
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolGroupDescription {
+    pub display_name: String,
+    pub summary: String,
 }
 
 static TOOL_DESCRIPTIONS: OnceLock<HashMap<String, ToolDescription>> = OnceLock::new();
+static TOOL_GROUPS: OnceLock<HashMap<String, ToolGroupDescription>> = OnceLock::new();
+const TOOL_GROUPS_RAW: &str = include_str!("descriptions/groups.json");
 
 macro_rules! tool_description_files {
     () => {
@@ -106,4 +132,21 @@ pub fn all() -> &'static HashMap<String, ToolDescription> {
 
 pub fn get(name: &str) -> Option<&'static ToolDescription> {
     all().get(name)
+}
+
+pub fn group_summary(group: &str) -> String {
+    groups()
+        .get(group)
+        .map(|desc| desc.summary.clone())
+        .unwrap_or_else(|| group.to_string())
+}
+
+pub fn group_display_name(group: &str) -> Option<String> {
+    groups().get(group).map(|desc| desc.display_name.clone())
+}
+
+fn groups() -> &'static HashMap<String, ToolGroupDescription> {
+    TOOL_GROUPS.get_or_init(|| {
+        serde_json::from_str(TOOL_GROUPS_RAW).expect("tool group description JSON must be valid")
+    })
 }

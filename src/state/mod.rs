@@ -6,6 +6,7 @@ use crate::paths::MiyuPaths;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -96,12 +97,32 @@ impl StateStore {
         )
     }
 
-    pub fn append_persisted_context(
-        &self,
-        turn_id: &str,
-        report: &str,
-    ) -> Result<()> {
+    pub fn append_persisted_context(&self, turn_id: &str, report: &str) -> Result<()> {
         self.conv_db.append_tool_report(turn_id, report.trim())
+    }
+
+    pub fn load_session_loaded_tools(&self) -> Result<BTreeSet<String>> {
+        self.conv_db.load_session_loaded_items("tool")
+    }
+
+    pub fn add_session_loaded_tools(
+        &self,
+        names: &[String],
+        source_turn_id: Option<&str>,
+    ) -> Result<()> {
+        self.conv_db
+            .add_session_loaded_items("tool", names, source_turn_id)?;
+        Ok(())
+    }
+
+    pub fn add_session_loaded_targets(
+        &self,
+        names: &[String],
+        source_turn_id: Option<&str>,
+    ) -> Result<()> {
+        self.conv_db
+            .add_session_loaded_items("target", names, source_turn_id)?;
+        Ok(())
     }
 
     pub fn mark_interrupted_turn_if_needed(&self) -> Result<bool> {
@@ -558,6 +579,23 @@ mod tests {
         assert_eq!(visible.len(), 2);
         assert!(visible.iter().any(|t| t.is_summary));
         assert!(visible.iter().any(|t| !t.is_summary));
+    }
+
+    #[test]
+    fn session_loaded_tools_persist_until_reset() {
+        let (_temp, store) = test_store();
+        store
+            .add_session_loaded_tools(&["web_search".to_string()], Some("t1"))
+            .unwrap();
+        store
+            .add_session_loaded_targets(&["group:gaming".to_string()], Some("t1"))
+            .unwrap();
+
+        let loaded = store.load_session_loaded_tools().unwrap();
+        assert!(loaded.contains("web_search"));
+
+        store.reset_conversation().unwrap();
+        assert!(store.load_session_loaded_tools().unwrap().is_empty());
     }
 
     #[test]

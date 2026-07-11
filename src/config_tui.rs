@@ -1816,8 +1816,8 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
     let mut fields = vec![
         Field::boolean("工具启用", config.tools.enabled),
         Field::new("工具最大轮数", config.tools.max_rounds.to_string()),
-        Field::new("工具信息如何传入", config.tools.loading_mode.clone())
-            .choices(&["full", "lazy"]),
+        Field::new("工具加载模式", config.tools.loading_mode.clone()).choices(&["full", "hybrid"]),
+        Field::boolean("记住已加载工具", config.tools.persist_loaded_tools),
         Field::boolean("Skills 启用", config.skills.enabled),
         Field::boolean("允许执行命令", config.skills.allow_command_execution),
         Field::new("显示思考过程", config.display.reasoning.clone())
@@ -1832,16 +1832,24 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
     if run_form(stdout, " GLOBAL SETTINGS ", &mut fields)? {
         config.tools.enabled = parse_bool_field(&fields[0].value)?;
         config.tools.max_rounds = fields[1].value.trim().parse::<usize>()?;
-        config.tools.loading_mode = fields[2].value.trim().to_string();
-        config.skills.enabled = parse_bool_field(&fields[3].value)?;
-        config.skills.allow_command_execution = parse_bool_field(&fields[4].value)?;
-        config.display.reasoning = fields[5].value.trim().to_string();
-        config.display.tool_calls = fields[6].value.trim().to_string();
-        config.display.readable_tool_names = parse_bool_field(&fields[7].value)?;
-        config.display.show_token_usage = parse_bool_field(&fields[8].value)?;
-        config.context.on_overflow = fields[9].value.trim().to_string();
+        config.tools.loading_mode = normalize_tools_loading_mode(&fields[2].value);
+        config.tools.persist_loaded_tools = parse_bool_field(&fields[3].value)?;
+        config.skills.enabled = parse_bool_field(&fields[4].value)?;
+        config.skills.allow_command_execution = parse_bool_field(&fields[5].value)?;
+        config.display.reasoning = fields[6].value.trim().to_string();
+        config.display.tool_calls = fields[7].value.trim().to_string();
+        config.display.readable_tool_names = parse_bool_field(&fields[8].value)?;
+        config.display.show_token_usage = parse_bool_field(&fields[9].value)?;
+        config.context.on_overflow = fields[10].value.trim().to_string();
     }
     Ok(())
+}
+
+fn normalize_tools_loading_mode(value: &str) -> String {
+    match value.trim() {
+        "lazy" => "hybrid".to_string(),
+        value => value.to_string(),
+    }
 }
 
 fn parse_bool_field(value: &str) -> Result<bool> {

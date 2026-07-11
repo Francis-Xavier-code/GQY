@@ -2,6 +2,7 @@ use super::registry::UnregisteredScript;
 use super::{ToolRegistry, ToolSpec};
 use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
+use crate::tools::tool_descriptions::LoadPolicy;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -41,6 +42,10 @@ struct ScriptEntry {
     timeout_seconds: Option<u64>,
     #[serde(default)]
     always_loaded: Option<bool>,
+    #[serde(default)]
+    load_policy: LoadPolicy,
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -202,6 +207,8 @@ fn scan_scripts(dirs: &[&Path]) -> Result<ScriptScanResult> {
                     parameters: Value::Null,
                     timeout_seconds: None,
                     always_loaded: Some(true),
+                    load_policy: LoadPolicy::Summary,
+                    groups: Vec::new(),
                 };
                 unregistered.remove(&detected.id);
                 entries.insert(detected.id, entry);
@@ -326,6 +333,8 @@ fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
         parameters: Value::Null,
         timeout_seconds: None,
         always_loaded: Some(true),
+        load_policy: LoadPolicy::Summary,
+        groups: Vec::new(),
     })
 }
 
@@ -479,8 +488,19 @@ fn entry_to_spec(entry: &ScriptEntry, scripts_dir: &Path) -> Result<ToolSpec> {
     .writes()
     .with_display_name(display_name)
     .with_always_loaded(always_loaded)
+    .with_load_policy(entry.load_policy)
+    .with_groups(entry.groups.clone())
     .script();
     Ok(spec)
+}
+
+fn parse_load_policy(value: &str) -> Result<LoadPolicy> {
+    match value.trim() {
+        "" | "summary" | "lazy" => Ok(LoadPolicy::Summary),
+        "group" => Ok(LoadPolicy::Group),
+        "hidden" => Ok(LoadPolicy::Hidden),
+        other => bail!("invalid load_policy: {other}"),
+    }
 }
 
 async fn run_script(
@@ -605,6 +625,16 @@ fn register_script_tools(registry: &mut ToolRegistry, scripts_dir: PathBuf) {
                 "always_loaded": {
                     "type": "boolean",
                     "description": t("Optional loading override. By default scripts with a custom schema are loaded on demand, while scripts using generic stdin are always visible.", "可选加载策略覆盖。默认有自定义 schema 的脚本按需加载，使用通用 stdin 的脚本始终可见。")
+                },
+                "load_policy": {
+                    "type": "string",
+                    "enum": ["summary", "group", "hidden"],
+                    "description": t("Hybrid catalog policy. summary shows this script as a single load target, group exposes it through group:<name>, hidden keeps it out of the catalog.", "Hybrid 工具目录策略。summary 将脚本作为单独加载目标展示；group 通过 group:<name> 展示；hidden 不展示在目录中。")
+                },
+                "groups": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": t("Optional hybrid catalog groups, e.g. gaming or systeminfo.", "可选 Hybrid 目录分组，例如 gaming 或 systeminfo。")
                 }
             },
             "required": ["id", "path"],
@@ -705,6 +735,25 @@ async fn register_script_handler(args: Value, scripts_dir: &Path) -> Result<Stri
         .and_then(Value::as_u64)
         .map(|v| v.min(300));
     let always_loaded = args.get("always_loaded").and_then(Value::as_bool);
+    let load_policy = args
+        .get("load_policy")
+        .and_then(Value::as_str)
+        .map(parse_load_policy)
+        .transpose()?
+        .unwrap_or_default();
+    let groups = args
+        .get("groups")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let stored_path = relative_script_path(&script_path, scripts_dir);
 
     let entry = ScriptEntry {
@@ -719,6 +768,8 @@ async fn register_script_handler(args: Value, scripts_dir: &Path) -> Result<Stri
         parameters,
         timeout_seconds,
         always_loaded,
+        load_policy,
+        groups,
     };
 
     let index_path = scripts_dir.join("index.json");
@@ -1155,6 +1206,8 @@ mod tests {
             parameters: json!({"type":"object","properties":{"query":{"type":"string"}}}),
             timeout_seconds: None,
             always_loaded: None,
+            load_policy: LoadPolicy::Summary,
+            groups: Vec::new(),
         };
         let spec = entry_to_spec(&entry, Path::new(".")).unwrap();
         assert!(!spec.always_loaded);
@@ -1223,7 +1276,7 @@ mod tests {
         assert!(load_tools
             .function
             .description
-            .contains("<available_scripts>"));
+            .contains("<available_load_targets>"));
         assert!(load_tools.function.description.contains("lazy_script"));
     }
 

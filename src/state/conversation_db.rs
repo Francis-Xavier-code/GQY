@@ -90,6 +90,18 @@ impl ConversationDb {
             CREATE INDEX IF NOT EXISTS idx_turns_seq ON turns(seq);
             CREATE INDEX IF NOT EXISTS idx_turns_status ON turns(status);",
         )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_loaded_items (
+                kind            TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                source_turn_id  TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                PRIMARY KEY (kind, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_loaded_items_source_turn
+                ON session_loaded_items(source_turn_id);",
+        )?;
         add_column_if_missing(&conn, "turns", "hidden", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(&conn, "turns", "is_summary", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(&conn, "turns", "owner_pid", "INTEGER")?;
@@ -181,6 +193,45 @@ impl ConversationDb {
         Ok(())
     }
 
+    pub fn load_session_loaded_items(
+        &self,
+        kind: &str,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM session_loaded_items WHERE kind = ?1 ORDER BY name ASC")?;
+        let items = stmt
+            .query_map(params![kind], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
+        Ok(items)
+    }
+
+    pub fn add_session_loaded_items(
+        &self,
+        kind: &str,
+        names: &[String],
+        source_turn_id: Option<&str>,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let mut affected = 0usize;
+        for name in names
+            .iter()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+        {
+            affected += conn.execute(
+                "INSERT INTO session_loaded_items (kind, name, source_turn_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)
+                 ON CONFLICT(kind, name) DO UPDATE SET
+                    source_turn_id = COALESCE(excluded.source_turn_id, session_loaded_items.source_turn_id),
+                    updated_at = excluded.updated_at",
+                params![kind, name, source_turn_id, now],
+            )?;
+        }
+        Ok(affected)
+    }
+
     pub fn load_turns(&self) -> Result<Vec<Turn>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -251,8 +302,7 @@ impl ConversationDb {
 
     pub fn delete_hidden_turns(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let affected =
-            conn.execute("DELETE FROM turns WHERE hidden = 1 AND is_summary = 0", [])?;
+        let affected = conn.execute("DELETE FROM turns WHERE hidden = 1 AND is_summary = 0", [])?;
         Ok(affected)
     }
 
@@ -364,6 +414,7 @@ impl ConversationDb {
     pub fn reset(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM turns", [])?;
+        conn.execute("DELETE FROM session_loaded_items", [])?;
         Ok(())
     }
 
