@@ -20,6 +20,124 @@ end
 
 bind \cv __miyu_paste
 
+function __miyu_insert_newline
+    commandline -i \n
+    commandline -f repaint
+end
+
+bind ctrl-j __miyu_insert_newline
+bind \cj __miyu_insert_newline
+bind -M insert ctrl-j __miyu_insert_newline
+bind -M insert \cj __miyu_insert_newline
+
+function __miyu_run_buffer
+    set -l buffer $__miyu_shell_buffer
+    set -e __miyu_shell_buffer
+
+    set -l prompt (fish_prompt | string collect -N)
+    set -l prompt_lines (string split \n -- "$prompt")
+    set -l clear_lines (math (count $prompt_lines) + 1)
+    for index in (seq $clear_lines)
+        printf '\r\e[K'
+        if test $index -lt $clear_lines
+            printf '\e[1A'
+        end
+    end
+
+    printf '%s' "$prompt"
+    set -l lines (string split \n -- "$buffer")
+    if test (count $lines) -gt 0
+        printf '%s\n' "$lines[1]"
+        for line in $lines[2..-1]
+            printf '  %s\n' "$line"
+        end
+    else
+        printf '\n'
+    end
+    printf '%s' "$buffer" | miyu --shell-intercept --shell fish --stdin
+end
+
+function __miyu_execute_or_continue
+    commandline --is-valid
+    set -l valid_status $status
+    if test $valid_status -eq 2
+        commandline -i \n
+        commandline -f repaint
+    else
+        set -e __miyu_image_counter
+        commandline -f execute
+    end
+end
+
+function __miyu_fish_known_command
+    set -l buffer $argv[1]
+    set -l command
+    set -l rest
+
+    for line in (string split \n -- "$buffer")
+        set -l trimmed (string trim -- "$line")
+        if test -z "$trimmed"; or string match -q '#*' -- "$trimmed"
+            continue
+        end
+
+        set -l tokens (string split -n ' ' -- (string replace -ra '\\s+' ' ' -- "$trimmed"))
+        while test (count $tokens) -gt 0
+            set -l token $tokens[1]
+            if string match -qr '^[A-Za-z_][A-Za-z0-9_]*=' -- "$token"
+                set -e tokens[1]
+                continue
+            end
+            set command $token
+            set -e tokens[1]
+            set rest (string join ' ' -- $tokens)
+            break
+        end
+        break
+    end
+
+    test -n "$command"; or return 1
+    if contains -- "$command" time test date which type command history
+        string match -qr '[?？一-龥]' -- "$rest"; and return 1
+    end
+    type -q -- "$command"
+end
+
+function __miyu_accept_line
+    status is-interactive; or return
+
+    set -l buffer (commandline -b | string collect -N)
+    set -l trimmed (string trim -- "$buffer")
+    if test -z "$trimmed"
+        __miyu_execute_or_continue
+        return
+    end
+
+    if __miyu_fish_known_command "$buffer"
+        __miyu_execute_or_continue
+        return
+    end
+
+    printf '%s' "$buffer" | miyu --shell-classify --shell fish --stdin 2>/dev/null
+    set -l classify_status $status
+    if test $classify_status -eq 0
+        __miyu_execute_or_continue
+        return
+    else if test $classify_status -ne 1
+        __miyu_execute_or_continue
+        return
+    end
+
+    set -e __miyu_image_counter
+    set -g __miyu_shell_buffer "$buffer"
+    commandline -b -- " __miyu_run_buffer"
+    commandline -f execute
+end
+
+bind enter __miyu_accept_line
+bind \r __miyu_accept_line
+bind -M insert enter __miyu_accept_line
+bind -M insert \r __miyu_accept_line
+
 function fish_command_not_found
     status is-interactive; or return 127
 
@@ -87,6 +205,32 @@ mod tests {
         assert!(hook.contains("__miyu_paste"));
         assert!(hook.contains("bind \\cv __miyu_paste"));
         assert!(hook.contains("miyu --clipboard-paste"));
+    }
+
+    #[test]
+    fn fish_hook_defines_enter_binding() {
+        let hook = hook();
+        assert!(hook.contains("__miyu_accept_line"));
+        assert!(hook.contains("__miyu_run_buffer"));
+        assert!(hook.contains("set -l prompt (fish_prompt | string collect -N)"));
+        assert!(hook.contains("set -l clear_lines (math (count $prompt_lines) + 1)"));
+        assert!(hook.contains("printf '\\r\\e[K'"));
+        assert!(hook.contains("set -l lines (string split \\n -- \"$buffer\")"));
+        assert!(hook.contains("__miyu_execute_or_continue"));
+        assert!(hook.contains("__miyu_fish_known_command"));
+        assert!(hook.contains("type -q -- \"$command\""));
+        assert!(hook.contains("contains -- \"$command\" time test date"));
+        assert!(hook.contains("set -g __miyu_shell_buffer \"$buffer\""));
+        assert!(hook.contains("commandline -b -- \" __miyu_run_buffer\""));
+        assert!(!hook.contains("cancel-commandline"));
+        assert!(hook.contains("commandline -b | string collect -N"));
+        assert!(hook.contains("--shell-classify --shell fish --stdin"));
+        assert!(hook.contains("--shell-intercept --shell fish --stdin"));
+        assert!(hook.contains("bind enter __miyu_accept_line"));
+        assert!(hook.contains("bind \\r __miyu_accept_line"));
+        assert!(hook.contains("bind ctrl-j __miyu_insert_newline"));
+        assert!(hook.contains("bind -M insert enter __miyu_accept_line"));
+        assert!(hook.contains("bind -M insert ctrl-j __miyu_insert_newline"));
     }
 
     #[test]

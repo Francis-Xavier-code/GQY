@@ -188,7 +188,13 @@ pub struct Cli {
     pub shell_intercept: bool,
 
     #[arg(long, hide = true)]
+    pub shell_classify: bool,
+
+    #[arg(long, hide = true)]
     pub shell: Option<String>,
+
+    #[arg(long, hide = true)]
+    pub stdin: bool,
 
     #[arg(long, hide = true)]
     pub clipboard_paste: bool,
@@ -761,6 +767,12 @@ pub enum ConfigCommand {
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
+    if cli.shell_classify {
+        let shell_name = cli.shell.as_deref().unwrap_or("fish");
+        let message = shell_message_from_input(cli.stdin, cli.message)?;
+        return run_shell_classify(shell_name, &message);
+    }
+
     let paths = MiyuPaths::new()?;
     let mode = if cli.plan {
         AgentMode::Plan
@@ -773,7 +785,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     if cli.shell_intercept {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
-        let message = join_message(cli.message);
+        let message = shell_message_from_input(cli.stdin, cli.message)?;
         return run_shell_intercept(&paths, shell_name, message).await;
     }
 
@@ -1540,11 +1552,31 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
     }
 }
 
+fn shell_message_from_input(use_stdin: bool, message: Vec<String>) -> Result<String> {
+    if use_stdin {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        Ok(input)
+    } else {
+        Ok(join_message(message))
+    }
+}
+
+fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
+    if !matches!(shell_name, "fish" | "bash" | "zsh") {
+        std::process::exit(2);
+    }
+    if shell::is_shell_command(message, shell_name) {
+        std::process::exit(0);
+    }
+    std::process::exit(1);
+}
+
 async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: String) -> Result<()> {
     if !matches!(shell_name, "fish" | "bash" | "zsh") {
         bail!("{}: {shell_name}", t("unsupported shell", "不支持的 shell"));
     }
-    if message.is_empty() || !shell::looks_like_natural_language(&message) {
+    if message.trim().is_empty() {
         bail!(
             "{}",
             t("not a natural language command", "不是自然语言命令")
