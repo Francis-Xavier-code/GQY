@@ -14,7 +14,7 @@ use crossterm::cursor::{self, Hide, MoveTo, Show};
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
 };
-use crossterm::style::{Attribute, Print, SetAttribute};
+use crossterm::style::Print;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -1143,11 +1143,20 @@ fn run_providers(paths: &MiyuPaths, args: ProvidersArgs) -> Result<()> {
         return Ok(());
     }
     if io::stdout().is_terminal() && io::stdin().is_terminal() {
+        let active_index = choices.iter().position(|choice| {
+            config
+                .provider(None)
+                .map(|provider| {
+                    provider.id == choice.provider_id && provider.default_model == choice.model
+                })
+                .unwrap_or(false)
+        });
         if let Some(index) = inline_fuzzy_select(
             &choices
                 .iter()
                 .map(|choice| choice.label())
                 .collect::<Vec<_>>(),
+            active_index,
         )? {
             let choice = &choices[index];
             let provider_id = choice.provider_id.clone();
@@ -1176,7 +1185,7 @@ fn run_providers(paths: &MiyuPaths, args: ProvidersArgs) -> Result<()> {
     Ok(())
 }
 
-fn inline_fuzzy_select(items: &[String]) -> Result<Option<usize>> {
+fn inline_fuzzy_select(items: &[String], active_index: Option<usize>) -> Result<Option<usize>> {
     let menu_lines = inline_fuzzy_lines(items.len());
     reserve_inline_fuzzy_space(menu_lines)?;
     let mut session = InlineRawMode::start()?;
@@ -1198,6 +1207,7 @@ fn inline_fuzzy_select(items: &[String]) -> Result<Option<usize>> {
             items,
             &matches,
             selected,
+            active_index,
         )?;
         if let Event::Key(KeyEvent {
             code, modifiers, ..
@@ -1267,9 +1277,11 @@ fn draw_inline_fuzzy(
     items: &[String],
     matches: &[(i64, usize)],
     selected: usize,
+    active_index: Option<usize>,
 ) -> Result<()> {
     let (cols, _) = terminal::size().unwrap_or((80, 24));
-    let width = cols.saturating_sub(2).max(24) as usize;
+    let bar = inline_fuzzy_bar();
+    let width = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
     let visible = matches.len().min(menu_lines.saturating_sub(2) as usize);
     queue!(stdout, Hide)?;
     for row in 0..menu_lines {
@@ -1282,44 +1294,80 @@ fn draw_inline_fuzzy(
     queue!(
         stdout,
         MoveTo(0, anchor_y),
-        Print(truncate_display(&format!("> {query}"), width)),
+        Print(&bar),
+        Print(inline_fuzzy_header(query, width)),
     )?;
     if matches.is_empty() {
         queue!(
             stdout,
             MoveTo(0, anchor_y + 1),
-            Print(t("  no matches", "  没有匹配项"))
+            Print(&bar),
+            Print(format!("\x1b[2m{}\x1b[0m", t("no matches", "没有匹配项")))
         )?;
     } else {
         for (row, (_, item_index)) in matches.iter().take(visible).enumerate() {
-            let marker = if row == selected { ">" } else { " " };
-            let line = truncate_display(&format!("{marker} {}", items[*item_index]), width);
-            queue!(stdout, MoveTo(0, anchor_y + row as u16 + 1))?;
-            if row == selected {
-                queue!(
-                    stdout,
-                    SetAttribute(Attribute::Reverse),
-                    Print(line),
-                    SetAttribute(Attribute::Reset)
-                )?;
-            } else {
-                queue!(stdout, Print(line))?;
-            }
+            queue!(
+                stdout,
+                MoveTo(0, anchor_y + row as u16 + 1),
+                Print(&bar),
+                Print(inline_fuzzy_item_line(
+                    items[*item_index].as_str(),
+                    row == selected,
+                    Some(*item_index) == active_index,
+                    width
+                ))
+            )?;
         }
     }
     queue!(
         stdout,
         MoveTo(0, anchor_y + menu_lines.saturating_sub(1)),
-        Print(truncate_display(
-            t(
-                "[type] search  [j/k] move  [enter] select  [esc/q] cancel",
-                "[输入] 搜索  [j/k] 移动  [enter] 选择  [esc/q] 取消",
-            ),
-            width
-        ))
+        Print(&bar),
+        Print(inline_fuzzy_help_line(width))
     )?;
     stdout.flush()?;
     Ok(())
+}
+
+fn inline_fuzzy_bar() -> String {
+    input_prompt_bar(AgentMode::Normal)
+}
+
+fn inline_fuzzy_header(query: &str, width: usize) -> String {
+    let title = t("Select model", "选择模型");
+    let line = if query.trim().is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} · {}", query.trim())
+    };
+    format!("\x1b[1m{}\x1b[0m", truncate_visible_width(&line, width))
+}
+
+fn inline_fuzzy_item_line(item: &str, selected: bool, active: bool, width: usize) -> String {
+    let line = if selected {
+        format!("› {item}")
+    } else {
+        format!("  {item}")
+    };
+    let line = truncate_visible_width(&line, width);
+    if selected {
+        format!(
+            "\x1b[1m\x1b[35m›\x1b[0m\x1b[1m{}\x1b[0m",
+            line.strip_prefix('›').unwrap_or(&line)
+        )
+    } else if active {
+        format!("\x1b[1m\x1b[32m{}\x1b[0m", line)
+    } else {
+        format!("\x1b[2m{}\x1b[0m", line)
+    }
+}
+
+fn inline_fuzzy_help_line(width: usize) -> String {
+    let line = t(
+        "type search · j/k move · Enter select · Esc cancel",
+        "输入搜索 · j/k 移动 · Enter 选择 · Esc 取消",
+    );
+    format!("\x1b[2m{}\x1b[0m", truncate_visible_width(line, width))
 }
 
 fn clear_inline_fuzzy(stdout: &mut io::Stdout, anchor_y: u16, lines: u16) -> Result<()> {
@@ -1805,17 +1853,18 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             None => break,
         };
         let input = input.trim();
+        let command = resolve_repl_command(input);
         if input.eq_ignore_ascii_case("exit")
             || input.eq_ignore_ascii_case("quit")
-            || input.eq_ignore_ascii_case("/exit")
+            || command.eq_ignore_ascii_case("/exit")
         {
             break;
         }
-        if input.eq_ignore_ascii_case("/help") {
+        if command.eq_ignore_ascii_case("/help") {
             print_repl_help();
             continue;
         }
-        if input.eq_ignore_ascii_case("/providers") {
+        if command.eq_ignore_ascii_case("/models") {
             run_providers(paths, ProvidersArgs { index: None })?;
             reload_repl_config(paths, &mut config, &mut client)?;
             footer = ReplFooterStatus::from_config(&config, state.token_total()?);
@@ -1823,9 +1872,10 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
             println!("{}", t("configuration reloaded", "配置已重新加载"));
+            println!();
             continue;
         }
-        if input.eq_ignore_ascii_case("/config") {
+        if command.eq_ignore_ascii_case("/config") {
             crate::config_tui::run(paths)?;
             reload_repl_config(paths, &mut config, &mut client)?;
             footer = ReplFooterStatus::from_config(&config, state.token_total()?);
@@ -1833,16 +1883,17 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
             println!("{}", t("configuration reloaded", "配置已重新加载"));
+            println!();
             continue;
         }
-        if input.eq_ignore_ascii_case("/undo") {
+        if command.eq_ignore_ascii_case("/undo") {
             let (removed, prompt) = state.undo_last_turn()?;
             footer.update_session_tokens(state.token_total()?);
             println!("{}: {removed}", t("undone messages", "已撤销消息数"));
             prefill = prompt;
             continue;
         }
-        if input.eq_ignore_ascii_case("/compact") {
+        if command.eq_ignore_ascii_case("/compact") {
             let reasoning_mode =
                 render::ReasoningDisplayMode::from_config(&config.display.reasoning);
             let tool_call_mode =
@@ -1888,13 +1939,13 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             }
             continue;
         }
-        if input.eq_ignore_ascii_case("/reset") {
+        if command.eq_ignore_ascii_case("/reset") {
             run_reset(paths, None)?;
             input_history.clear();
             footer.update_session_tokens(state.token_total()?);
             continue;
         }
-        if input.eq_ignore_ascii_case("/reset all") {
+        if command.eq_ignore_ascii_case("/reset all") {
             run_reset(paths, Some("all"))?;
             input_history.clear();
             agent.reset_memory()?;
@@ -1992,8 +2043,8 @@ fn load_repl_input_history(state: &StateStore) -> Result<Vec<String>> {
 fn print_repl_help() {
     println!("{}", t("commands:", "命令:"));
     println!(
-        "  /providers  {}",
-        t("switch provider or model", "切换 provider 或模型")
+        "  /models     {}",
+        t("quickly switch model", "快速切换模型")
     );
     println!(
         "  /config     {}",
@@ -3220,13 +3271,7 @@ fn colorize_repl_placeholders(line: &str) -> String {
 
 fn repl_commands() -> [&'static str; 7] {
     [
-        "/providers",
-        "/config",
-        "/undo",
-        "/compact",
-        "/reset",
-        "/help",
-        "/exit",
+        "/models", "/config", "/undo", "/compact", "/reset", "/help", "/exit",
     ]
 }
 
@@ -3247,6 +3292,15 @@ fn complete_repl_command(input: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn resolve_repl_command<'a>(input: &'a str) -> &'a str {
+    if input.starts_with('/') {
+        if let Some(command) = complete_repl_command(input) {
+            return command;
+        }
+    }
+    input
 }
 
 fn repl_command_suggestions_line(suggestions: &[&str], max_width: usize) -> String {
@@ -3338,7 +3392,7 @@ mod repl_input_tests {
     fn command_suggestions_are_prefixed_and_truncated() {
         let suggestions = repl_command_suggestions("/");
         let line = repl_command_suggestions_line(&suggestions, 24);
-        assert!(line.starts_with("/providers"));
+        assert!(line.starts_with("/models"));
         assert!(visible_width(&line) <= 24);
 
         let line = repl_command_suggestions_line(&["/compact"], 40);
@@ -3350,6 +3404,34 @@ mod repl_input_tests {
         let line = repl_shortcut_hint_line(AgentMode::Normal, 24);
         assert!(strip_terminal_control_sequences(&line).contains("Tab"));
         assert!(visible_width(&line) <= 24);
+    }
+
+    #[test]
+    fn inline_fuzzy_lines_are_bar_aligned_and_truncated() {
+        let header = inline_fuzzy_header("big", 12);
+        assert!(strip_terminal_control_sequences(&header).contains("选择模型"));
+        assert!(visible_width(&header) <= 12);
+
+        let item = inline_fuzzy_item_line("opencode Zen / big-pickle", true, false, 16);
+        assert!(strip_terminal_control_sequences(&item).starts_with("› opencode"));
+        assert!(visible_width(&item) <= 16);
+
+        let item = inline_fuzzy_item_line("opencode Zen / big-pickle", false, true, 18);
+        assert!(strip_terminal_control_sequences(&item).starts_with("  opencode"));
+        assert!(visible_width(&item) <= 18);
+
+        let help = inline_fuzzy_help_line(40);
+        let help_plain = strip_terminal_control_sequences(&help);
+        assert!(help_plain.contains("j/k"));
+        assert!(visible_width(&help) <= 40);
+    }
+
+    #[test]
+    fn partial_slash_command_resolves_unique_match() {
+        assert_eq!(resolve_repl_command("/model"), "/models");
+        assert_eq!(resolve_repl_command("/compa"), "/compact");
+        assert_eq!(resolve_repl_command("/co"), "/co");
+        assert_eq!(resolve_repl_command("hello"), "hello");
     }
 
     #[test]
