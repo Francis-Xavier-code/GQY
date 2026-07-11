@@ -222,7 +222,7 @@ fn register_search_and_show(registry: &mut ToolRegistry, config: AppConfig, path
                 "query": { "type": "string", "description": t("Scene, mood, visible content, or user intent.", "场景、情绪、画面内容或用户意图。") },
                 "tags": { "type": "array", "items": { "type": "string" }, "description": t("Optional preferred tags.", "可选偏好标签。") },
                 "library": { "type": "string", "description": t("Optional meme library override.", "可选表情库覆盖。") },
-                "limit": { "type": "integer", "description": t("Maximum number of candidates, default 6.", "候选数量上限，默认 6。") }
+                "limit": { "type": "integer", "description": t("Maximum number of candidates. Defaults to the meme plugin setting, max 3. Increase only when you need to compare alternatives.", "候选数量上限。默认使用表情包插件配置，最大 3。仅在需要比较多个备选时调大。") }
             },
             "additionalProperties": false
         }),
@@ -276,8 +276,8 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
     let limit = args
         .get("limit")
         .and_then(Value::as_u64)
-        .unwrap_or(6)
-        .clamp(1, 20) as usize;
+        .unwrap_or(config.plugins.memes.search_max_results as u64)
+        .clamp(1, 3) as usize;
     let loaded = load_library(paths, &library)?;
     let ids = meme_ids(&loaded);
     let mut scored = loaded
@@ -305,6 +305,14 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
             })
         })
         .collect::<Vec<_>>();
+    if limit == 1 {
+        return Ok(json!({
+            "success": true,
+            "library": library,
+            "result": results.into_iter().next(),
+        })
+        .to_string());
+    }
     Ok(json!({ "success": true, "library": library, "results": results }).to_string())
 }
 

@@ -434,6 +434,8 @@ pub struct MemesPluginConfig {
     pub height_percent: u8,
     #[serde(default = "default_memes_max_image_mb")]
     pub max_image_mb: u64,
+    #[serde(default = "default_memes_search_max_results")]
+    pub search_max_results: usize,
     #[serde(default)]
     pub allow_gif_animation: bool,
     #[serde(default)]
@@ -711,6 +713,7 @@ impl Default for MemesPluginConfig {
             width_percent: default_memes_width_percent(),
             height_percent: default_memes_height_percent(),
             max_image_mb: default_memes_max_image_mb(),
+            search_max_results: default_memes_search_max_results(),
             allow_gif_animation: false,
             auto_send_enabled: false,
             auto_send_probability: default_memes_auto_send_probability(),
@@ -1178,6 +1181,9 @@ impl AppConfig {
         if self.plugins.memes.height_percent == 0 || self.plugins.memes.height_percent > 100 {
             bail!("plugins.memes.height_percent must be between 1 and 100");
         }
+        if self.plugins.memes.search_max_results == 0 || self.plugins.memes.search_max_results > 3 {
+            bail!("plugins.memes.search_max_results must be between 1 and 3");
+        }
         let mem = self.memory_config();
         if mem.forgetting_half_life_days <= 0.0 {
             bail!("memory.forgetting_half_life_days must be greater than 0");
@@ -1595,6 +1601,10 @@ fn default_memes_max_image_mb() -> u64 {
     10
 }
 
+fn default_memes_search_max_results() -> usize {
+    1
+}
+
 fn default_memes_auto_send_probability() -> f32 {
     0.2
 }
@@ -1865,6 +1875,7 @@ mod tests {
             "custom-persona"
         );
         assert!(!memes.auto_send_enabled);
+        assert_eq!(memes.search_max_results, 1);
         assert_eq!(memes.auto_send_probability, 0.2);
     }
 }

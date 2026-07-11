@@ -402,6 +402,10 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                 config.plugins.memes.height_percent.to_string(),
             ),
             Field::new("最大图片 MB", config.plugins.memes.max_image_mb.to_string()),
+            Field::new(
+                "搜索最大结果数",
+                config.plugins.memes.search_max_results.to_string(),
+            ),
             Field::boolean("允许 GIF 动画", config.plugins.memes.allow_gif_animation),
             Field::boolean("自动提示发送表情", config.plugins.memes.auto_send_enabled),
             Field::new(
@@ -630,10 +634,12 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[2].value.trim().parse::<u8>()?.clamp(1, 100);
             config.plugins.memes.max_image_mb =
                 fields[3].value.trim().parse::<u64>()?.clamp(1, 100);
-            config.plugins.memes.allow_gif_animation = parse_bool_field(&fields[4].value)?;
-            config.plugins.memes.auto_send_enabled = parse_bool_field(&fields[5].value)?;
+            config.plugins.memes.search_max_results =
+                fields[4].value.trim().parse::<usize>()?.clamp(1, 3);
+            config.plugins.memes.allow_gif_animation = parse_bool_field(&fields[5].value)?;
+            config.plugins.memes.auto_send_enabled = parse_bool_field(&fields[6].value)?;
             config.plugins.memes.auto_send_probability =
-                fields[6].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
+                fields[7].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
         }
         7 => {
             config.plugins.knowledge_base.enabled = parse_bool_field(&fields[0].value)?;
