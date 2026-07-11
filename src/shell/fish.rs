@@ -22,7 +22,6 @@ bind \cv __miyu_paste
 
 function __miyu_insert_newline
     commandline -i \n
-    commandline -f repaint
 end
 
 bind ctrl-j __miyu_insert_newline
