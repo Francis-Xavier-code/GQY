@@ -65,25 +65,35 @@ pub fn print_markdown(markdown: &str) {
     println!("{}", skin.term_text(markdown.trim_end()));
 }
 
-pub fn print_token_usage(turn_tokens: u64, session_tokens: u64, estimated: bool) -> Result<()> {
+pub fn print_token_usage(
+    turn_tokens: u64,
+    session_tokens: u64,
+    context_window: Option<usize>,
+    estimated: bool,
+) -> Result<()> {
     let prefix = if estimated {
         t("Estimated ", "估算")
     } else {
         ""
     };
-    let line = if crate::i18n::is_zh() {
+    let context_window = context_window.map(|value| value as u64);
+    let context = context_window
+        .map(format_compact_count)
+        .unwrap_or_else(|| "?".to_string());
+    let usage_ratio = if let Some(context_window) = context_window.filter(|value| *value > 0) {
         format!(
-            "{prefix}本轮 Token 消耗：{}；会话总 Token 消耗：{}",
-            format_compact_count(turn_tokens),
-            format_compact_count(session_tokens)
+            "{:.1}%",
+            session_tokens as f64 / context_window as f64 * 100.0
         )
     } else {
-        format!(
-            "{prefix}Turn token cost: {}; session total token cost: {}",
-            format_compact_count(turn_tokens),
-            format_compact_count(session_tokens)
-        )
+        "?".to_string()
     };
+    let line = format!(
+        "{prefix}Token: {} {} {}({usage_ratio})",
+        format_compact_count(turn_tokens),
+        format_compact_count(session_tokens),
+        context,
+    );
     let mut stdout = io::stdout();
     writeln!(stdout, "\x1b[2m{line}\x1b[0m\n")?;
     stdout.flush()?;

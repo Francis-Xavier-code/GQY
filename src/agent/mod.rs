@@ -200,6 +200,10 @@ impl Agent {
         self.mode
     }
 
+    pub fn context_window(&self) -> Option<usize> {
+        self.context_window
+    }
+
     pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
         self.mode = mode;
         self.tools = Arc::new(Mutex::new(tools));

@@ -1459,7 +1459,12 @@ async fn run_chat_with_images(
         .await;
     renderer.finish()?;
     let result = result?;
-    print_chat_token_usage(&result, show_token_usage, state.token_total()?)?;
+    print_chat_token_usage(
+        &result,
+        show_token_usage,
+        state.token_total()?,
+        agent.context_window(),
+    )?;
     handle_post_turn_overflow(&agent, &mut renderer, &result, show_token_usage, &state).await?;
     Ok(())
 }
@@ -1562,7 +1567,12 @@ async fn run_chat_with_options(
         .await;
     renderer.finish()?;
     let result = result?;
-    print_chat_token_usage(&result, show_token_usage, state.token_total()?)?;
+    print_chat_token_usage(
+        &result,
+        show_token_usage,
+        state.token_total()?,
+        agent.context_window(),
+    )?;
     handle_post_turn_overflow(&agent, &mut renderer, &result, show_token_usage, &state).await?;
     Ok(())
 }
@@ -1571,11 +1581,17 @@ fn print_chat_token_usage(
     result: &crate::llm::ChatResult,
     enabled: bool,
     session_token_total: u64,
+    context_window: Option<usize>,
 ) -> Result<()> {
     if enabled {
         if let Some(usage) = &result.usage {
             let turn_tokens = render::usage_total(usage);
-            render::print_token_usage(turn_tokens, session_token_total, result.usage_estimated)?;
+            render::print_token_usage(
+                turn_tokens,
+                session_token_total,
+                context_window,
+                result.usage_estimated,
+            )?;
         }
     }
     Ok(())
@@ -1596,7 +1612,12 @@ async fn handle_post_turn_overflow(
         .await?;
     renderer.finish()?;
     if let Some(compact_result) = compact_result {
-        print_chat_token_usage(&compact_result, show_token_usage, state.token_total()?)?;
+        print_chat_token_usage(
+            &compact_result,
+            show_token_usage,
+            state.token_total()?,
+            agent.context_window(),
+        )?;
     }
     Ok(())
 }
@@ -1739,6 +1760,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                     &result,
                     config.display.show_token_usage,
                     state.token_total()?,
+                    agent.context_window(),
                 )?;
                 if let Err(err) = handle_post_turn_overflow(
                     &agent,
