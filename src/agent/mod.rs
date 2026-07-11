@@ -411,7 +411,7 @@ impl Agent {
         let Some(compact) = self.handle_overflow(usage, &mut on_event).await? else {
             return Ok(None);
         };
-        self.state.add_usage(&compact.usage)?;
+        self.state.add_auxiliary_usage(&compact.usage)?;
         Ok(Some(ChatResult {
             content: String::new(),
             reasoning: None,

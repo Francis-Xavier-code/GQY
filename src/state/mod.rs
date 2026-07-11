@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub use conversation_db::{
     interrupted_text, pending_placeholder, ConversationDb, Turn, TurnStatus,
 };
+pub use usage::UsageSnapshot;
 
 #[derive(Debug, Clone)]
 pub struct StateStore {
@@ -49,6 +50,7 @@ impl StateStore {
         let previous = std::fs::read_to_string(&file).unwrap_or_default();
         if previous.trim() != fingerprint {
             self.conv_db.reset()?;
+            self.clear_last_usage()?;
             std::fs::write(file, format!("{fingerprint}\n"))?;
         }
         Ok(())
@@ -195,7 +197,8 @@ impl StateStore {
     }
 
     pub fn reset_conversation(&self) -> Result<()> {
-        self.conv_db.reset()
+        self.conv_db.reset()?;
+        self.clear_last_usage()
     }
 
     pub fn undo_last_turn(&self) -> Result<(usize, Option<String>)> {
@@ -205,6 +208,20 @@ impl StateStore {
     pub fn add_usage(&self, usage: &Usage) -> Result<()> {
         self.init_files()?;
         usage::add_usage(&self.usage_file(), usage)
+    }
+
+    pub fn add_auxiliary_usage(&self, usage: &Usage) -> Result<()> {
+        self.init_files()?;
+        usage::add_auxiliary_usage(&self.usage_file(), usage)
+    }
+
+    #[allow(dead_code)]
+    pub fn usage_snapshot(&self) -> Result<UsageSnapshot> {
+        usage::snapshot(&self.usage_file())
+    }
+
+    pub fn clear_last_usage(&self) -> Result<()> {
+        usage::clear_last_usage(&self.usage_file())
     }
 
     pub fn token_total(&self) -> Result<u64> {

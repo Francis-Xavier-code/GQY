@@ -1,7 +1,5 @@
 use crate::llm::{ChatContent, ChatMessage, Usage};
 
-const CHARS_PER_TOKEN_LATIN: usize = 4;
-const CHARS_PER_TOKEN_CJK: usize = 2;
 const IMAGE_TOKEN_ESTIMATE: usize = 765;
 const RESERVED_RATIO: f32 = 0.1;
 const MIN_RESERVED_TOKENS: usize = 4096;
@@ -68,30 +66,11 @@ pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> usize {
 }
 
 pub fn estimate_tokens(text: &str) -> usize {
-    text_tokens(text).max(1)
+    crate::token_estimate::estimate_tokens(text).max(1)
 }
 
 fn text_tokens(text: &str) -> usize {
-    let mut cjk = 0usize;
-    let mut latin = 0usize;
-    for ch in text.chars() {
-        if is_cjk(ch) {
-            cjk += 1;
-        } else {
-            latin += 1;
-        }
-    }
-    cjk / CHARS_PER_TOKEN_CJK + latin / CHARS_PER_TOKEN_LATIN
-}
-
-fn is_cjk(ch: char) -> bool {
-    let code = ch as u32;
-    (0x4E00..=0x9FFF).contains(&code)      // CJK Unified Ideographs
-        || (0x3400..=0x4DBF).contains(&code) // CJK Extension A
-        || (0x20000..=0x2A6DF).contains(&code) // CJK Extension B
-        || (0x3040..=0x30FF).contains(&code) // Hiragana + Katakana
-        || (0xAC00..=0xD7AF).contains(&code) // Hangul Syllables
-        || (0xFF00..=0xFFEF).contains(&code) // Fullwidth Forms
+    crate::token_estimate::estimate_tokens(text)
 }
 
 #[allow(dead_code)]
