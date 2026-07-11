@@ -381,9 +381,8 @@ impl Agent {
                 &mut on_event,
             )
             .await?;
-        for (tool_name, report) in persisted_tool_reports {
-            self.state
-                .append_tool_report_context(&turn_id, &tool_name, &report)?;
+        for (_, report) in persisted_tool_reports {
+            self.state.append_persisted_context(&turn_id, &report)?;
         }
         let token_total = result.usage.as_ref().map(Usage::effective_total_tokens);
         guard.complete(
@@ -945,8 +944,15 @@ fn estimate_result_tokens(result: &ChatResult) -> usize {
 
 fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {
     let field = match tool_name {
-        "load_tools" => return compact_loaded_tools_report(output),
-        "remember_fact" => return compact_remembered_fact_report(output),
+        "load_tools" => {
+            return compact_loaded_tools_report(output)
+                .map(|report| wrap_previous_tool_report(tool_name, &report))
+        }
+        "show_meme" => return compact_sent_meme_report(output),
+        "remember_fact" => {
+            return compact_remembered_fact_report(output)
+                .map(|report| wrap_previous_tool_report(tool_name, &report))
+        }
         "deep_research_linux_game_compatibility" => "final_report",
         "linux_input_method_diagnose" | "deep_diagnose" | "deep_research" => "final_answer",
         "task" => "result",
@@ -961,7 +967,15 @@ fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<Stri
                 .map(str::trim)
                 .map(str::to_string)
         })
+        .map(|report| wrap_previous_tool_report(tool_name, &report))
         .filter(|report| !report.is_empty())
+}
+
+fn wrap_previous_tool_report(tool_name: &str, report: &str) -> String {
+    format!(
+        "<previous_tool_report name=\"{tool_name}\">\n{}\n</previous_tool_report>",
+        report.trim()
+    )
 }
 
 fn compact_remembered_fact_report(output: &str) -> Option<String> {
@@ -1003,6 +1017,57 @@ fn compact_loaded_tools_report(output: &str) -> Option<String> {
         return None;
     }
     serde_json::to_string(&serde_json::json!({ "loaded_tools": names })).ok()
+}
+
+fn compact_sent_meme_report(output: &str) -> Option<String> {
+    const MAX_DESCRIPTION_CHARS: usize = 120;
+
+    let value = serde_json::from_str::<Value>(output).ok()?;
+    if value.get("success").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let id = value.get("id").and_then(Value::as_str)?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(compact_one_line)
+        .filter(|description| !description.is_empty())
+        .map(|description| truncate_chars(&description, MAX_DESCRIPTION_CHARS));
+    let id = xml_text_escape(id);
+    match description {
+        Some(description) => Some(format!(
+            "<sent_meme>发送了一个表情包：id={}；description={}</sent_meme>",
+            id,
+            xml_text_escape(&description)
+        )),
+        None => Some(format!("<sent_meme>发送了一个表情包：id={id}</sent_meme>")),
+    }
+}
+
+fn compact_one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index >= max_chars {
+            output.push('…');
+            return output;
+        }
+        output.push(ch);
+    }
+    output
+}
+
+fn xml_text_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn loaded_tools_from_messages(messages: &[ChatMessage]) -> BTreeSet<String> {
@@ -1311,6 +1376,64 @@ mod tests {
         let loaded = loaded_tools_from_messages(&messages);
         assert!(loaded.contains("get_weather"));
         assert!(loaded.contains("todoupdate"));
+    }
+
+    #[test]
+    fn persists_loaded_tools_with_previous_tool_report_wrapper() {
+        let output = serde_json::json!({
+            "loaded_tools": [
+                {"name": "get_weather"},
+                {"name": "todoupdate"}
+            ]
+        })
+        .to_string();
+
+        assert_eq!(
+            extract_persistable_tool_report("load_tools", &output).as_deref(),
+            Some("<previous_tool_report name=\"load_tools\">\n{\"loaded_tools\":[\"get_weather\",\"todoupdate\"]}\n</previous_tool_report>")
+        );
+    }
+
+    #[test]
+    fn persists_compact_sent_meme_report() {
+        let output = serde_json::json!({
+            "success": true,
+            "id": "sha256:abc123",
+            "description": "猫猫\n开心 & <得意>",
+            "unused": "ignored",
+        })
+        .to_string();
+
+        assert_eq!(
+            extract_persistable_tool_report("show_meme", &output).as_deref(),
+            Some("<sent_meme>发送了一个表情包：id=sha256:abc123；description=猫猫 开心 &amp; &lt;得意&gt;</sent_meme>")
+        );
+    }
+
+    #[test]
+    fn sent_meme_report_allows_missing_description() {
+        let output = serde_json::json!({
+            "success": true,
+            "id": "sha256:abc123",
+        })
+        .to_string();
+
+        assert_eq!(
+            extract_persistable_tool_report("show_meme", &output).as_deref(),
+            Some("<sent_meme>发送了一个表情包：id=sha256:abc123</sent_meme>")
+        );
+    }
+
+    #[test]
+    fn sent_meme_report_skips_failed_result() {
+        let output = serde_json::json!({
+            "success": false,
+            "id": "sha256:abc123",
+            "description": "猫猫",
+        })
+        .to_string();
+
+        assert!(extract_persistable_tool_report("show_meme", &output).is_none());
     }
 
     #[test]

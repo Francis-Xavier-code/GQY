@@ -96,19 +96,12 @@ impl StateStore {
         )
     }
 
-    pub fn append_tool_report_context(
+    pub fn append_persisted_context(
         &self,
         turn_id: &str,
-        tool_name: &str,
         report: &str,
     ) -> Result<()> {
-        self.conv_db.append_tool_report(
-            turn_id,
-            &format!(
-                "<previous_tool_report name=\"{tool_name}\">\n{}\n</previous_tool_report>",
-                report.trim()
-            ),
-        )
+        self.conv_db.append_tool_report(turn_id, report.trim())
     }
 
     pub fn mark_interrupted_turn_if_needed(&self) -> Result<bool> {
