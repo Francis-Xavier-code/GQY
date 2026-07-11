@@ -161,7 +161,7 @@ impl Agent {
             state.reset_if_prompt_changed(&base_system_prompt)?;
             state.recover_stale_turns()?;
         }
-        let system_prompt = with_current_time(base_system_prompt, mode);
+        let system_prompt = with_mode_reminder(base_system_prompt, mode);
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
         let memory = MemoryStore::new(&config, paths);
@@ -192,7 +192,7 @@ impl Agent {
             self.state.reset_if_prompt_changed(&base_system_prompt)?;
             self.state.recover_stale_turns()?;
         }
-        self.system_prompt = with_current_time(base_system_prompt, self.mode);
+        self.system_prompt = with_mode_reminder(base_system_prompt, self.mode);
         Ok(())
     }
 
@@ -959,6 +959,7 @@ impl Agent {
                 messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
             }
         }
+        messages.push(ChatMessage::system(runtime_context(self.mode)));
         messages.push(ChatMessage::plain("user", current_input));
         Ok(messages)
     }
@@ -1376,29 +1377,33 @@ fn vision_analysis_progress(tick: usize) -> String {
     }
 }
 
-fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
+fn with_mode_reminder(system_prompt: String, mode: AgentMode) -> String {
+    let mut prompt = system_prompt;
+    if let Some(reminder) = mode.reminder() {
+        prompt.push_str("\n\n");
+        prompt.push_str(reminder);
+    }
+    prompt
+}
+
+fn runtime_context(mode: AgentMode) -> String {
     let cwd = std::env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    let mut prompt = if mode == AgentMode::Chat {
+    if mode == AgentMode::Chat {
         format!(
-            "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\"/>",
+            "<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\"/>",
             Local::now().format("%Y年%m月%d日 %A %H:%M"),
             xml_attr_escape(&cwd),
         )
     } else {
         let runtime = terminal_runtime_context();
         format!(
-            "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
+            "<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
             Local::now().format("%Y年%m月%d日 %A %H:%M"),
             xml_attr_escape(&cwd),
         )
-    };
-    if let Some(reminder) = mode.reminder() {
-        prompt.push_str("\n\n");
-        prompt.push_str(reminder);
     }
-    prompt
 }
 
 fn terminal_runtime_context() -> String {
@@ -1569,6 +1574,26 @@ mod tests {
         .to_string();
 
         assert!(extract_persistable_tool_report("show_meme", &output).is_none());
+    }
+
+    #[test]
+    fn mode_reminder_keeps_runtime_out_of_stable_prompt() {
+        let prompt = with_mode_reminder("base".to_string(), AgentMode::Normal);
+        assert_eq!(prompt, "base");
+        assert!(!prompt.contains("<runtime"));
+
+        let prompt = with_mode_reminder("base".to_string(), AgentMode::Plan);
+        assert!(prompt.contains("base"));
+        assert!(prompt.contains(crate::prompts::PLAN_REMINDER));
+        assert!(!prompt.contains("<runtime"));
+    }
+
+    #[test]
+    fn runtime_context_contains_dynamic_runtime_only() {
+        let context = runtime_context(AgentMode::Normal);
+        assert!(context.starts_with("<runtime "));
+        assert!(context.contains("now=\""));
+        assert!(context.contains("cwd=\""));
     }
 
     #[test]

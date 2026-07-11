@@ -1959,13 +1959,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         renderer.finish()?;
         match chat_result {
             Ok(Some(result)) => {
-                if config.display.show_token_usage {
-                    footer.update_token_usage(
-                        &result,
-                        state.token_total()?,
-                        agent.context_window(),
-                    );
-                }
+                footer.update_token_usage(&result, state.token_total()?, agent.context_window());
                 if let Err(err) = handle_post_turn_overflow(
                     &agent,
                     &mut renderer,
