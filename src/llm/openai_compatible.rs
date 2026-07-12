@@ -309,7 +309,9 @@ impl OpenAiCompatibleClient {
                 .chat_stream_single(messages.clone(), tools.clone(), &mut on_chunk)
                 .await
             {
-                Ok(result) => {
+                Ok(mut result) => {
+                    result.provider_id = Some(endpoint.provider.id.clone());
+                    result.model = Some(endpoint.provider.default_model.clone());
                     mark_endpoint_success(endpoint);
                     return Ok(result);
                 }
@@ -2175,6 +2177,8 @@ fn finalize_stream_result(
         usage,
         usage_estimated: false,
         tool_calls,
+        provider_id: None,
+        model: None,
     })
 }
 

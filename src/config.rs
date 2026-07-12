@@ -51,6 +51,8 @@ pub struct DisplayConfig {
     pub readable_tool_names: bool,
     #[serde(default)]
     pub show_token_usage: bool,
+    #[serde(default = "default_true")]
+    pub show_mixed_model_endpoint: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +71,8 @@ struct RawDisplayConfig {
     readable_tool_names: Option<bool>,
     #[serde(default)]
     show_token_usage: Option<bool>,
+    #[serde(default)]
+    show_mixed_model_endpoint: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for DisplayConfig {
@@ -96,6 +100,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             tool_calls,
             readable_tool_names: raw.readable_tool_names.unwrap_or_else(default_true),
             show_token_usage: raw.show_token_usage.unwrap_or(false),
+            show_mixed_model_endpoint: raw.show_mixed_model_endpoint.unwrap_or_else(default_true),
         })
     }
 }
@@ -564,6 +569,7 @@ impl Default for DisplayConfig {
             tool_calls: default_tool_call_display(),
             readable_tool_names: default_true(),
             show_token_usage: false,
+            show_mixed_model_endpoint: default_true(),
         }
     }
 }
@@ -2130,9 +2136,14 @@ mod tests {
         let display: DisplayConfig = serde_json::from_str(r#"{"tool_calls":"summary"}"#).unwrap();
         assert!(display.readable_tool_names);
         assert!(!display.show_token_usage);
+        assert!(display.show_mixed_model_endpoint);
 
         let display: DisplayConfig = serde_json::from_str(r#"{"show_token_usage":true}"#).unwrap();
         assert!(display.show_token_usage);
+
+        let display: DisplayConfig =
+            serde_json::from_str(r#"{"show_mixed_model_endpoint":false}"#).unwrap();
+        assert!(!display.show_mixed_model_endpoint);
     }
 
     #[test]

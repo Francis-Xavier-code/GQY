@@ -1,5 +1,5 @@
 use crate::agent::{Agent, AgentEvent, AgentMode};
-use crate::config::AppConfig;
+use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::OpenAiCompatibleClient;
 use crate::memory::MemoryStore;
@@ -53,7 +53,7 @@ impl ReplFooterStatus {
         let (provider_id, model) = match active.as_slice() {
             [] => ("-".to_string(), "None".to_string()),
             [choice] => (choice.provider_id.clone(), choice.model.clone()),
-            _ => ("Mixed".to_string(), "Mixed".to_string()),
+            _ => (String::new(), "Mixed".to_string()),
         };
 
         Self {
@@ -166,6 +166,15 @@ fn repl_footer_left_parts(
         parts.push(thinking.to_string());
     }
     parts.join(" ")
+}
+
+fn print_mixed_model_endpoint(show: bool, result: &crate::llm::ChatResult) {
+    if !show {
+        return;
+    }
+    let provider = result.provider_id.as_deref().unwrap_or("-");
+    let model = result.model.as_deref().unwrap_or("-");
+    println!("\x1b[2m{} / {}\x1b[0m", provider, model);
 }
 
 fn colored_footer_mode_label(mode: AgentMode) -> String {
@@ -1156,49 +1165,46 @@ fn run_providers(paths: &MiyuPaths, args: ProvidersArgs) -> Result<()> {
         return Ok(());
     }
     if io::stdout().is_terminal() && io::stdin().is_terminal() {
-        let active_index = choices.iter().position(|choice| {
-            config
-                .provider(None)
-                .map(|provider| {
-                    provider.id == choice.provider_id && provider.default_model == choice.model
-                })
-                .unwrap_or(false)
-        });
-        if let Some(index) = inline_fuzzy_select(
+        let active = choices
+            .iter()
+            .map(|choice| config.is_active_provider_model(&choice.provider_id, &choice.model))
+            .collect::<Vec<_>>();
+        if let Some(active) = inline_fuzzy_select(
             &choices
                 .iter()
                 .map(|choice| choice.label())
                 .collect::<Vec<_>>(),
-            active_index,
+            active,
         )? {
-            let choice = &choices[index];
-            let provider_id = choice.provider_id.clone();
-            let model = choice.model.clone();
-            let label = choice.label();
-            config.set_active_provider_model(&provider_id, &model)?;
-            config.save(paths)?;
-            println!(
-                "{}: {}. {label}",
-                t("active provider", "当前 provider"),
-                index + 1
+            config.active_provider_models = Some(
+                choices
+                    .iter()
+                    .zip(active)
+                    .filter_map(|(choice, active)| {
+                        active.then(|| ActiveProviderModelConfig {
+                            provider_id: choice.provider_id.clone(),
+                            model: choice.model.clone(),
+                        })
+                    })
+                    .collect(),
             );
+            config.save(paths)?;
+            println!("{}", t("active provider models updated", "已更新激活模型"));
         }
         return Ok(());
     }
     for (index, choice) in choices.iter().enumerate() {
-        let active = config
-            .provider(None)
-            .map(|provider| {
-                provider.id == choice.provider_id && provider.default_model == choice.model
-            })
-            .unwrap_or(false);
-        let marker = if active { "*" } else { " " };
+        let marker = if config.is_active_provider_model(&choice.provider_id, &choice.model) {
+            "[*]"
+        } else {
+            "[ ]"
+        };
         println!("{marker} {}. {}", index + 1, choice.label());
     }
     Ok(())
 }
 
-fn inline_fuzzy_select(items: &[String], active_index: Option<usize>) -> Result<Option<usize>> {
+fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option<Vec<bool>>> {
     let menu_lines = inline_fuzzy_lines(items.len());
     reserve_inline_fuzzy_space(menu_lines)?;
     let mut session = InlineRawMode::start()?;
@@ -1220,7 +1226,7 @@ fn inline_fuzzy_select(items: &[String], active_index: Option<usize>) -> Result<
             items,
             &matches,
             selected,
-            active_index,
+            &active,
         )?;
         if let Event::Key(KeyEvent {
             code, modifiers, ..
@@ -1236,15 +1242,22 @@ fn inline_fuzzy_select(items: &[String], active_index: Option<usize>) -> Result<
                 }
                 KeyCode::Esc => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(None);
+                    return Ok(Some(active));
                 }
                 KeyCode::Char('q') if query.is_empty() => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(None);
+                    return Ok(Some(active));
                 }
                 KeyCode::Enter => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(matches.get(selected).map(|(_, index)| *index));
+                    return Ok(Some(active));
+                }
+                KeyCode::Tab => {
+                    if let Some((_, index)) = matches.get(selected) {
+                        if let Some(value) = active.get_mut(*index) {
+                            *value = !*value;
+                        }
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -1290,7 +1303,7 @@ fn draw_inline_fuzzy(
     items: &[String],
     matches: &[(i64, usize)],
     selected: usize,
-    active_index: Option<usize>,
+    active: &[bool],
 ) -> Result<()> {
     let (cols, _) = terminal::size().unwrap_or((80, 24));
     let bar = inline_fuzzy_bar();
@@ -1326,7 +1339,7 @@ fn draw_inline_fuzzy(
                 Print(inline_fuzzy_item_line(
                     items[*item_index].as_str(),
                     row == selected,
-                    Some(*item_index) == active_index,
+                    active.get(*item_index).copied().unwrap_or(false),
                     width
                 ))
             )?;
@@ -1357,10 +1370,11 @@ fn inline_fuzzy_header(query: &str, width: usize) -> String {
 }
 
 fn inline_fuzzy_item_line(item: &str, selected: bool, active: bool, width: usize) -> String {
+    let marker = if active { "[*]" } else { "[ ]" };
     let line = if selected {
-        format!("› {item}")
+        format!("› {marker} {item}")
     } else {
-        format!("  {item}")
+        format!("  {marker} {item}")
     };
     let line = truncate_visible_width(&line, width);
     if selected {
@@ -1377,8 +1391,8 @@ fn inline_fuzzy_item_line(item: &str, selected: bool, active: bool, width: usize
 
 fn inline_fuzzy_help_line(width: usize) -> String {
     let line = t(
-        "type search · j/k move · Enter select · Esc cancel",
-        "输入搜索 · j/k 移动 · Enter 选择 · Esc 取消",
+        "type search · j/k move · Tab toggle · Enter/q confirm",
+        "输入搜索 · j/k 移动 · Tab 切换 · Enter/q 确认",
     );
     format!("\x1b[2m{}\x1b[0m", truncate_visible_width(line, width))
 }
@@ -1713,6 +1727,8 @@ async fn run_chat_with_images(
     let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
     let show_token_usage = config.display.show_token_usage;
+    let show_mixed_model_endpoint = config.display.show_mixed_model_endpoint
+        && config.active_provider_model_choices().len() > 1;
     let mut agent = Agent::new(
         config,
         paths,
@@ -1731,6 +1747,7 @@ async fn run_chat_with_images(
         .await;
     renderer.finish()?;
     let result = result?;
+    print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
     print_chat_token_usage(
         &result,
         show_token_usage,
@@ -1830,6 +1847,8 @@ async fn run_chat_with_options(
     };
     let readable_tool_names = config.display.readable_tool_names;
     let show_token_usage = config.display.show_token_usage && !plain;
+    let show_mixed_model_endpoint = config.display.show_mixed_model_endpoint
+        && config.active_provider_model_choices().len() > 1;
     let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain, readable_tool_names);
@@ -1839,6 +1858,7 @@ async fn run_chat_with_options(
         .await;
     renderer.finish()?;
     let result = result?;
+    print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
     print_chat_token_usage(
         &result,
         show_token_usage,
@@ -2078,6 +2098,11 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         match chat_result {
             Ok(Some(result)) => {
                 footer.update_token_usage(&result, state.token_total()?, agent.context_window());
+                print_mixed_model_endpoint(
+                    config.display.show_mixed_model_endpoint
+                        && config.active_provider_model_choices().len() > 1,
+                    &result,
+                );
                 if let Err(err) = handle_post_turn_overflow(
                     &agent,
                     &mut renderer,
@@ -3753,11 +3778,15 @@ mod repl_input_tests {
         assert!(visible_width(&header) <= 12);
 
         let item = inline_fuzzy_item_line("opencode Zen / big-pickle", true, false, 16);
-        assert!(strip_terminal_control_sequences(&item).starts_with("› opencode"));
+        let item_plain = strip_terminal_control_sequences(&item);
+        assert!(item_plain.starts_with("› [ ]"));
+        assert!(item_plain.contains("open"));
         assert!(visible_width(&item) <= 16);
 
         let item = inline_fuzzy_item_line("opencode Zen / big-pickle", false, true, 18);
-        assert!(strip_terminal_control_sequences(&item).starts_with("  opencode"));
+        let item_plain = strip_terminal_control_sequences(&item);
+        assert!(item_plain.starts_with("  [*]"));
+        assert!(item_plain.contains("opencode"));
         assert!(visible_width(&item) <= 18);
 
         let help = inline_fuzzy_help_line(40);
@@ -3985,6 +4014,8 @@ fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
                 usage: None,
                 usage_estimated: false,
                 tool_calls: Vec::new(),
+                provider_id: None,
+                model: None,
             };
             render::print_assistant_response(&response, !args.no_thinking)?;
         } else {

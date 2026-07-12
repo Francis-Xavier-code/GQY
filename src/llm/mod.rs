@@ -152,6 +152,8 @@ pub struct ChatResult {
     pub usage: Option<Usage>,
     pub usage_estimated: bool,
     pub tool_calls: Vec<ToolCall>,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1836,6 +1836,10 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
             "Shell 无缝对话显示 Token 计数",
             config.display.show_token_usage,
         ),
+        Field::boolean(
+            "Mixed 时显示本次 Provider/模型",
+            config.display.show_mixed_model_endpoint,
+        ),
         Field::new("上下文到达上限后", config.context.on_overflow.clone())
             .choices(&["pop", "compact"]),
     ];
@@ -1850,7 +1854,8 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         config.display.tool_calls = fields[7].value.trim().to_string();
         config.display.readable_tool_names = parse_bool_field(&fields[8].value)?;
         config.display.show_token_usage = parse_bool_field(&fields[9].value)?;
-        config.context.on_overflow = fields[10].value.trim().to_string();
+        config.display.show_mixed_model_endpoint = parse_bool_field(&fields[10].value)?;
+        config.context.on_overflow = fields[11].value.trim().to_string();
     }
     Ok(())
 }
@@ -2451,10 +2456,11 @@ fn read_key_with_timeout(timeout: Option<Duration>) -> Result<Option<KeyCode>> {
 }
 
 fn active_label(config: &AppConfig) -> String {
-    config
-        .provider(None)
-        .map(|provider| format!("{} / {}", provider.display_name, provider.default_model))
-        .unwrap_or_else(|_| "未配置".to_string())
+    match config.active_provider_model_choices().as_slice() {
+        [] => "未配置".to_string(),
+        [choice] => format!("{} / {}", choice.provider_name, choice.model),
+        _ => "Mixed".to_string(),
+    }
 }
 
 fn normalize_base_url(value: &str) -> String {

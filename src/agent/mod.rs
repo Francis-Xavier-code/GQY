@@ -422,6 +422,8 @@ impl Agent {
             usage: Some(compact.usage),
             usage_estimated: compact.usage_estimated,
             tool_calls: Vec::new(),
+            provider_id: None,
+            model: None,
         }))
     }
 
@@ -466,6 +468,8 @@ impl Agent {
             usage: Some(compact.usage),
             usage_estimated: compact.usage_estimated,
             tool_calls: Vec::new(),
+            provider_id: None,
+            model: None,
         }))
     }
 
@@ -613,6 +617,8 @@ impl Agent {
                     usage,
                     usage_estimated: usage_accumulator.estimated,
                     tool_calls: Vec::new(),
+                    provider_id: None,
+                    model: None,
                 });
             }
             tool_round += 1;
