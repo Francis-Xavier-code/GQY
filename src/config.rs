@@ -879,6 +879,8 @@ impl ProviderConfig {
     }
 
     pub fn default_anthropic() -> Self {
+        let mut model_context_window = HashMap::new();
+        model_context_window.insert("claude-sonnet-4-5".to_string(), 200_000);
         Self {
             id: "anthropic".to_string(),
             display_name: "Anthropic".to_string(),
@@ -886,7 +888,7 @@ impl ProviderConfig {
             protocol: "anthropic".to_string(),
             api_key: Some("$env:ANTHROPIC_API_KEY".to_string()),
             models: vec!["claude-sonnet-4-5".to_string()],
-            model_context_window: HashMap::new(),
+            model_context_window,
             model_modalities: HashMap::new(),
             default_model: "claude-sonnet-4-5".to_string(),
             timeout_seconds: default_timeout(),
@@ -1834,6 +1836,16 @@ mod tests {
 
         assert!(provider.models.is_empty());
         assert!(provider.default_model.is_empty());
+    }
+
+    #[test]
+    fn default_anthropic_provider_has_context_window() {
+        let provider = ProviderConfig::default_anthropic();
+
+        assert_eq!(
+            provider.model_context_window.get(&provider.default_model),
+            Some(&200_000)
+        );
     }
 
     #[test]
