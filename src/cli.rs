@@ -2200,6 +2200,8 @@ fn read_repl_input(
     let mut input = strip_terminal_control_sequences(&prefill.unwrap_or_default());
     let mut cursor = input.chars().count();
     let mut history_index = history.len();
+    let mut history_clean_index: Option<usize> = None;
+    let plain_prefix = "  ";
     let (cursor_col, _) = cursor::position()?;
     if cursor_col != 0 {
         writeln!(stdout)?;
@@ -2244,6 +2246,7 @@ fn read_repl_input(
         match event::read()? {
             Event::Paste(text) => {
                 insert_pasted_text_at_cursor(&mut input, &mut cursor, text, &mut pasted_texts);
+                history_clean_index = None;
                 is_pasted = true;
                 render_repl_input(
                     &mut stdout,
@@ -2263,6 +2266,7 @@ fn read_repl_input(
                         if let Some(completed) = complete_repl_command(&input) {
                             input = completed.to_string();
                             cursor = input.chars().count();
+                            history_clean_index = None;
                         }
                     } else {
                         mode = match mode {
@@ -2285,6 +2289,7 @@ fn read_repl_input(
                 KeyCode::Esc => {
                     input.clear();
                     cursor = 0;
+                    history_clean_index = None;
                     is_pasted = false;
                     pasted_images.clear();
                     pasted_texts.clear();
@@ -2355,36 +2360,51 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Up => {
-                    if !history.is_empty() {
+                    if !history.is_empty()
+                        && repl_should_browse_history(&input, history, history_clean_index)
+                    {
+                        if input.is_empty() {
+                            history_index = history.len();
+                        }
                         history_index = history_index.saturating_sub(1);
                         input = history.get(history_index).cloned().unwrap_or_default();
                         cursor = input.chars().count();
+                        history_clean_index = Some(history_index);
                         is_pasted = false;
                         pasted_images.clear();
                         pasted_texts.clear();
-                        render_repl_input(
-                            &mut stdout,
-                            &mut input_row,
-                            &mut rendered_rows,
-                            mode,
-                            &input,
-                            cursor,
-                            is_pasted,
-                        )?;
+                    } else {
+                        cursor = repl_move_cursor_vertical(&plain_prefix, &input, cursor, -1);
                     }
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
+                        is_pasted,
+                    )?;
                 }
                 KeyCode::Down => {
-                    if history_index + 1 < history.len() {
-                        history_index += 1;
-                        input = history.get(history_index).cloned().unwrap_or_default();
+                    if repl_history_is_clean(&input, history, history_clean_index) {
+                        if history_index + 1 < history.len() {
+                            history_index += 1;
+                            input = history.get(history_index).cloned().unwrap_or_default();
+                            cursor = input.chars().count();
+                            history_clean_index = Some(history_index);
+                        } else {
+                            history_index = history.len();
+                            input.clear();
+                            cursor = 0;
+                            history_clean_index = None;
+                        }
+                        is_pasted = false;
+                        pasted_images.clear();
+                        pasted_texts.clear();
                     } else {
-                        history_index = history.len();
-                        input.clear();
+                        cursor = repl_move_cursor_vertical(&plain_prefix, &input, cursor, 1);
                     }
-                    cursor = input.chars().count();
-                    is_pasted = false;
-                    pasted_images.clear();
-                    pasted_texts.clear();
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -2411,6 +2431,7 @@ fn read_repl_input(
                 }
                 KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                     insert_newline_at_cursor(&mut input, &mut cursor);
+                    history_clean_index = None;
                     is_pasted = false;
                     render_repl_input(
                         &mut stdout,
@@ -2429,6 +2450,7 @@ fn read_repl_input(
                     if !input.is_empty() {
                         input.clear();
                         cursor = 0;
+                        history_clean_index = None;
                         is_pasted = false;
                         pasted_images.clear();
                         pasted_texts.clear();
@@ -2485,6 +2507,7 @@ fn read_repl_input(
                     } else {
                         remove_word_before_cursor(&mut input, &mut cursor);
                     }
+                    history_clean_index = None;
                     is_pasted = false;
                     render_repl_input(
                         &mut stdout,
@@ -2512,6 +2535,7 @@ fn read_repl_input(
                         } else {
                             remove_char_before_cursor(&mut input, &mut cursor);
                         }
+                        history_clean_index = None;
                     }
                     is_pasted = false;
                     render_repl_input(
@@ -2537,6 +2561,7 @@ fn read_repl_input(
                     } else {
                         remove_char_at_cursor(&mut input, cursor);
                     }
+                    history_clean_index = None;
                     is_pasted = false;
                     render_repl_input(
                         &mut stdout,
@@ -2573,6 +2598,7 @@ fn read_repl_input(
                                 Err(_) => format!("[Image {}]", index),
                             };
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
+                            history_clean_index = None;
                             pasted_images.push(Some(crate::clipboard::PastedImage::Binary(img)));
                             is_pasted = false;
                             render_repl_input(
@@ -2593,6 +2619,7 @@ fn read_repl_input(
                                 .unwrap_or("image");
                             let placeholder = format!("[Image {}: {}]", index, filename);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
+                            history_clean_index = None;
                             pasted_images.push(Some(crate::clipboard::PastedImage::Path(path)));
                             is_pasted = false;
                             render_repl_input(
@@ -2607,6 +2634,7 @@ fn read_repl_input(
                         }
                         Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
                             insert_str_at_cursor(&mut input, &mut cursor, &path);
+                            history_clean_index = None;
                             is_pasted = false;
                             render_repl_input(
                                 &mut stdout,
@@ -2626,6 +2654,7 @@ fn read_repl_input(
                                     text,
                                     &mut pasted_texts,
                                 );
+                                history_clean_index = None;
                                 is_pasted = true;
                                 render_repl_input(
                                     &mut stdout,
@@ -2646,6 +2675,7 @@ fn read_repl_input(
                             cursor = end;
                         }
                         insert_char_at_cursor(&mut input, &mut cursor, ch);
+                        history_clean_index = None;
                     }
                     is_pasted = false;
                     render_repl_input(
@@ -2680,17 +2710,19 @@ fn render_repl_input_with_footer(
     let lines = repl_input_lines(input);
     let prompt_prefix = input_prompt_bar(mode);
     let plain_prefix = "  ";
+    let cols = terminal_cols();
     let display_lines = repl_visible_input_lines(
         &plain_prefix,
         &lines,
         REPL_MAX_VISIBLE_INPUT_ROWS,
         is_pasted,
     );
-    let display_lines: Vec<String> = display_lines
+    let display_rows = repl_wrapped_input_rows_for_cols(&plain_prefix, &display_lines, cols);
+    let display_rows: Vec<String> = display_rows
         .iter()
         .map(|line| colorize_repl_placeholders(line))
         .collect();
-    let input_rows = repl_prompt_rows(&plain_prefix, &display_lines);
+    let input_rows = display_rows.len().max(1).min(u16::MAX as usize) as u16;
     let show_hint = show_shortcut_hint && suggestions.is_empty();
     let current_rows = input_rows.saturating_add(if show_hint { 4 } else { 3 });
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
@@ -2702,15 +2734,14 @@ fn render_repl_input_with_footer(
             Clear(ClearType::CurrentLine)
         )?;
     }
-    let cols = terminal_cols();
     let mut row_offset = 0u16;
     queue!(stdout, MoveTo(0, *input_row), Print(&prompt_prefix))?;
     row_offset = row_offset.saturating_add(1);
-    for line in &display_lines {
+    for line in &display_rows {
         let row = (*input_row).saturating_add(row_offset);
         queue!(stdout, MoveTo(0, row))?;
         queue!(stdout, Print(&prompt_prefix), Print(line))?;
-        row_offset = row_offset.saturating_add(repl_line_rows(&plain_prefix, line));
+        row_offset = row_offset.saturating_add(1);
     }
     queue!(
         stdout,
@@ -2748,8 +2779,12 @@ fn render_repl_input_with_footer(
         repl_cursor_position(&plain_prefix, input, cursor)
     } else {
         let last_line = display_lines.last().map(String::as_str).unwrap_or_default();
-        let col =
-            ((visible_width(&plain_prefix) + visible_width(last_line)) % terminal_cols()) as u16;
+        let (col, _) = repl_cursor_position_for_line_for_cols(
+            &plain_prefix,
+            last_line,
+            last_line.chars().count(),
+            terminal_cols(),
+        );
         (
             col,
             repl_prompt_rows(&plain_prefix, &display_lines).saturating_sub(1),
@@ -2917,6 +2952,147 @@ fn wrap_visible_width(value: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
+fn repl_wrapped_input_rows_for_cols(prefix: &str, lines: &[String], cols: usize) -> Vec<String> {
+    let max_width = repl_content_width_for_cols(prefix, cols);
+    let mut rows = Vec::new();
+    for line in lines {
+        let mut current = String::new();
+        let mut width = 0usize;
+        for ch in line.chars() {
+            let char_width = visible_width(&ch.to_string());
+            if width > 0 && width.saturating_add(char_width) > max_width {
+                rows.push(std::mem::take(&mut current));
+                width = 0;
+            }
+            current.push(ch);
+            width = width.saturating_add(char_width);
+        }
+        rows.push(current);
+        if width > 0 && width % max_width == 0 {
+            rows.push(String::new());
+        }
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
+fn repl_cursor_position_for_line_for_cols(
+    prefix: &str,
+    line: &str,
+    cursor: usize,
+    cols: usize,
+) -> (u16, u16) {
+    let cols = cols.max(1);
+    let prefix_width = repl_prefix_width_for_cols(prefix, cols);
+    let content_width = repl_content_width_for_cols(prefix, cols);
+    let mut col = 0usize;
+    let mut row = 0usize;
+    for ch in line.chars().take(cursor) {
+        let char_width = visible_width(&ch.to_string()).max(1);
+        if col > 0 && col.saturating_add(char_width) > content_width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+        col = col.saturating_add(char_width);
+        if col >= content_width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+    }
+    (
+        prefix_width.saturating_add(col).min(u16::MAX as usize) as u16,
+        row.min(u16::MAX as usize) as u16,
+    )
+}
+
+fn repl_history_is_clean(
+    input: &str,
+    history: &[String],
+    history_clean_index: Option<usize>,
+) -> bool {
+    history_clean_index
+        .and_then(|index| history.get(index))
+        .map(|entry| entry == input)
+        .unwrap_or(false)
+}
+
+fn repl_should_browse_history(
+    input: &str,
+    history: &[String],
+    history_clean_index: Option<usize>,
+) -> bool {
+    input.is_empty() || repl_history_is_clean(input, history, history_clean_index)
+}
+
+fn repl_move_cursor_vertical(prefix: &str, input: &str, cursor: usize, direction: i32) -> usize {
+    if input.is_empty() || direction == 0 {
+        return cursor.min(input.chars().count());
+    }
+    repl_move_cursor_vertical_for_cols(prefix, input, cursor, direction, terminal_cols())
+}
+
+fn repl_move_cursor_vertical_for_cols(
+    prefix: &str,
+    input: &str,
+    cursor: usize,
+    direction: i32,
+    cols: usize,
+) -> usize {
+    let positions = repl_cursor_layout_positions_for_cols(prefix, input, cols);
+    let cursor = cursor.min(positions.len().saturating_sub(1));
+    let (_, current_row, current_col) = positions[cursor];
+    let last_row = positions.last().map(|(_, row, _)| *row).unwrap_or(0);
+    let target_row = if direction < 0 {
+        current_row.saturating_sub(1)
+    } else {
+        current_row.saturating_add(1).min(last_row)
+    };
+    if target_row == current_row {
+        return cursor;
+    }
+
+    positions
+        .iter()
+        .filter(|(_, row, _)| *row == target_row)
+        .min_by_key(|(index, _, col)| (col.abs_diff(current_col), usize::MAX - *index))
+        .map(|(index, _, _)| *index)
+        .unwrap_or(cursor)
+}
+
+fn repl_cursor_layout_positions_for_cols(
+    prefix: &str,
+    input: &str,
+    cols: usize,
+) -> Vec<(usize, usize, usize)> {
+    let content_width = repl_content_width_for_cols(prefix, cols);
+    let mut positions = Vec::with_capacity(input.chars().count() + 1);
+    let mut row = 0usize;
+    let mut col = 0usize;
+    positions.push((0, row, col));
+    for (index, ch) in input.chars().enumerate() {
+        if ch == '\n' {
+            row = row.saturating_add(1);
+            col = 0;
+            positions.push((index + 1, row, col));
+            continue;
+        }
+        let char_width = visible_width(&ch.to_string()).max(1);
+        if col > 0 && col.saturating_add(char_width) > content_width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+        col = col.saturating_add(char_width);
+        if col >= content_width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+        positions.push((index + 1, row, col));
+    }
+    positions
+}
+
 fn repl_prompt_rows(prefix: &str, lines: &[String]) -> u16 {
     repl_prompt_rows_for_cols(prefix, lines, terminal_cols())
 }
@@ -2925,14 +3101,20 @@ fn repl_cursor_position(prefix: &str, input: &str, cursor: usize) -> (u16, u16) 
     repl_cursor_position_for_cols(prefix, input, cursor, terminal_cols())
 }
 
-fn repl_line_rows(prefix: &str, line: &str) -> u16 {
-    repl_line_rows_for_cols(prefix, line, terminal_cols())
+fn repl_line_rows_for_cols(prefix: &str, line: &str, cols: usize) -> u16 {
+    let content_width = repl_content_width_for_cols(prefix, cols);
+    let width = visible_width(line);
+    (width / content_width + 1).min(u16::MAX as usize) as u16
 }
 
-fn repl_line_rows_for_cols(prefix: &str, line: &str, cols: usize) -> u16 {
-    let cols = cols.max(1);
-    let width = visible_width(prefix) + visible_width(line);
-    (width / cols + 1).min(u16::MAX as usize) as u16
+fn repl_prefix_width_for_cols(prefix: &str, cols: usize) -> usize {
+    visible_width(prefix).min(cols.max(1).saturating_sub(1))
+}
+
+fn repl_content_width_for_cols(prefix: &str, cols: usize) -> usize {
+    cols.max(1)
+        .saturating_sub(repl_prefix_width_for_cols(prefix, cols))
+        .max(1)
 }
 
 fn repl_prompt_rows_for_cols(prefix: &str, lines: &[String], cols: usize) -> u16 {
@@ -2956,16 +3138,22 @@ fn repl_cursor_position_for_cols(
     let last_index = lines.len().saturating_sub(1);
     let mut row_offset = 0usize;
     for (index, line) in lines.iter().enumerate() {
-        let width = visible_width(prefix) + visible_width(line);
         if index == last_index {
+            let (col, row) =
+                repl_cursor_position_for_line_for_cols(prefix, line, line.chars().count(), cols);
             return (
-                (width % cols).min(u16::MAX as usize) as u16,
-                (row_offset + width / cols).min(u16::MAX as usize) as u16,
+                col,
+                row_offset
+                    .saturating_add(row as usize)
+                    .min(u16::MAX as usize) as u16,
             );
         }
-        row_offset += width / cols + 1;
+        row_offset += repl_line_rows_for_cols(prefix, line, cols) as usize;
     }
-    (visible_width(prefix).min(u16::MAX as usize) as u16, 0)
+    (
+        repl_prefix_width_for_cols(prefix, cols).min(u16::MAX as usize) as u16,
+        0,
+    )
 }
 
 fn insert_char_at_cursor(value: &mut String, cursor: &mut usize, ch: char) {
@@ -3456,6 +3644,76 @@ mod repl_input_tests {
         assert_eq!(
             repl_prompt_rows_for_cols("  ", &["123".into(), "34".into()], 5),
             3
+        );
+    }
+
+    #[test]
+    fn wrapped_input_rows_keep_prefix_outside_content_width() {
+        assert_eq!(
+            repl_wrapped_input_rows_for_cols("  ", &["123456789".into()], 10),
+            vec!["12345678".to_string(), "9".to_string()]
+        );
+        assert_eq!(
+            repl_wrapped_input_rows_for_cols("  ", &["12345678".into()], 10),
+            vec!["12345678".to_string(), String::new()]
+        );
+        assert_eq!(
+            repl_cursor_position_for_cols("  ", "12345678", 8, 10),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn history_browsing_requires_empty_or_clean_history_input() {
+        let history = vec!["first".to_string(), "second".to_string()];
+
+        assert!(repl_should_browse_history("", &history, None));
+        assert!(repl_should_browse_history("second", &history, Some(1)));
+        assert!(!repl_should_browse_history("draft", &history, None));
+        assert!(!repl_should_browse_history(
+            "second edited",
+            &history,
+            Some(1)
+        ));
+    }
+
+    #[test]
+    fn vertical_cursor_move_uses_soft_wrapped_rows() {
+        assert_eq!(
+            repl_move_cursor_vertical_for_cols("  ", "123456789", 9, -1, 10),
+            1
+        );
+        assert_eq!(
+            repl_move_cursor_vertical_for_cols("  ", "123456789", 1, 1, 10),
+            9
+        );
+    }
+
+    #[test]
+    fn vertical_cursor_move_handles_explicit_newlines() {
+        assert_eq!(
+            repl_move_cursor_vertical_for_cols("  ", "abc\ndef", 6, -1, 20),
+            2
+        );
+        assert_eq!(
+            repl_move_cursor_vertical_for_cols("  ", "abc\ndef", 2, 1, 20),
+            6
+        );
+    }
+
+    #[test]
+    fn vertical_cursor_move_handles_wide_chars_near_wrap() {
+        assert_eq!(
+            repl_cursor_position_for_cols("  ", "1234567你", 8, 11),
+            (2, 1)
+        );
+        assert_eq!(
+            repl_cursor_position_for_cols("  ", "12345678你", 9, 11),
+            (4, 1)
+        );
+        assert_eq!(
+            repl_move_cursor_vertical_for_cols("  ", "12345678你好", 9, -1, 11),
+            2
         );
     }
 
