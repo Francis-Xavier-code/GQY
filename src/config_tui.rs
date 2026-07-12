@@ -18,6 +18,8 @@ use std::time::Duration;
 
 pub fn run(paths: &MiyuPaths) -> Result<()> {
     AppConfig::init_files(paths)?;
+    crate::models_cache::try_load(paths);
+    crate::models_cache::spawn_background_refresh(paths.clone());
     let config = AppConfig::load_or_default(paths)?;
     TerminalSession::start()?.run(paths, config)
 }
@@ -58,8 +60,10 @@ fn run_main_menu(
     let mut selected = 0usize;
     loop {
         let active = active_label(config);
+        let multimodal = active_multimodal_label(config);
         let options = [
-            format!("激活配置 (当前: {active})"),
+            format!("配置文本模型 (当前: {active})"),
+            format!("配置多模态模型 (当前: {multimodal})"),
             "供应商和模型".to_string(),
             "插件配置".to_string(),
             "自定义提示词".to_string(),
@@ -79,11 +83,12 @@ fn run_main_menu(
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
                 0 => select_active_provider(stdout, config)?,
-                1 => ProviderBrowser::new(config).run(stdout)?,
-                2 => edit_plugins(stdout, config)?,
-                3 => edit_custom_prompts(stdout, paths, config)?,
-                4 => edit_settings(stdout, config)?,
-                5 => {
+                1 => select_active_multimodal_provider(stdout, config)?,
+                2 => ProviderBrowser::new(paths, config).run(stdout)?,
+                3 => edit_plugins(stdout, config)?,
+                4 => edit_custom_prompts(stdout, paths, config)?,
+                5 => edit_settings(stdout, config)?,
+                6 => {
                     config.save(paths)?;
                     return Ok(true);
                 }
@@ -1143,11 +1148,15 @@ fn parse_key_list(value: &str) -> Vec<String> {
 }
 
 struct ProviderBrowser<'a> {
+    paths: &'a MiyuPaths,
     config: &'a mut AppConfig,
     active_col: usize,
     provider_idx: usize,
+    provider_scroll: usize,
     org_idx: usize,
+    org_scroll: usize,
     model_idx: usize,
+    model_scroll: usize,
     filter: String,
     filter_mode: bool,
     raw_models: Vec<String>,
@@ -1160,13 +1169,17 @@ struct ProviderBrowser<'a> {
 }
 
 impl<'a> ProviderBrowser<'a> {
-    fn new(config: &'a mut AppConfig) -> Self {
+    fn new(paths: &'a MiyuPaths, config: &'a mut AppConfig) -> Self {
         Self {
+            paths,
             config,
             active_col: 0,
             provider_idx: 0,
+            provider_scroll: 0,
             org_idx: 0,
+            org_scroll: 0,
             model_idx: 0,
+            model_scroll: 0,
             filter: String::new(),
             filter_mode: false,
             raw_models: Vec::new(),
@@ -1241,13 +1254,24 @@ impl<'a> ProviderBrowser<'a> {
         match self.active_col {
             0 => {
                 self.provider_idx = self.provider_idx.saturating_sub(1);
+                self.provider_scroll = column_scroll(
+                    self.provider_idx,
+                    self.provider_scroll,
+                    column_visible_rows(),
+                );
                 self.refresh_models();
             }
             1 => {
                 self.org_idx = self.org_idx.saturating_sub(1);
+                self.org_scroll =
+                    column_scroll(self.org_idx, self.org_scroll, column_visible_rows());
                 self.rebuild_models();
             }
-            2 => self.model_idx = self.model_idx.saturating_sub(1),
+            2 => {
+                self.model_idx = self.model_idx.saturating_sub(1);
+                self.model_scroll =
+                    column_scroll(self.model_idx, self.model_scroll, column_visible_rows());
+            }
             _ => {}
         }
     }
@@ -1257,13 +1281,24 @@ impl<'a> ProviderBrowser<'a> {
             0 => {
                 self.provider_idx =
                     (self.provider_idx + 1).min(self.config.providers.len().saturating_sub(1));
+                self.provider_scroll = column_scroll(
+                    self.provider_idx,
+                    self.provider_scroll,
+                    column_visible_rows(),
+                );
                 self.refresh_models();
             }
             1 => {
                 self.org_idx = (self.org_idx + 1).min(self.orgs.len().saturating_sub(1));
+                self.org_scroll =
+                    column_scroll(self.org_idx, self.org_scroll, column_visible_rows());
                 self.rebuild_models();
             }
-            2 => self.model_idx = (self.model_idx + 1).min(self.models.len().saturating_sub(1)),
+            2 => {
+                self.model_idx = (self.model_idx + 1).min(self.models.len().saturating_sub(1));
+                self.model_scroll =
+                    column_scroll(self.model_idx, self.model_scroll, column_visible_rows());
+            }
             _ => {}
         }
     }
@@ -1293,6 +1328,8 @@ impl<'a> ProviderBrowser<'a> {
         }
         self.org_idx = 0;
         self.model_idx = 0;
+        self.org_scroll = 0;
+        self.model_scroll = 0;
     }
 
     fn poll_fetch_result(&mut self) {
@@ -1355,11 +1392,12 @@ impl<'a> ProviderBrowser<'a> {
         self.org_idx = self.org_idx.min(self.orgs.len().saturating_sub(1));
         self.models = grouped.remove(&self.orgs[self.org_idx]).unwrap_or_default();
         self.model_idx = self.model_idx.min(self.models.len().saturating_sub(1));
+        self.org_scroll = column_scroll(self.org_idx, self.org_scroll, column_visible_rows());
+        self.model_scroll = column_scroll(self.model_idx, self.model_scroll, column_visible_rows());
     }
 
     fn add_provider(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        if let Some(provider) = edit_provider_form(stdout, ProviderConfig::new_openai_compatible())?
-        {
+        if let Some(provider) = edit_provider_form(stdout, ProviderConfig::new_custom())? {
             self.config.upsert_provider(provider);
             self.provider_idx = self.config.providers.len().saturating_sub(1);
             self.refresh_models();
@@ -1401,13 +1439,15 @@ impl<'a> ProviderBrowser<'a> {
                 }
             }
             2 => {
-                if let (Some(provider), Some(model)) = (
-                    self.config.providers.get_mut(self.provider_idx),
-                    self.models.get(self.model_idx).cloned(),
-                ) {
-                    if edit_model_form(stdout, provider, &model.full)? {
-                        self.config.active_provider = provider.id.clone();
-                        self.status = format!("已更新模型设置: {}", model.full);
+                if let Some(model) = self.models.get(self.model_idx).cloned() {
+                    if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
+                        auto_configure_model_tags(self.paths, provider, &model.full);
+                    }
+                    if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
+                        if edit_model_form(stdout, provider, &model.full)? {
+                            self.config.active_provider = provider.id.clone();
+                            self.status = format!("已更新模型设置: {}", model.full);
+                        }
                     }
                 }
             }
@@ -1432,6 +1472,7 @@ impl<'a> ProviderBrowser<'a> {
                 self.status = format!("已取消激活模型: {}", model.full);
             } else {
                 provider.models.push(model.full.clone());
+                auto_configure_model_tags(self.paths, provider, &model.full);
                 if provider.default_model.trim().is_empty() {
                     provider.default_model = model.full.clone();
                 }
@@ -1470,27 +1511,13 @@ impl<'a> ProviderBrowser<'a> {
             .models
             .iter()
             .map(|model| {
-                let current = self
-                    .config
-                    .providers
-                    .get(self.provider_idx)
-                    .map(|provider| provider.default_model == model.full)
-                    .unwrap_or(false);
                 let active = self
                     .config
                     .providers
                     .get(self.provider_idx)
                     .map(|provider| provider.models.iter().any(|item| item == &model.full))
                     .unwrap_or(false);
-                if current && active {
-                    format!("{} [current active]", model.name)
-                } else if current {
-                    format!("{} [current]", model.name)
-                } else if active {
-                    format!("{} [active]", model.name)
-                } else {
-                    model.name.clone()
-                }
+                format!("{} {}", if active { "[*]" } else { "[ ]" }, model.name)
             })
             .collect::<Vec<_>>();
 
@@ -1504,6 +1531,7 @@ impl<'a> ProviderBrowser<'a> {
             " PROVIDERS ",
             &providers,
             self.provider_idx,
+            self.provider_scroll,
             self.active_col == 0,
         )?;
         draw_column(
@@ -1515,6 +1543,7 @@ impl<'a> ProviderBrowser<'a> {
             " ORG ",
             &self.orgs,
             self.org_idx,
+            self.org_scroll,
             self.active_col == 1,
         )?;
         let title = if self.filter.is_empty() {
@@ -1531,6 +1560,7 @@ impl<'a> ProviderBrowser<'a> {
             &title,
             &models,
             self.model_idx,
+            self.model_scroll,
             self.active_col == 2,
         )?;
         let help = if self.filter_mode {
@@ -1617,6 +1647,20 @@ fn fetch_models(provider: &ProviderConfig) -> Result<Vec<String>> {
         .collect())
 }
 
+fn auto_configure_model_tags(paths: &MiyuPaths, provider: &mut ProviderConfig, model: &str) {
+    if provider.model_modalities.contains_key(model) {
+        return;
+    }
+    if let Some(modalities) =
+        crate::models_cache::input_modalities_blocking(paths, &provider.id, model)
+            .filter(|modalities| !modalities.is_empty())
+    {
+        provider
+            .model_modalities
+            .insert(model.to_string(), modalities);
+    }
+}
+
 fn models_url(base_url: &str) -> String {
     let mut url = base_url.trim().trim_end_matches('/').to_string();
     if url.ends_with("/chat/completions") {
@@ -1640,9 +1684,12 @@ struct ModelInfo {
 }
 
 fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
-    let mut choices = config.provider_model_choices();
+    let mut choices = config.text_provider_model_choices();
     if choices.is_empty() {
-        message(stdout, "没有可用 Provider，请先添加。")?;
+        message(
+            stdout,
+            "没有已勾选的文本模型，请先在供应商和模型里用 Tab 激活模型。",
+        )?;
         return Ok(());
     }
     let mut selected = choices
@@ -1664,7 +1711,7 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
             .collect::<Vec<_>>();
         draw_menu(
             stdout,
-            " SELECT PROVIDER/MODEL ",
+            " SELECT TEXT MODEL ",
             &options,
             selected,
             "[Tab]激活/取消 [Enter/q]确认 [d]移除",
@@ -1681,7 +1728,7 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
             KeyCode::Char('d') => {
                 let choice = choices[selected].clone();
                 config.remove_active_provider_model(&choice.provider_id, &choice.model)?;
-                choices = config.provider_model_choices();
+                choices = config.text_provider_model_choices();
                 if choices.is_empty() {
                     message(stdout, "已移除激活模型，当前没有可用模型。")?;
                     return Ok(());
@@ -1711,8 +1758,6 @@ fn edit_provider_form(
             "openai-chat",
             "openai-responses",
             "anthropic",
-            "anthropic-messages",
-            "claude-messages",
         ]),
         Field::new(
             "API Key 或 $env:NAME",
@@ -1764,49 +1809,26 @@ fn edit_model_form(
     provider: &mut ProviderConfig,
     model: &str,
 ) -> Result<bool> {
-    let active = provider.models.iter().any(|item| item == model);
-    let current = provider.default_model == model;
     let context_window = provider
         .model_context_window
         .get(model)
         .copied()
         .unwrap_or_default();
     let mut fields = vec![
-        Field::boolean("激活模型", active),
-        Field::boolean("设为当前模型", current),
+        Field::modalities("支持输入", modality_field_value(provider, model)),
         Field::new(
             "模型上下文窗口 (tokens, 0=自动)",
             context_window.to_string(),
         ),
+        Field::new("Temperature", provider.temperature.to_string()),
     ];
     if !run_form(stdout, " EDIT MODEL ", &mut fields)? {
         return Ok(false);
     }
-    let active = parse_bool_field(&fields[0].value)?;
-    let current = parse_bool_field(&fields[1].value)?;
-    if active {
-        if !provider.models.iter().any(|item| item == model) {
-            provider.models.push(model.to_string());
-        }
-    } else {
-        provider.models.retain(|item| item != model);
-    }
-    if current || provider.default_model == model && !active {
-        provider.default_model = if active {
-            model.to_string()
-        } else {
-            provider.models.first().cloned().unwrap_or_default()
-        };
-        if !provider.default_model.is_empty()
-            && !provider
-                .models
-                .iter()
-                .any(|item| item == &provider.default_model)
-        {
-            provider.models.push(provider.default_model.clone());
-        }
-    }
-    match fields[2].value.trim().parse::<usize>().unwrap_or_default() {
+    provider
+        .model_modalities
+        .insert(model.to_string(), parse_modalities(&fields[0].value));
+    match fields[1].value.trim().parse::<usize>().unwrap_or_default() {
         0 => {
             provider.model_context_window.remove(model);
         }
@@ -1816,6 +1838,7 @@ fn edit_model_form(
                 .insert(model.to_string(), value);
         }
     }
+    provider.temperature = fields[2].value.trim().parse().unwrap_or(0.7);
     Ok(true)
 }
 
@@ -1836,10 +1859,11 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
             "Shell 无缝对话显示 Token 计数",
             config.display.show_token_usage,
         ),
-        Field::boolean(
-            "Mixed 时显示本次 Provider/模型",
-            config.display.show_mixed_model_endpoint,
-        ),
+        Field::new(
+            "Mixed 时显示本次供应商/模型",
+            mixed_endpoint_display_label(&config.display.mixed_model_endpoint_display),
+        )
+        .choices(&["关", "仅交互模式", "全部模式"]),
         Field::new("上下文到达上限后", config.context.on_overflow.clone())
             .choices(&["pop", "compact"]),
     ];
@@ -1854,10 +1878,27 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         config.display.tool_calls = fields[7].value.trim().to_string();
         config.display.readable_tool_names = parse_bool_field(&fields[8].value)?;
         config.display.show_token_usage = parse_bool_field(&fields[9].value)?;
-        config.display.show_mixed_model_endpoint = parse_bool_field(&fields[10].value)?;
+        config.display.mixed_model_endpoint_display =
+            parse_mixed_endpoint_display(&fields[10].value);
         config.context.on_overflow = fields[11].value.trim().to_string();
     }
     Ok(())
+}
+
+fn mixed_endpoint_display_label(value: &str) -> String {
+    match value.trim() {
+        "off" => "关".to_string(),
+        "all" => "全部模式".to_string(),
+        _ => "仅交互模式".to_string(),
+    }
+}
+
+fn parse_mixed_endpoint_display(value: &str) -> String {
+    match value.trim() {
+        "关" | "off" => "off".to_string(),
+        "全部模式" | "all" => "all".to_string(),
+        _ => "interactive".to_string(),
+    }
 }
 
 fn normalize_tools_loading_mode(value: &str) -> String {
@@ -1937,6 +1978,18 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
                     parse_bool_field(&fields[selected].value)?,
                 )?;
                 fields[selected].value = value.to_string();
+                cursors[selected] = fields[selected].value.chars().count();
+            }
+            KeyCode::Enter if !editing && fields[selected].modalities => {
+                fields[selected].value = select_multi_choice(
+                    stdout,
+                    fields[selected].label,
+                    &fields[selected].value,
+                    &["text", "image", "audio", "video", "pdf"]
+                        .iter()
+                        .map(|item| item.to_string())
+                        .collect::<Vec<_>>(),
+                )?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && !fields[selected].choices.is_empty() => {
@@ -2032,6 +2085,47 @@ fn select_choice(
     }
 }
 
+fn select_multi_choice(
+    stdout: &mut io::Stdout,
+    label: &str,
+    current: &str,
+    choices: &[String],
+) -> Result<String> {
+    let mut selected = 0usize;
+    let mut active = choices
+        .iter()
+        .map(|choice| has_modality(current, choice))
+        .collect::<Vec<_>>();
+    loop {
+        let options = choices
+            .iter()
+            .zip(&active)
+            .map(|(choice, active)| format!("{} {}", if *active { "[*]" } else { "[ ]" }, choice))
+            .collect::<Vec<_>>();
+        draw_menu(
+            stdout,
+            label,
+            &options,
+            selected,
+            "[Tab]选择/取消 [Enter/q]确认",
+        )?;
+        match read_key()? {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                return Ok(choices
+                    .iter()
+                    .zip(active)
+                    .filter_map(|(choice, active)| active.then(|| choice.clone()))
+                    .collect::<Vec<_>>()
+                    .join(", "))
+            }
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(choices.len() - 1),
+            KeyCode::Tab | KeyCode::Char(' ') => active[selected] = !active[selected],
+            _ => {}
+        }
+    }
+}
+
 fn choice_label(choice: &str, empty_label: &str) -> String {
     if choice.is_empty() {
         empty_label.to_string()
@@ -2056,6 +2150,93 @@ fn provider_model_choice_values(config: &AppConfig, include_current: bool) -> Ve
             .map(|choice| choice.value()),
     );
     choices
+}
+
+fn active_multimodal_label(config: &AppConfig) -> String {
+    let choices = config.active_multimodal_provider_model_choices();
+    if choices.is_empty() {
+        format!(
+            "{} / {}",
+            OPENCODE_PROVIDER_ID, OPENCODE_DEFAULT_VISION_MODEL
+        )
+    } else if choices.len() == 1 {
+        choices[0].label()
+    } else {
+        "Mixed".to_string()
+    }
+}
+
+fn modality_field_value(provider: &ProviderConfig, model: &str) -> String {
+    provider
+        .input_modalities(model)
+        .unwrap_or_else(|| vec!["text".to_string()])
+        .join(", ")
+}
+
+fn parse_modalities(value: &str) -> Vec<String> {
+    value
+        .split(|ch| ch == ',' || ch == '，' || ch == '\n' || ch == '\r')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn has_modality(value: &str, modality: &str) -> bool {
+    parse_modalities(value).iter().any(|item| item == modality)
+}
+
+fn select_active_multimodal_provider(
+    stdout: &mut io::Stdout,
+    config: &mut AppConfig,
+) -> Result<()> {
+    let choices = config.multimodal_provider_model_choices();
+    if choices.is_empty() {
+        message(
+            stdout,
+            "没有已标记为多模态的模型，请先在 EDIT MODEL 里配置支持输入。",
+        )?;
+        return Ok(());
+    }
+    let mut selected = choices
+        .iter()
+        .position(|choice| {
+            config.is_active_multimodal_provider_model(&choice.provider_id, &choice.model)
+        })
+        .unwrap_or(0);
+    loop {
+        let options = choices
+            .iter()
+            .map(|choice| {
+                let marker = if config
+                    .is_active_multimodal_provider_model(&choice.provider_id, &choice.model)
+                {
+                    "[*] "
+                } else {
+                    "[ ] "
+                };
+                format!("{marker}{}", choice.label())
+            })
+            .collect::<Vec<_>>();
+        draw_menu(
+            stdout,
+            " SELECT MULTIMODAL MODEL ",
+            &options,
+            selected,
+            "[Tab]激活/取消 [Enter/q]确认",
+        )?;
+        match read_key()? {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Tab => {
+                let choice = choices[selected].clone();
+                config
+                    .toggle_active_multimodal_provider_model(&choice.provider_id, &choice.model)?;
+            }
+            _ => {}
+        }
+    }
 }
 
 fn vision_provider_value(config: &AppConfig) -> String {
@@ -2237,6 +2418,7 @@ fn draw_column(
     title: &str,
     items: &[String],
     selected: usize,
+    scroll: usize,
     active: bool,
 ) -> Result<()> {
     let attr = if active {
@@ -2252,7 +2434,7 @@ fn draw_column(
         SetAttribute(Attribute::Reset)
     )?;
     let visible_rows = height.saturating_sub(2) as usize;
-    let start = selected.saturating_sub(visible_rows.saturating_sub(1));
+    let start = column_scroll(selected, scroll, visible_rows);
     for row in 0..visible_rows {
         let index = start + row;
         if index >= items.len() {
@@ -2272,6 +2454,25 @@ fn draw_column(
         }
     }
     Ok(())
+}
+
+fn column_visible_rows() -> usize {
+    terminal::size()
+        .map(|(_, rows)| rows.saturating_sub(4) as usize)
+        .unwrap_or(1)
+}
+
+fn column_scroll(selected: usize, scroll: usize, visible_rows: usize) -> usize {
+    if visible_rows == 0 {
+        return 0;
+    }
+    if selected < scroll {
+        selected
+    } else if selected >= scroll + visible_rows {
+        selected + 1 - visible_rows
+    } else {
+        scroll
+    }
 }
 
 fn draw_form(
@@ -2523,6 +2724,7 @@ struct Field {
     value: String,
     textarea: bool,
     boolean: bool,
+    modalities: bool,
     choices: Vec<String>,
     empty_choice_label: &'static str,
 }
@@ -2534,6 +2736,7 @@ impl Field {
             value,
             textarea: false,
             boolean: false,
+            modalities: false,
             choices: Vec::new(),
             empty_choice_label: "使用当前 Provider",
         }
@@ -2545,6 +2748,7 @@ impl Field {
             value: value.to_string(),
             textarea: false,
             boolean: true,
+            modalities: false,
             choices: Vec::new(),
             empty_choice_label: "使用当前 Provider",
         }
@@ -2556,6 +2760,7 @@ impl Field {
             value,
             textarea: true,
             boolean: false,
+            modalities: false,
             choices: Vec::new(),
             empty_choice_label: "使用当前 Provider",
         }
@@ -2564,6 +2769,18 @@ impl Field {
     fn choices(mut self, choices: &[&str]) -> Self {
         self.choices = choices.iter().map(|item| item.to_string()).collect();
         self
+    }
+
+    fn modalities(label: &'static str, value: String) -> Self {
+        Self {
+            label,
+            value,
+            textarea: false,
+            boolean: false,
+            modalities: true,
+            choices: Vec::new(),
+            empty_choice_label: "使用当前 Provider",
+        }
     }
 
     fn choices_owned(mut self, choices: Vec<String>) -> Self {

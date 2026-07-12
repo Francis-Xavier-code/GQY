@@ -177,6 +177,15 @@ fn print_mixed_model_endpoint(show: bool, result: &crate::llm::ChatResult) {
     println!("\x1b[2m{} / {}\x1b[0m\n", provider, model);
 }
 
+fn show_mixed_model_endpoint(config: &AppConfig, interactive: bool) -> bool {
+    config.active_provider_model_choices().len() > 1
+        && match config.display.mixed_model_endpoint_display.as_str() {
+            "off" => false,
+            "all" => true,
+            _ => interactive,
+        }
+}
+
 fn colored_footer_mode_label(mode: AgentMode) -> String {
     match mode {
         AgentMode::Normal => "\x1b[1m\x1b[34mNormal\x1b[0m".to_string(),
@@ -1135,7 +1144,7 @@ fn alarm_worker_paths(state_dir: PathBuf) -> MiyuPaths {
 
 fn run_providers(paths: &MiyuPaths, args: ProvidersArgs) -> Result<()> {
     let mut config = AppConfig::load(paths)?;
-    let choices = config.provider_model_choices();
+    let choices = config.text_provider_model_choices();
     if choices.is_empty() {
         bail!(
             "{}",
@@ -1744,8 +1753,7 @@ async fn run_chat_with_images(
     let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
     let show_token_usage = config.display.show_token_usage;
-    let show_mixed_model_endpoint = config.display.show_mixed_model_endpoint
-        && config.active_provider_model_choices().len() > 1;
+    let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
     let mut agent = Agent::new(
         config,
@@ -1865,8 +1873,7 @@ async fn run_chat_with_options(
     };
     let readable_tool_names = config.display.readable_tool_names;
     let show_token_usage = config.display.show_token_usage && !plain;
-    let show_mixed_model_endpoint = config.display.show_mixed_model_endpoint
-        && config.active_provider_model_choices().len() > 1;
+    let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
     let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
     let mut renderer =
@@ -2128,11 +2135,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 let context_window =
                     result_context_window(&config, &result).or(agent.context_window());
                 footer.update_token_usage(&result, state.token_total()?, context_window);
-                print_mixed_model_endpoint(
-                    config.display.show_mixed_model_endpoint
-                        && config.active_provider_model_choices().len() > 1,
-                    &result,
-                );
+                print_mixed_model_endpoint(show_mixed_model_endpoint(&config, true), &result);
                 if let Err(err) = handle_post_turn_overflow(
                     &agent,
                     &mut renderer,

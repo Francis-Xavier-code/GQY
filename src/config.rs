@@ -1,6 +1,6 @@
 use crate::default_models::{
-    OPENCODE_DEFAULT_CHAT_MODEL, OPENCODE_DEFAULT_CONTEXT_WINDOW, OPENCODE_PROVIDER_ID,
-    OPENCODE_ZEN_BASE_URL,
+    OPENCODE_DEFAULT_CHAT_MODEL, OPENCODE_DEFAULT_CONTEXT_WINDOW, OPENCODE_DEFAULT_VISION_MODEL,
+    OPENCODE_PROVIDER_ID, OPENCODE_ZEN_BASE_URL,
 };
 use crate::paths::MiyuPaths;
 use crate::prompts::default_system_prompt;
@@ -14,6 +14,8 @@ pub struct AppConfig {
     pub active_provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_provider_models: Option<Vec<ActiveProviderModelConfig>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_multimodal_provider_models: Option<Vec<ActiveProviderModelConfig>>,
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub context: ContextConfig,
@@ -51,8 +53,8 @@ pub struct DisplayConfig {
     pub readable_tool_names: bool,
     #[serde(default)]
     pub show_token_usage: bool,
-    #[serde(default = "default_true")]
-    pub show_mixed_model_endpoint: bool,
+    #[serde(default = "default_mixed_model_endpoint_display")]
+    pub mixed_model_endpoint_display: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +75,8 @@ struct RawDisplayConfig {
     show_token_usage: Option<bool>,
     #[serde(default)]
     show_mixed_model_endpoint: Option<bool>,
+    #[serde(default)]
+    mixed_model_endpoint_display: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for DisplayConfig {
@@ -100,7 +104,13 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             tool_calls,
             readable_tool_names: raw.readable_tool_names.unwrap_or_else(default_true),
             show_token_usage: raw.show_token_usage.unwrap_or(false),
-            show_mixed_model_endpoint: raw.show_mixed_model_endpoint.unwrap_or_else(default_true),
+            mixed_model_endpoint_display: raw.mixed_model_endpoint_display.unwrap_or_else(|| {
+                match raw.show_mixed_model_endpoint {
+                    Some(true) => "all".to_string(),
+                    Some(false) => "off".to_string(),
+                    None => default_mixed_model_endpoint_display(),
+                }
+            }),
         })
     }
 }
@@ -536,6 +546,7 @@ impl Default for AppConfig {
         Self {
             active_provider: OPENCODE_PROVIDER_ID.to_string(),
             active_provider_models: None,
+            active_multimodal_provider_models: None,
             providers: ProviderConfig::default_templates(),
             context: ContextConfig::default(),
             tools: ToolsConfig::default(),
@@ -569,7 +580,7 @@ impl Default for DisplayConfig {
             tool_calls: default_tool_call_display(),
             readable_tool_names: default_true(),
             show_token_usage: false,
-            show_mixed_model_endpoint: default_true(),
+            mixed_model_endpoint_display: default_mixed_model_endpoint_display(),
         }
     }
 }
@@ -882,23 +893,6 @@ impl ProviderConfig {
         }
     }
 
-    pub fn default_openai() -> Self {
-        Self {
-            id: "openai".to_string(),
-            display_name: "OpenAI-compatible".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            protocol: default_provider_protocol(),
-            api_key: Some("$env:OPENAI_API_KEY".to_string()),
-            models: vec!["gpt-4o-mini".to_string()],
-            model_context_window: HashMap::new(),
-            model_modalities: HashMap::new(),
-            default_model: "gpt-4o-mini".to_string(),
-            timeout_seconds: default_timeout(),
-            temperature: default_temperature(),
-            anthropic_max_tokens: default_anthropic_max_tokens(),
-        }
-    }
-
     pub fn default_anthropic() -> Self {
         Self {
             id: "anthropic".to_string(),
@@ -957,18 +951,33 @@ impl ProviderConfig {
         }
     }
 
-    pub fn new_openai_compatible() -> Self {
-        let mut provider = Self::default_openai();
-        provider.models.clear();
-        provider.default_model.clear();
-        provider
+    pub fn new_custom() -> Self {
+        Self {
+            id: String::new(),
+            display_name: String::new(),
+            base_url: String::new(),
+            protocol: default_provider_protocol(),
+            api_key: None,
+            models: Vec::new(),
+            model_context_window: HashMap::new(),
+            model_modalities: HashMap::new(),
+            default_model: String::new(),
+            timeout_seconds: default_timeout(),
+            temperature: default_temperature(),
+            anthropic_max_tokens: default_anthropic_max_tokens(),
+        }
     }
 
     pub fn supports_vision(&self, model: &str) -> Option<bool> {
+        self.input_modalities(model)
+            .map(|modalities| modalities.iter().any(|m| m == "image"))
+    }
+
+    pub fn input_modalities(&self, model: &str) -> Option<Vec<String>> {
         if let Some(modalities) = self.model_modalities.get(model) {
-            return Some(modalities.iter().any(|m| m == "image"));
+            return Some(modalities.clone());
         }
-        crate::models_cache::supports_vision(&self.id, model)
+        crate::models_cache::input_modalities(&self.id, model)
     }
 
     pub fn resolved_api_keys(&self, paths: &MiyuPaths) -> Result<Vec<ResolvedProviderKey>> {
@@ -1141,6 +1150,13 @@ impl AppConfig {
                 }
             }
         }
+        if let Some(active_models) = &mut self.active_multimodal_provider_models {
+            for active in active_models {
+                if active.provider_id == "opencodezen" {
+                    active.provider_id = OPENCODE_PROVIDER_ID.to_string();
+                }
+            }
+        }
         if self.plugins.vision.vision_provider_id == "opencodezen" {
             self.plugins.vision.vision_provider_id = OPENCODE_PROVIDER_ID.to_string();
         }
@@ -1150,6 +1166,16 @@ impl AppConfig {
             .unwrap_or(true)
         {
             self.active_provider = OPENCODE_PROVIDER_ID.to_string();
+        }
+        if self
+            .active_provider_models
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        {
+            self.active_provider_models = Some(vec![ActiveProviderModelConfig {
+                provider_id: OPENCODE_PROVIDER_ID.to_string(),
+                model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
+            }]);
         }
     }
 
@@ -1321,6 +1347,24 @@ impl AppConfig {
             .collect()
     }
 
+    pub fn text_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
+        self.providers
+            .iter()
+            .flat_map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .filter(|model| !model.trim().is_empty())
+                    .map(|model| ProviderModelChoice {
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.display_name.clone(),
+                        model: model.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     pub fn active_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
         match &self.active_provider_models {
             None => self
@@ -1348,6 +1392,115 @@ impl AppConfig {
                 })
                 .collect(),
         }
+    }
+
+    pub fn multimodal_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
+        self.text_provider_model_choices()
+            .into_iter()
+            .filter(|choice| {
+                self.model_supports_any_input(
+                    &choice.provider_id,
+                    &choice.model,
+                    &["image", "audio", "video", "pdf"],
+                )
+            })
+            .collect()
+    }
+
+    pub fn active_multimodal_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
+        match &self.active_multimodal_provider_models {
+            Some(active_models) => active_models
+                .iter()
+                .filter_map(|active| {
+                    let provider = self.provider(Some(active.provider_id.trim())).ok()?;
+                    let model = active.model.trim();
+                    (!model.is_empty()).then(|| ProviderModelChoice {
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.display_name.clone(),
+                        model: model.to_string(),
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    pub fn is_active_multimodal_provider_model(&self, provider_id: &str, model: &str) -> bool {
+        self.active_multimodal_provider_models
+            .as_ref()
+            .map(|active_models| {
+                active_models
+                    .iter()
+                    .any(|active| active.provider_id == provider_id && active.model == model)
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn toggle_active_multimodal_provider_model(
+        &mut self,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<bool> {
+        if model.trim().is_empty() {
+            bail!("model cannot be empty");
+        }
+        self.provider(Some(provider_id))?;
+        let active_models = self
+            .active_multimodal_provider_models
+            .get_or_insert_with(Vec::new);
+        if let Some(index) = active_models
+            .iter()
+            .position(|active| active.provider_id == provider_id && active.model == model)
+        {
+            active_models.remove(index);
+            return Ok(false);
+        }
+        active_models.push(ActiveProviderModelConfig {
+            provider_id: provider_id.to_string(),
+            model: model.to_string(),
+        });
+        Ok(true)
+    }
+
+    pub fn model_supports_any_input(
+        &self,
+        provider_id: &str,
+        model: &str,
+        inputs: &[&str],
+    ) -> bool {
+        self.provider(Some(provider_id))
+            .ok()
+            .and_then(|provider| provider.input_modalities(model))
+            .map(|modalities| {
+                modalities
+                    .iter()
+                    .any(|m| inputs.iter().any(|input| m == input))
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn vision_provider_choice(&self) -> Result<(String, String)> {
+        let vision = &self.plugins.vision;
+        if !vision.vision_provider_id.trim().is_empty() {
+            let provider_id = vision.vision_provider_id.trim().to_string();
+            let model = if vision.vision_model.trim().is_empty() {
+                self.provider(Some(&provider_id))?.default_model.clone()
+            } else {
+                vision.vision_model.trim().to_string()
+            };
+            return Ok((provider_id, model));
+        }
+        if let Some(choice) = self
+            .active_multimodal_provider_model_choices()
+            .into_iter()
+            .next()
+        {
+            return Ok((choice.provider_id, choice.model));
+        }
+        Ok((
+            OPENCODE_PROVIDER_ID.to_string(),
+            OPENCODE_DEFAULT_VISION_MODEL.to_string(),
+        ))
     }
 
     pub fn is_active_provider_model(&self, provider_id: &str, model: &str) -> bool {
@@ -1427,6 +1580,10 @@ impl AppConfig {
         provider.model_context_window.remove(model);
         provider.model_modalities.remove(model);
         if let Some(active_models) = &mut self.active_provider_models {
+            active_models
+                .retain(|active| !(active.provider_id == provider_id && active.model == model));
+        }
+        if let Some(active_models) = &mut self.active_multimodal_provider_models {
             active_models
                 .retain(|active| !(active.provider_id == provider_id && active.model == model));
         }
@@ -1620,7 +1777,10 @@ impl AppConfig {
     pub fn upsert_provider(&mut self, provider: ProviderConfig) {
         self.active_provider = provider.id.clone();
         self.active_provider_models = if provider.default_model.trim().is_empty() {
-            Some(Vec::new())
+            Some(vec![ActiveProviderModelConfig {
+                provider_id: OPENCODE_PROVIDER_ID.to_string(),
+                model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
+            }])
         } else {
             Some(vec![ActiveProviderModelConfig {
                 provider_id: provider.id.clone(),
@@ -1760,6 +1920,10 @@ fn default_reasoning_display() -> String {
 
 fn default_tool_call_display() -> String {
     "summary".to_string()
+}
+
+fn default_mixed_model_endpoint_display() -> String {
+    "interactive".to_string()
 }
 
 fn default_memory_association_facts() -> usize {
@@ -2032,9 +2196,70 @@ mod tests {
     }
 
     #[test]
-    fn new_openai_compatible_provider_has_no_active_model() {
-        let provider = ProviderConfig::new_openai_compatible();
+    fn empty_active_provider_models_normalizes_to_default_chat_model() {
+        let mut config = AppConfig::default();
+        config.active_provider_models = Some(Vec::new());
 
+        config.normalize_builtin_providers();
+
+        let choices = config.active_provider_model_choices();
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].provider_id, OPENCODE_PROVIDER_ID);
+        assert_eq!(choices[0].model, OPENCODE_DEFAULT_CHAT_MODEL);
+    }
+
+    #[test]
+    fn multimodal_provider_model_choices_use_input_modalities() {
+        let mut config = AppConfig::default();
+        let provider = &mut config.providers[0];
+        provider.models = vec!["text-only".to_string(), "vision-model".to_string()];
+        provider
+            .model_modalities
+            .insert("text-only".to_string(), vec!["text".to_string()]);
+        provider.model_modalities.insert(
+            "vision-model".to_string(),
+            vec!["text".to_string(), "image".to_string()],
+        );
+
+        let choices = config.multimodal_provider_model_choices();
+
+        assert!(choices.iter().any(|choice| choice.model == "vision-model"));
+        assert!(!choices.iter().any(|choice| choice.model == "text-only"));
+    }
+
+    #[test]
+    fn vision_provider_choice_prefers_multimodal_pool_then_default_mimo() {
+        let mut config = AppConfig::default();
+        config.providers[0].models.push("vision-model".to_string());
+        config.active_multimodal_provider_models = Some(vec![ActiveProviderModelConfig {
+            provider_id: OPENCODE_PROVIDER_ID.to_string(),
+            model: "vision-model".to_string(),
+        }]);
+
+        assert_eq!(
+            config.vision_provider_choice().unwrap(),
+            (OPENCODE_PROVIDER_ID.to_string(), "vision-model".to_string())
+        );
+
+        config.active_multimodal_provider_models = Some(Vec::new());
+        assert_eq!(
+            config.vision_provider_choice().unwrap(),
+            (
+                OPENCODE_PROVIDER_ID.to_string(),
+                OPENCODE_DEFAULT_VISION_MODEL.to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn new_custom_provider_has_no_openai_defaults() {
+        let provider = ProviderConfig::new_custom();
+
+        assert!(provider.id.is_empty());
+        assert!(provider.display_name.is_empty());
+        assert!(provider.base_url.is_empty());
+        assert_eq!(provider.protocol, "auto");
+        assert!(provider.api_key.is_none());
         assert!(provider.models.is_empty());
         assert!(provider.default_model.is_empty());
     }
@@ -2142,14 +2367,18 @@ mod tests {
         let display: DisplayConfig = serde_json::from_str(r#"{"tool_calls":"summary"}"#).unwrap();
         assert!(display.readable_tool_names);
         assert!(!display.show_token_usage);
-        assert!(display.show_mixed_model_endpoint);
+        assert_eq!(display.mixed_model_endpoint_display, "interactive");
 
         let display: DisplayConfig = serde_json::from_str(r#"{"show_token_usage":true}"#).unwrap();
         assert!(display.show_token_usage);
 
         let display: DisplayConfig =
             serde_json::from_str(r#"{"show_mixed_model_endpoint":false}"#).unwrap();
-        assert!(!display.show_mixed_model_endpoint);
+        assert_eq!(display.mixed_model_endpoint_display, "off");
+
+        let display: DisplayConfig =
+            serde_json::from_str(r#"{"show_mixed_model_endpoint":true}"#).unwrap();
+        assert_eq!(display.mixed_model_endpoint_display, "all");
     }
 
     #[test]

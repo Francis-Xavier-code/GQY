@@ -1,6 +1,5 @@
 use super::{vision, ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, ProviderConfig, VisionPluginConfig};
-use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
 use crate::i18n::text as t;
 use crate::llm::{ChatMessage, OpenAiCompatibleClient};
 use crate::paths::MiyuPaths;
@@ -962,21 +961,10 @@ fn vision_screening_available(config: &AppConfig) -> bool {
     config.plugins.web_images.vision_screening_enabled && config.plugins.vision.enabled
 }
 
-fn vision_provider(config: &AppConfig, vision: &VisionPluginConfig) -> Result<ProviderConfig> {
-    let provider_id = vision.vision_provider_id.trim();
-    let model = vision.vision_model.trim();
-    let mut provider = if !provider_id.is_empty() {
-        config.provider(Some(provider_id))?.clone()
-    } else {
-        config.provider(Some(OPENCODE_PROVIDER_ID))?.clone()
-    };
-    provider.default_model = if !model.is_empty() {
-        model.to_string()
-    } else if provider_id.is_empty() {
-        OPENCODE_DEFAULT_VISION_MODEL.to_string()
-    } else {
-        provider.default_model.clone()
-    };
+fn vision_provider(config: &AppConfig, _vision: &VisionPluginConfig) -> Result<ProviderConfig> {
+    let (provider_id, model) = config.vision_provider_choice()?;
+    let mut provider = config.provider(Some(&provider_id))?.clone();
+    provider.default_model = model;
     if provider.default_model.trim().is_empty() {
         bail!("vision provider has no active model")
     }

@@ -101,7 +101,7 @@ fn fetch_and_cache(path: &PathBuf) -> Result<HashMap<String, HashMap<String, Mod
         .build()?;
     let text = client
         .get(API_URL)
-        .header("User-Agent", "miyu")
+        .header("User-Agent", "Mozilla/5.0 Miyu/0.1")
         .send()?
         .text()?;
     if text.trim().is_empty() {
@@ -140,12 +140,50 @@ pub fn spawn_background_refresh(paths: crate::paths::MiyuPaths) {
     });
 }
 
-pub fn supports_vision(provider_id: &str, model_id: &str) -> Option<bool> {
+pub fn input_modalities(provider_id: &str, model_id: &str) -> Option<Vec<String>> {
     let lock = cache_lock().lock().unwrap();
     let cache = lock.as_ref()?;
-    let provider = cache.data.get(provider_id)?;
-    let info = provider.get(model_id)?;
-    Some(info.input_modalities.iter().any(|m| m == "image"))
+    lookup_input_modalities(&cache.data, provider_id, model_id)
+}
+
+pub fn input_modalities_blocking(
+    paths: &crate::paths::MiyuPaths,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<Vec<String>> {
+    if let Some(modalities) = input_modalities(provider_id, model_id) {
+        return Some(modalities);
+    }
+    refresh_blocking(paths).ok()?;
+    input_modalities(provider_id, model_id)
+}
+
+fn lookup_input_modalities(
+    data: &HashMap<String, HashMap<String, ModelInfo>>,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<Vec<String>> {
+    if let Some(info) = data
+        .get(provider_id)
+        .and_then(|provider| provider.get(model_id))
+        .filter(|info| !info.input_modalities.is_empty())
+    {
+        return Some(info.input_modalities.clone());
+    }
+
+    let mut matches = data
+        .values()
+        .filter_map(|provider| provider.get(model_id))
+        .filter(|info| !info.input_modalities.is_empty())
+        .map(|info| info.input_modalities.clone())
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
 }
 
 pub fn context_window(model_id: &str) -> Option<u64> {
