@@ -174,7 +174,7 @@ fn print_mixed_model_endpoint(show: bool, result: &crate::llm::ChatResult) {
     }
     let provider = result.provider_id.as_deref().unwrap_or("-");
     let model = result.model.as_deref().unwrap_or("-");
-    println!("\x1b[2m{} / {}\x1b[0m", provider, model);
+    println!("\x1b[2m{} / {}\x1b[0m\n", provider, model);
 }
 
 fn colored_footer_mode_label(mode: AgentMode) -> String {
@@ -1211,6 +1211,7 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
     let matcher = SkimMatcherV2::default();
     let mut query = String::new();
     let mut selected = 0usize;
+    let mut scroll = 0usize;
     let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
     let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
     loop {
@@ -1218,6 +1219,8 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
         if selected >= matches.len() {
             selected = matches.len().saturating_sub(1);
         }
+        let visible = matches.len().min(menu_lines.saturating_sub(2) as usize);
+        scroll = inline_fuzzy_scroll(selected, scroll, visible);
         draw_inline_fuzzy(
             &mut session.stdout,
             anchor_y,
@@ -1226,6 +1229,7 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
             items,
             &matches,
             selected,
+            scroll,
             &active,
         )?;
         if let Event::Key(KeyEvent {
@@ -1266,10 +1270,12 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
                 KeyCode::Backspace => {
                     query.pop();
                     selected = 0;
+                    scroll = 0;
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
                     query.push(ch);
                     selected = 0;
+                    scroll = 0;
                 }
                 _ => {}
             }
@@ -1303,19 +1309,13 @@ fn draw_inline_fuzzy(
     items: &[String],
     matches: &[(i64, usize)],
     selected: usize,
+    scroll: usize,
     active: &[bool],
 ) -> Result<()> {
     let (cols, _) = terminal::size().unwrap_or((80, 24));
     let bar = inline_fuzzy_bar();
     let width = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
     let visible = matches.len().min(menu_lines.saturating_sub(2) as usize);
-    let scroll = if visible == 0 {
-        0
-    } else if selected >= visible {
-        selected + 1 - visible
-    } else {
-        0
-    };
     queue!(stdout, Hide)?;
     for row in 0..menu_lines {
         queue!(
@@ -1360,6 +1360,16 @@ fn draw_inline_fuzzy(
     )?;
     stdout.flush()?;
     Ok(())
+}
+
+fn inline_fuzzy_scroll(selected: usize, scroll: usize, visible: usize) -> usize {
+    if visible == 0 || selected < scroll {
+        selected
+    } else if selected >= scroll + visible {
+        selected + 1 - visible
+    } else {
+        scroll
+    }
 }
 
 fn inline_fuzzy_bar() -> String {
@@ -1736,6 +1746,7 @@ async fn run_chat_with_images(
     let show_token_usage = config.display.show_token_usage;
     let show_mixed_model_endpoint = config.display.show_mixed_model_endpoint
         && config.active_provider_model_choices().len() > 1;
+    let display_config = config.clone();
     let mut agent = Agent::new(
         config,
         paths,
@@ -1759,7 +1770,7 @@ async fn run_chat_with_images(
         &result,
         show_token_usage,
         state.token_total()?,
-        agent.context_window(),
+        result_context_window(&display_config, &result).or(agent.context_window()),
     )?;
     handle_post_turn_overflow(&agent, &mut renderer, &result, show_token_usage, &state).await?;
     Ok(())
@@ -1856,6 +1867,7 @@ async fn run_chat_with_options(
     let show_token_usage = config.display.show_token_usage && !plain;
     let show_mixed_model_endpoint = config.display.show_mixed_model_endpoint
         && config.active_provider_model_choices().len() > 1;
+    let display_config = config.clone();
     let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain, readable_tool_names);
@@ -1870,7 +1882,7 @@ async fn run_chat_with_options(
         &result,
         show_token_usage,
         state.token_total()?,
-        agent.context_window(),
+        result_context_window(&display_config, &result).or(agent.context_window()),
     )?;
     handle_post_turn_overflow(&agent, &mut renderer, &result, show_token_usage, &state).await?;
     Ok(())
@@ -1894,6 +1906,15 @@ fn print_chat_token_usage(
         }
     }
     Ok(())
+}
+
+fn result_context_window(config: &AppConfig, result: &crate::llm::ChatResult) -> Option<usize> {
+    let provider = result.provider_id.as_deref()?;
+    let model = result.model.as_deref()?;
+    config
+        .context_window_for_provider_model(provider, model)
+        .ok()
+        .flatten()
 }
 
 async fn handle_post_turn_overflow(
@@ -2104,7 +2125,9 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         renderer.finish()?;
         match chat_result {
             Ok(Some(result)) => {
-                footer.update_token_usage(&result, state.token_total()?, agent.context_window());
+                let context_window =
+                    result_context_window(&config, &result).or(agent.context_window());
+                footer.update_token_usage(&result, state.token_total()?, context_window);
                 print_mixed_model_endpoint(
                     config.display.show_mixed_model_endpoint
                         && config.active_provider_model_choices().len() > 1,

@@ -1443,29 +1443,35 @@ impl AppConfig {
         }
         let mut windows = Vec::new();
         for choice in choices {
-            let provider = self.provider(Some(&choice.provider_id))?;
-            let model = &choice.model;
-            if let Some(window) = provider
-                .model_context_window
-                .get(model)
-                .copied()
-                .filter(|&w| w > 0)
-            {
-                windows.push(window);
-                continue;
-            }
-            if provider.id == OPENCODE_PROVIDER_ID && model == OPENCODE_DEFAULT_CHAT_MODEL {
-                windows.push(OPENCODE_DEFAULT_CONTEXT_WINDOW);
-                continue;
-            }
-            if let Some(window) = crate::models_cache::context_window(model)
-                .map(|w| w as usize)
-                .or_else(|| default_context_window_for_provider_model(provider, model))
+            if let Some(window) =
+                self.context_window_for_provider_model(&choice.provider_id, &choice.model)?
             {
                 windows.push(window);
             }
         }
         Ok(windows.into_iter().min())
+    }
+
+    pub fn context_window_for_provider_model(
+        &self,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<Option<usize>> {
+        let provider = self.provider(Some(provider_id))?;
+        if let Some(window) = provider
+            .model_context_window
+            .get(model)
+            .copied()
+            .filter(|&w| w > 0)
+        {
+            return Ok(Some(window));
+        }
+        if provider.id == OPENCODE_PROVIDER_ID && model == OPENCODE_DEFAULT_CHAT_MODEL {
+            return Ok(Some(OPENCODE_DEFAULT_CONTEXT_WINDOW));
+        }
+        Ok(crate::models_cache::context_window(model)
+            .map(|w| w as usize)
+            .or_else(|| default_context_window_for_provider_model(provider, model)))
     }
 
     pub fn system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
