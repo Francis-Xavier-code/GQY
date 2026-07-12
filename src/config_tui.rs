@@ -1712,6 +1712,8 @@ fn edit_provider_form(
             "openai-chat",
             "openai-responses",
             "anthropic",
+            "anthropic-messages",
+            "claude-messages",
         ]),
         Field::new(
             "API Key 或 $env:NAME",
@@ -1754,7 +1756,7 @@ fn edit_provider_form(
         default_model,
         timeout_seconds: fields[7].value.trim().parse().unwrap_or(60),
         temperature: fields[8].value.trim().parse().unwrap_or(0.7),
-        anthropic_max_tokens: 4096,
+        anthropic_max_tokens: provider.anthropic_max_tokens,
     }))
 }
 

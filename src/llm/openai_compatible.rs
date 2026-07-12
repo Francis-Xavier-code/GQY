@@ -34,11 +34,13 @@ enum ProviderProtocol {
 
 impl ProviderProtocol {
     fn from_provider(provider: &ProviderConfig) -> Result<Self> {
-        match provider.protocol.trim() {
+        match provider.protocol.trim().to_ascii_lowercase().as_str() {
             "" | "auto" => Ok(Self::Auto),
             "openai-chat" => Ok(Self::OpenAiChat),
             "openai-responses" => Ok(Self::OpenAiResponses),
-            "anthropic" => Ok(Self::Anthropic),
+            "anthropic" | "anthropic-messages" | "claude" | "claude-messages" => {
+                Ok(Self::Anthropic)
+            }
             protocol => bail!("unsupported provider protocol: {protocol}"),
         }
     }
@@ -89,7 +91,9 @@ impl OpenAiCompatibleClient {
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
         let protocol = ProviderProtocol::from_provider(&self.provider)?;
-        if protocol == ProviderProtocol::Anthropic {
+        if protocol == ProviderProtocol::Anthropic
+            || (protocol == ProviderProtocol::Auto && self.uses_anthropic_messages())
+        {
             return self
                 .chat_anthropic_stream(messages, tools, &mut on_chunk)
                 .await;
@@ -129,8 +133,9 @@ impl OpenAiCompatibleClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            let hint = claude_protocol_hint(&self.provider);
             bail!(
-                "{} ({status}): {body}",
+                "{} ({status}): {body}{hint}",
                 t("chat completions stream request failed", "聊天流式请求失败",)
             );
         }
@@ -352,6 +357,47 @@ impl OpenAiCompatibleClient {
             || model.starts_with("o3")
             || model.starts_with("o4")
     }
+
+    fn uses_anthropic_messages(&self) -> bool {
+        provider_looks_anthropic(&self.provider)
+    }
+}
+
+fn provider_looks_anthropic(provider: &ProviderConfig) -> bool {
+    let id = provider.id.to_ascii_lowercase();
+    let display_name = provider.display_name.to_ascii_lowercase();
+    let base_url = provider.base_url.to_ascii_lowercase();
+    id == "anthropic"
+        || id == "claude"
+        || id.contains("anthropic")
+        || display_name.contains("anthropic")
+        || base_url.contains("api.anthropic.com")
+        || base_url.contains("anthropic.com/v1")
+}
+
+fn provider_looks_claude_related(provider: &ProviderConfig) -> bool {
+    let id = provider.id.to_ascii_lowercase();
+    let display_name = provider.display_name.to_ascii_lowercase();
+    let base_url = provider.base_url.to_ascii_lowercase();
+    let model = provider.default_model.to_ascii_lowercase();
+    provider_looks_anthropic(provider)
+        || id.contains("claude")
+        || display_name.contains("claude")
+        || model.starts_with("claude")
+        || base_url.contains("claude")
+}
+
+fn claude_protocol_hint(provider: &ProviderConfig) -> &'static str {
+    let protocol = provider.protocol.trim();
+    if (protocol.is_empty()
+        || protocol.eq_ignore_ascii_case("auto")
+        || protocol.eq_ignore_ascii_case("openai-chat"))
+        && provider_looks_claude_related(provider)
+        && !provider_looks_anthropic(provider)
+    {
+        return "\nHint: if this provider is the official Anthropic Claude API, set provider protocol to anthropic and base_url to https://api.anthropic.com/v1. If it is an OpenAI-compatible Claude proxy, keep openai-chat/auto.";
+    }
+    ""
 }
 
 fn responses_unsupported(status: u16, body: &str) -> bool {
@@ -445,11 +491,12 @@ enum AnthropicContentBlock {
 }
 
 #[derive(Debug, Serialize)]
-struct AnthropicImageSource {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    media_type: String,
-    data: String,
+#[serde(tag = "type")]
+enum AnthropicImageSource {
+    #[serde(rename = "base64")]
+    Base64 { media_type: String, data: String },
+    #[serde(rename = "url")]
+    Url { url: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -630,11 +677,17 @@ fn lower_anthropic_user_content(content: Option<super::ChatContent>) -> Vec<Anth
 }
 
 fn lower_anthropic_image_url(url: &str) -> Option<AnthropicContentBlock> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Some(AnthropicContentBlock::Image {
+            source: AnthropicImageSource::Url {
+                url: url.to_string(),
+            },
+        });
+    }
     let data = url.strip_prefix("data:")?;
     let (media_type, base64) = data.split_once(";base64,")?;
     Some(AnthropicContentBlock::Image {
-        source: AnthropicImageSource {
-            kind: "base64",
+        source: AnthropicImageSource::Base64 {
             media_type: media_type.to_string(),
             data: base64.to_string(),
         },
@@ -1583,6 +1636,9 @@ where
                 state.usage = Some(map_anthropic_usage(usage));
             }
             flush_anthropic_state(state, on_chunk)?;
+        }
+        "message_stop" => {
+            flush_anthropic_state(state, on_chunk)?;
             return Ok(true);
         }
         "error" => {
@@ -1975,6 +2031,7 @@ fn clean_plain_text(mut text: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{ChatContent, ChatContentPart, ImageUrlContent};
 
     #[test]
     fn stream_chunk_accepts_null_tool_calls() {
@@ -2094,6 +2151,31 @@ mod tests {
         };
 
         assert!(client.uses_openai_responses());
+    }
+
+    #[test]
+    fn auto_protocol_uses_anthropic_for_official_provider() {
+        let provider = test_provider("anthropic", "https://api.anthropic.com/v1");
+        let client = OpenAiCompatibleClient {
+            client: reqwest::Client::new(),
+            provider,
+            api_key: "test".to_string(),
+        };
+
+        assert!(client.uses_anthropic_messages());
+    }
+
+    #[test]
+    fn auto_protocol_keeps_openai_compatible_claude_proxy() {
+        let mut provider = test_provider("openrouter", "https://openrouter.ai/api/v1");
+        provider.default_model = "anthropic/claude-sonnet-4-5".to_string();
+        let client = OpenAiCompatibleClient {
+            client: reqwest::Client::new(),
+            provider,
+            api_key: "test".to_string(),
+        };
+
+        assert!(!client.uses_anthropic_messages());
     }
 
     #[test]
@@ -2321,6 +2403,69 @@ mod tests {
     }
 
     #[test]
+    fn protocol_config_accepts_anthropic_aliases() {
+        let mut provider = test_provider("anthropic", "https://api.anthropic.com/v1");
+
+        for protocol in ["anthropic-messages", "claude", "claude-messages"] {
+            provider.protocol = protocol.to_string();
+            assert_eq!(
+                ProviderProtocol::from_provider(&provider).unwrap(),
+                ProviderProtocol::Anthropic
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_lowering_keeps_remote_image_urls() {
+        let content = lower_anthropic_user_content(Some(ChatContent::Parts(vec![
+            ChatContentPart::ImageUrl {
+                image_url: ImageUrlContent {
+                    url: "https://example.com/image.png".to_string(),
+                },
+            },
+            ChatContentPart::Text {
+                text: "describe".to_string(),
+            },
+        ])));
+        let json = serde_json::to_value(content).unwrap();
+
+        assert_eq!(json[0]["type"], "image");
+        assert_eq!(json[0]["source"]["type"], "url");
+        assert_eq!(json[0]["source"]["url"], "https://example.com/image.png");
+        assert_eq!(json[1]["text"], "describe");
+    }
+
+    #[test]
+    fn anthropic_stream_waits_for_message_stop() {
+        let mut state = AnthropicStreamState::default();
+        let mut on_chunk = |_| Ok(());
+
+        let done = handle_anthropic_sse_data(
+            r#"{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":2},"delta":{"stop_reason":"end_turn"}}"#,
+            &mut state,
+            &mut on_chunk,
+        )
+        .unwrap();
+        assert!(!done);
+
+        let done =
+            handle_anthropic_sse_data(r#"{"type":"message_stop"}"#, &mut state, &mut on_chunk)
+                .unwrap();
+        assert!(done);
+    }
+
+    #[test]
+    fn official_anthropic_template_sets_messages_protocol() {
+        let provider = ProviderConfig::default_anthropic();
+
+        assert_eq!(provider.id, "anthropic");
+        assert_eq!(provider.protocol, "anthropic");
+        assert_eq!(provider.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(provider.api_key.as_deref(), Some("$env:ANTHROPIC_API_KEY"));
+        assert!(provider.default_model.starts_with("claude-"));
+    }
+
+    #[test]
     fn anthropic_stream_emits_reasoning_content_and_usage() {
         let mut state = AnthropicStreamState::default();
         let mut chunks = Vec::new();
@@ -2334,9 +2479,10 @@ mod tests {
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"想"}}"#,
             r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"答"}}"#,
             r#"{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":2},"delta":{"stop_reason":"end_turn"}}"#,
+            r#"{"type":"message_stop"}"#,
         ] {
             let done = handle_anthropic_sse_data(data, &mut state, &mut on_chunk).unwrap();
-            if data.contains("message_delta") {
+            if data.contains("message_stop") {
                 assert!(done);
             }
         }

@@ -878,10 +878,28 @@ impl ProviderConfig {
         }
     }
 
+    pub fn default_anthropic() -> Self {
+        Self {
+            id: "anthropic".to_string(),
+            display_name: "Anthropic".to_string(),
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            protocol: "anthropic".to_string(),
+            api_key: Some("$env:ANTHROPIC_API_KEY".to_string()),
+            models: vec!["claude-sonnet-4-5".to_string()],
+            model_context_window: HashMap::new(),
+            model_modalities: HashMap::new(),
+            default_model: "claude-sonnet-4-5".to_string(),
+            timeout_seconds: default_timeout(),
+            temperature: default_temperature(),
+            anthropic_max_tokens: default_anthropic_max_tokens(),
+        }
+    }
+
     pub fn default_templates() -> Vec<Self> {
         let mut providers = vec![Self::default_opencodezen()];
         providers.extend([
             Self::template("openai", "OpenAI", "https://api.openai.com/v1"),
+            Self::default_anthropic(),
             Self::template("deepseek", "DeepSeek", "https://api.deepseek.com"),
             Self::template(
                 "gemini",
@@ -1800,9 +1818,14 @@ mod tests {
     #[test]
     fn provider_model_choices_ignore_unconfigured_models() {
         let mut config = AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
         config.providers[0].models.clear();
         config.providers[0].default_model.clear();
-        assert!(config.provider_model_choices().is_empty());
+
+        assert!(!config
+            .provider_model_choices()
+            .iter()
+            .any(|choice| choice.provider_id == provider_id));
     }
 
     #[test]
@@ -1853,7 +1876,10 @@ mod tests {
 
         assert!(config.providers[0].models.is_empty());
         assert!(config.providers[0].default_model.is_empty());
-        assert!(config.provider_model_choices().is_empty());
+        assert!(!config
+            .provider_model_choices()
+            .iter()
+            .any(|choice| choice.provider_id == provider_id));
     }
 
     #[test]
