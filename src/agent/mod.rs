@@ -1024,7 +1024,9 @@ fn estimate_result_tokens(result: &ChatResult) -> usize {
     }
     for call in &result.tool_calls {
         tokens = tokens.saturating_add(crate::token_estimate::estimate_tokens(&call.function.name));
-        tokens = tokens.saturating_add(crate::token_estimate::estimate_tokens(&call.function.arguments));
+        tokens = tokens.saturating_add(crate::token_estimate::estimate_tokens(
+            &call.function.arguments,
+        ));
     }
     tokens.max(1)
 }
