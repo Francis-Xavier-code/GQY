@@ -17,6 +17,7 @@ pub mod knowledge_base;
 mod linux_game;
 mod load_tools;
 mod man;
+mod mcp;
 pub(crate) mod memes;
 mod memory;
 mod moegirl;
@@ -270,6 +271,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     scripts::register(&mut registry, paths);
+    if config.mcp.enabled {
+        mcp::register(&mut registry, config.clone());
+    }
     if is_hybrid_loading_mode(&config.tools.loading_mode) {
         load_tools::register(&mut registry);
     }
@@ -321,6 +325,9 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     }
     if is_hybrid_loading_mode(&config.tools.loading_mode) {
         load_tools::register(&mut registry);
+    }
+    if config.mcp.enabled {
+        mcp::register(&mut registry, config.clone());
     }
     registry
 }

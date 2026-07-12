@@ -22,6 +22,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub tools: ToolsConfig,
     #[serde(default)]
+    pub mcp: McpConfig,
+    #[serde(default)]
     pub skills: SkillsConfig,
     #[serde(default)]
     pub display: DisplayConfig,
@@ -209,6 +211,30 @@ pub struct ToolsConfig {
     pub loading_mode: String,
     #[serde(default = "default_true")]
     pub persist_loaded_tools: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,6 +576,7 @@ impl Default for AppConfig {
             providers: ProviderConfig::default_templates(),
             context: ContextConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: McpConfig::default(),
             skills: SkillsConfig::default(),
             display: DisplayConfig::default(),
             prompt: PromptConfig::default(),
@@ -609,6 +636,15 @@ impl Default for PluginsConfig {
             deep_research_linux_game_compatibility: LinuxGameCompatibilityConfig::default(),
             diagnostics: DiagnosticsPluginConfig::default(),
             memory: MemoryConfig::default(),
+        }
+    }
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            servers: Vec::new(),
         }
     }
 }
@@ -1811,6 +1847,10 @@ impl SecretsConfig {
 
 fn default_timeout() -> u64 {
     60
+}
+
+fn default_mcp_timeout() -> u64 {
+    30
 }
 
 fn default_prompts_dir() -> String {
