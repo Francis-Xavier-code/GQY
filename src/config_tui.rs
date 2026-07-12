@@ -1647,26 +1647,27 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
     }
     let mut selected = choices
         .iter()
-        .position(|choice| {
-            config
-                .provider(None)
-                .map(|provider| {
-                    provider.id == choice.provider_id && provider.default_model == choice.model
-                })
-                .unwrap_or(false)
-        })
+        .position(|choice| config.is_active_provider_model(&choice.provider_id, &choice.model))
         .unwrap_or(0);
     loop {
         let options = choices
             .iter()
-            .map(|choice| choice.label())
+            .map(|choice| {
+                let marker = if config.is_active_provider_model(&choice.provider_id, &choice.model)
+                {
+                    "[active] "
+                } else {
+                    ""
+                };
+                format!("{marker}{}", choice.label())
+            })
             .collect::<Vec<_>>();
         draw_menu(
             stdout,
             " SELECT PROVIDER/MODEL ",
             &options,
             selected,
-            "[Enter]选择 [d]移除 [q]返回",
+            "[Enter]设为唯一当前 [Tab]激活/取消 [d]移除 [q]返回",
         )?;
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
@@ -1678,6 +1679,10 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
                     &choices[selected].model,
                 )?;
                 return Ok(());
+            }
+            KeyCode::Tab => {
+                let choice = choices[selected].clone();
+                config.toggle_active_provider_model(&choice.provider_id, &choice.model)?;
             }
             KeyCode::Char('d') => {
                 let choice = choices[selected].clone();

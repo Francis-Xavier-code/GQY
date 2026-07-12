@@ -12,6 +12,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub active_provider: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_provider_models: Vec<ActiveProviderModelConfig>,
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub context: ContextConfig,
@@ -31,6 +33,12 @@ pub struct AppConfig {
     pub system_prompt_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveProviderModelConfig {
+    pub provider_id: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,6 +135,12 @@ pub struct ProviderConfig {
         skip_serializing_if = "is_default_anthropic_max_tokens"
     )]
     pub anthropic_max_tokens: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedProviderKey {
+    pub index: usize,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -516,6 +530,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             active_provider: OPENCODE_PROVIDER_ID.to_string(),
+            active_provider_models: Vec::new(),
             providers: ProviderConfig::default_templates(),
             context: ContextConfig::default(),
             tools: ToolsConfig::default(),
@@ -950,15 +965,10 @@ impl ProviderConfig {
         crate::models_cache::supports_vision(&self.id, model)
     }
 
-    pub fn resolved_api_key(&self, paths: &MiyuPaths) -> Result<String> {
+    pub fn resolved_api_keys(&self, paths: &MiyuPaths) -> Result<Vec<ResolvedProviderKey>> {
+        let mut keys = Vec::new();
         if let Some(api_key) = self.api_key.as_deref() {
-            if let Some(env_name) = api_key.strip_prefix("$env:") {
-                return std::env::var(env_name)
-                    .with_context(|| format!("environment variable {env_name} is not set"));
-            }
-            if !api_key.is_empty() {
-                return Ok(api_key.to_string());
-            }
+            append_resolved_api_keys(&mut keys, api_key)?;
         }
 
         let secrets = SecretsConfig::load(paths)?;
@@ -968,20 +978,56 @@ impl ProviderConfig {
             .cloned()
             .filter(|value| !value.trim().is_empty())
         {
-            return Ok(api_key);
+            append_resolved_api_keys(&mut keys, &api_key)?;
         }
 
-        if self.is_opencode_zen() {
-            return Ok("public".to_string());
+        if keys.is_empty() && self.is_opencode_zen() {
+            keys.push(ResolvedProviderKey {
+                index: 0,
+                value: "public".to_string(),
+            });
         }
 
-        bail!("missing API key for provider {}", self.id)
+        if keys.is_empty() {
+            bail!("missing API key for provider {}", self.id)
+        }
+        for (index, key) in keys.iter_mut().enumerate() {
+            key.index = index;
+        }
+        Ok(keys)
     }
 
     pub fn is_opencode_zen(&self) -> bool {
         matches!(self.id.as_str(), OPENCODE_PROVIDER_ID | "opencodezen")
             && self.base_url.trim_end_matches('/') == OPENCODE_ZEN_BASE_URL
     }
+}
+
+fn append_resolved_api_keys(out: &mut Vec<ResolvedProviderKey>, raw: &str) -> Result<()> {
+    for item in split_api_keys(raw) {
+        let value = if let Some(env_name) = item.strip_prefix("$env:") {
+            std::env::var(env_name)
+                .with_context(|| format!("environment variable {env_name} is not set"))?
+        } else {
+            item.to_string()
+        };
+        let value = value.trim();
+        if !value.is_empty() {
+            out.push(ResolvedProviderKey {
+                index: out.len(),
+                value: value.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn split_api_keys(raw: &str) -> Vec<&str> {
+    raw.lines()
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 impl AppConfig {
@@ -1066,6 +1112,11 @@ impl AppConfig {
         }
         if self.active_provider == "opencodezen" {
             self.active_provider = OPENCODE_PROVIDER_ID.to_string();
+        }
+        for active in &mut self.active_provider_models {
+            if active.provider_id == "opencodezen" {
+                active.provider_id = OPENCODE_PROVIDER_ID.to_string();
+            }
         }
         if self.plugins.vision.vision_provider_id == "opencodezen" {
             self.plugins.vision.vision_provider_id = OPENCODE_PROVIDER_ID.to_string();
@@ -1247,6 +1298,77 @@ impl AppConfig {
             .collect()
     }
 
+    pub fn active_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
+        if self.active_provider_models.is_empty() {
+            return self
+                .provider(None)
+                .ok()
+                .filter(|provider| !provider.default_model.trim().is_empty())
+                .map(|provider| {
+                    vec![ProviderModelChoice {
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.display_name.clone(),
+                        model: provider.default_model.clone(),
+                    }]
+                })
+                .unwrap_or_default();
+        }
+        self.active_provider_models
+            .iter()
+            .filter_map(|active| {
+                let provider = self.provider(Some(active.provider_id.trim())).ok()?;
+                let model = active.model.trim();
+                (!model.is_empty()).then(|| ProviderModelChoice {
+                    provider_id: provider.id.clone(),
+                    provider_name: provider.display_name.clone(),
+                    model: model.to_string(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn is_active_provider_model(&self, provider_id: &str, model: &str) -> bool {
+        if self.active_provider_models.is_empty() {
+            return self
+                .provider(None)
+                .map(|provider| provider.id == provider_id && provider.default_model == model)
+                .unwrap_or(false);
+        }
+        self.active_provider_models
+            .iter()
+            .any(|active| active.provider_id == provider_id && active.model == model)
+    }
+
+    pub fn toggle_active_provider_model(&mut self, provider_id: &str, model: &str) -> Result<bool> {
+        if model.trim().is_empty() {
+            bail!("model cannot be empty");
+        }
+        self.provider(Some(provider_id))?;
+        if self.active_provider_models.is_empty() {
+            if let Ok(provider) = self.provider(None) {
+                if !provider.default_model.trim().is_empty() {
+                    self.active_provider_models.push(ActiveProviderModelConfig {
+                        provider_id: provider.id.clone(),
+                        model: provider.default_model.clone(),
+                    });
+                }
+            }
+        }
+        if let Some(index) = self
+            .active_provider_models
+            .iter()
+            .position(|active| active.provider_id == provider_id && active.model == model)
+        {
+            self.active_provider_models.remove(index);
+            return Ok(false);
+        }
+        self.active_provider_models.push(ActiveProviderModelConfig {
+            provider_id: provider_id.to_string(),
+            model: model.to_string(),
+        });
+        Ok(true)
+    }
+
     pub fn set_active_provider_model(&mut self, provider_id: &str, model: &str) -> Result<()> {
         let provider = self
             .providers
@@ -1258,6 +1380,10 @@ impl AppConfig {
         }
         self.active_provider = provider.id.clone();
         provider.default_model = model.to_string();
+        self.active_provider_models = vec![ActiveProviderModelConfig {
+            provider_id: provider.id.clone(),
+            model: model.to_string(),
+        }];
         if !provider.models.iter().any(|item| item == model) {
             provider.models.push(model.to_string());
         }
@@ -1276,6 +1402,8 @@ impl AppConfig {
         provider.models.retain(|item| item != model);
         provider.model_context_window.remove(model);
         provider.model_modalities.remove(model);
+        self.active_provider_models
+            .retain(|active| !(active.provider_id == provider_id && active.model == model));
         if provider.default_model == model {
             provider.default_model = provider.models.first().cloned().unwrap_or_default();
         }
@@ -1446,6 +1574,14 @@ impl AppConfig {
 
     pub fn upsert_provider(&mut self, provider: ProviderConfig) {
         self.active_provider = provider.id.clone();
+        self.active_provider_models = if provider.default_model.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![ActiveProviderModelConfig {
+                provider_id: provider.id.clone(),
+                model: provider.default_model.clone(),
+            }]
+        };
         match self
             .providers
             .iter()

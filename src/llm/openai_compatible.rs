@@ -10,10 +10,14 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LLM_SCHEDULER: LazyLock<Mutex<LlmScheduler>> =
+    LazyLock::new(|| Mutex::new(LlmScheduler::default()));
 
 fn gen_tool_call_id() -> String {
     let ts = SystemTime::now()
@@ -51,12 +55,188 @@ pub struct OpenAiCompatibleClient {
     client: Client,
     provider: ProviderConfig,
     api_key: String,
+    key_index: usize,
+    endpoints: Arc<Vec<LlmEndpoint>>,
+}
+
+#[derive(Clone)]
+struct LlmEndpoint {
+    provider: ProviderConfig,
+    api_key: String,
+    key_index: usize,
+}
+
+impl LlmEndpoint {
+    fn id(&self) -> String {
+        endpoint_id(
+            &self.provider.id,
+            &self.provider.default_model,
+            self.key_index,
+        )
+    }
+}
+
+#[derive(Default)]
+struct LlmScheduler {
+    cursor: usize,
+    cooldowns: HashMap<String, Instant>,
+}
+
+impl LlmScheduler {
+    fn ordered_indices(&mut self, endpoints: &[LlmEndpoint]) -> Vec<usize> {
+        let available = endpoints
+            .iter()
+            .enumerate()
+            .filter_map(|(index, endpoint)| self.is_ready(&endpoint.id()).then_some(index))
+            .collect::<Vec<_>>();
+        if available.is_empty() {
+            return Vec::new();
+        }
+        let start = self.cursor % available.len();
+        self.cursor = self.cursor.wrapping_add(1);
+        rotate_from(available, start)
+    }
+
+    fn is_ready(&mut self, id: &str) -> bool {
+        match self.cooldowns.get(id).copied() {
+            Some(until) if until > Instant::now() => false,
+            Some(_) => {
+                self.cooldowns.remove(id);
+                true
+            }
+            None => true,
+        }
+    }
+
+    fn mark_success(&mut self, id: &str) {
+        self.cooldowns.remove(id);
+    }
+
+    fn mark_failure(&mut self, id: String, duration: Duration) {
+        self.cooldowns.insert(id, Instant::now() + duration);
+    }
+}
+
+fn rotate_from<T>(mut items: Vec<T>, start: usize) -> Vec<T> {
+    items.rotate_left(start);
+    items
+}
+
+fn endpoint_id(provider_id: &str, model: &str, key_index: usize) -> String {
+    format!("{provider_id}\t{model}\t{key_index}")
+}
+
+fn ordered_endpoint_indices(endpoints: &[LlmEndpoint]) -> Vec<usize> {
+    LLM_SCHEDULER
+        .lock()
+        .map(|mut scheduler| scheduler.ordered_indices(endpoints))
+        .unwrap_or_else(|_| (0..endpoints.len()).collect())
+}
+
+fn mark_endpoint_success(endpoint: &LlmEndpoint) {
+    if let Ok(mut scheduler) = LLM_SCHEDULER.lock() {
+        scheduler.mark_success(&endpoint.id());
+    }
+}
+
+fn mark_endpoint_failure(endpoint: &LlmEndpoint, error: &str) {
+    let Some(duration) = cooldown_for_error(error) else {
+        return;
+    };
+    if let Ok(mut scheduler) = LLM_SCHEDULER.lock() {
+        scheduler.mark_failure(endpoint.id(), duration);
+    }
+}
+
+fn cooldown_for_status(status: u16) -> Option<Duration> {
+    match status {
+        401 | 403 | 429 => Some(Duration::from_secs(600)),
+        408 | 500..=599 => Some(Duration::from_secs(120)),
+        _ => None,
+    }
+}
+
+fn cooldown_for_error(error: &str) -> Option<Duration> {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("ratelimit")
+        || lower.contains("quota")
+    {
+        return Some(Duration::from_secs(600));
+    }
+    if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("invalid api key")
+    {
+        return Some(Duration::from_secs(600));
+    }
+    if lower.contains("408")
+        || lower.contains("500")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("504")
+        || lower.contains("request failed")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connection")
+    {
+        return Some(Duration::from_secs(120));
+    }
+    None
+}
+
+fn llm_endpoints(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<LlmEndpoint>> {
+    let mut endpoints = Vec::new();
+    let mut errors = Vec::new();
+    for choice in config.active_provider_model_choices() {
+        let mut provider = config.provider(Some(&choice.provider_id))?.clone();
+        provider.default_model = choice.model;
+        match provider.resolved_api_keys(paths) {
+            Ok(keys) => {
+                for key in keys {
+                    endpoints.push(LlmEndpoint {
+                        provider: provider.clone(),
+                        api_key: key.value,
+                        key_index: key.index,
+                    });
+                }
+            }
+            Err(err) => errors.push(format!(
+                "{} / {}: {err}",
+                provider.id, provider.default_model
+            )),
+        }
+    }
+    if endpoints.is_empty() {
+        bail!(
+            "no active provider/model endpoint is configured:\n- {}",
+            errors.join("\n- ")
+        )
+    }
+    Ok(endpoints)
 }
 
 impl OpenAiCompatibleClient {
     pub fn from_config(config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
-        let provider = config.provider(None)?;
-        Self::new(provider, config, paths)
+        let endpoints = llm_endpoints(config, paths)?;
+        let first = endpoints
+            .first()
+            .with_context(|| "no active provider/model endpoint is configured")?;
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(
+                first.provider.timeout_seconds.clamp(5, 30),
+            ))
+            .build()?;
+        Ok(Self {
+            client,
+            provider: first.provider.clone(),
+            api_key: first.api_key.clone(),
+            key_index: first.key_index,
+            endpoints: Arc::new(endpoints),
+        })
     }
 
     pub fn new(provider: &ProviderConfig, _config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
@@ -73,11 +253,37 @@ impl OpenAiCompatibleClient {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(provider.timeout_seconds.clamp(5, 30)))
             .build()?;
-        let api_key = provider.resolved_api_key(paths)?;
+        let key = provider
+            .resolved_api_keys(paths)?
+            .into_iter()
+            .next()
+            .with_context(|| format!("missing API key for provider {}", provider.id))?;
+        let endpoint = LlmEndpoint {
+            provider: provider.clone(),
+            api_key: key.value.clone(),
+            key_index: key.index,
+        };
         Ok(Self {
             client,
             provider: provider.clone(),
-            api_key,
+            api_key: key.value,
+            key_index: key.index,
+            endpoints: Arc::new(vec![endpoint]),
+        })
+    }
+
+    fn with_endpoint(&self, endpoint: &LlmEndpoint) -> Result<Self> {
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(
+                endpoint.provider.timeout_seconds.clamp(5, 30),
+            ))
+            .build()?;
+        Ok(Self {
+            client,
+            provider: endpoint.provider.clone(),
+            api_key: endpoint.api_key.clone(),
+            key_index: endpoint.key_index,
+            endpoints: self.endpoints.clone(),
         })
     }
 
@@ -90,19 +296,61 @@ impl OpenAiCompatibleClient {
     where
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
+        let endpoints = self.endpoints.as_ref();
+        let mut errors = Vec::new();
+        let mut order = ordered_endpoint_indices(endpoints);
+        if order.is_empty() {
+            order = (0..endpoints.len()).collect();
+        }
+        for index in order {
+            let endpoint = &endpoints[index];
+            let client = self.with_endpoint(endpoint)?;
+            match client
+                .chat_stream_single(messages.clone(), tools.clone(), &mut on_chunk)
+                .await
+            {
+                Ok(result) => {
+                    mark_endpoint_success(endpoint);
+                    return Ok(result);
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    mark_endpoint_failure(endpoint, &message);
+                    errors.push(format!(
+                        "{} / {} key#{}: {message}",
+                        endpoint.provider.id,
+                        endpoint.provider.default_model,
+                        endpoint.key_index + 1
+                    ));
+                }
+            }
+        }
+        bail!(
+            "no LLM provider/model endpoint succeeded:\n- {}",
+            errors.join("\n- ")
+        )
+    }
+
+    async fn chat_stream_single<F>(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolDefinition>,
+        on_chunk: &mut F,
+    ) -> Result<ChatResult>
+    where
+        F: FnMut(ChatStreamChunk) -> Result<()>,
+    {
         let protocol = ProviderProtocol::from_provider(&self.provider)?;
         if protocol == ProviderProtocol::Anthropic
             || (protocol == ProviderProtocol::Auto && self.uses_anthropic_messages())
         {
-            return self
-                .chat_anthropic_stream(messages, tools, &mut on_chunk)
-                .await;
+            return self.chat_anthropic_stream(messages, tools, on_chunk).await;
         }
         if protocol == ProviderProtocol::OpenAiResponses
             || (protocol == ProviderProtocol::Auto && self.uses_openai_responses())
         {
             if let Some(result) = self
-                .chat_responses_stream(messages.clone(), tools.clone(), &mut on_chunk)
+                .chat_responses_stream(messages.clone(), tools.clone(), on_chunk)
                 .await?
             {
                 return Ok(result);
@@ -134,6 +382,18 @@ impl OpenAiCompatibleClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let hint = claude_protocol_hint(&self.provider);
+            if let Some(duration) = cooldown_for_status(status.as_u16()) {
+                if let Ok(mut scheduler) = LLM_SCHEDULER.lock() {
+                    scheduler.mark_failure(
+                        endpoint_id(
+                            &self.provider.id,
+                            &self.provider.default_model,
+                            self.key_index,
+                        ),
+                        duration,
+                    );
+                }
+            }
             bail!(
                 "{} ({status}): {body}{hint}",
                 t("chat completions stream request failed", "聊天流式请求失败",)
@@ -160,7 +420,7 @@ impl OpenAiCompatibleClient {
                     &mut reasoning_emitted,
                     &mut usage,
                     &mut tool_calls,
-                    &mut on_chunk,
+                    &mut *on_chunk,
                 )? {
                     if done {
                         return finalize_stream_result(
@@ -183,7 +443,7 @@ impl OpenAiCompatibleClient {
                 &mut reasoning_emitted,
                 &mut usage,
                 &mut tool_calls,
-                &mut on_chunk,
+                &mut *on_chunk,
             )?;
         }
         finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)
@@ -2212,11 +2472,7 @@ mod tests {
     fn openai_gpt5_uses_responses_api() {
         let mut provider = test_provider("openai", "https://api.openai.com/v1");
         provider.default_model = "gpt-5.5".to_string();
-        let client = OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
-            provider,
-            api_key: "test".to_string(),
-        };
+        let client = test_client(provider);
 
         assert!(client.uses_openai_responses());
     }
@@ -2225,11 +2481,7 @@ mod tests {
     fn openai_compatible_gpt5_tries_responses_api() {
         let mut provider = test_provider("taotoken", "https://taotoken.net/api/v1");
         provider.default_model = "gpt-5.5".to_string();
-        let client = OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
-            provider,
-            api_key: "test".to_string(),
-        };
+        let client = test_client(provider);
 
         assert!(client.uses_openai_responses());
     }
@@ -2237,11 +2489,7 @@ mod tests {
     #[test]
     fn auto_protocol_uses_anthropic_for_official_provider() {
         let provider = test_provider("anthropic", "https://api.anthropic.com/v1");
-        let client = OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
-            provider,
-            api_key: "test".to_string(),
-        };
+        let client = test_client(provider);
 
         assert!(client.uses_anthropic_messages());
     }
@@ -2250,11 +2498,7 @@ mod tests {
     fn auto_protocol_keeps_openai_compatible_claude_proxy() {
         let mut provider = test_provider("openrouter", "https://openrouter.ai/api/v1");
         provider.default_model = "anthropic/claude-sonnet-4-5".to_string();
-        let client = OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
-            provider,
-            api_key: "test".to_string(),
-        };
+        let client = test_client(provider);
 
         assert!(!client.uses_anthropic_messages());
     }
@@ -2550,11 +2794,7 @@ mod tests {
     fn anthropic_request_enables_adaptive_summarized_thinking_by_default() {
         let mut provider = test_provider("anthropic", "https://api.anthropic.com/v1");
         provider.default_model = "claude-sonnet-4-5".to_string();
-        let client = OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
-            provider,
-            api_key: "test".to_string(),
-        };
+        let client = test_client(provider);
 
         let request =
             client.anthropic_request(vec![ChatMessage::plain("user", "hi")], Vec::new(), true);
@@ -2568,11 +2808,7 @@ mod tests {
     fn anthropic_request_can_disable_thinking_for_fallback() {
         let mut provider = test_provider("anthropic", "https://api.anthropic.com/v1");
         provider.default_model = "claude-sonnet-4-5".to_string();
-        let client = OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
-            provider,
-            api_key: "test".to_string(),
-        };
+        let client = test_client(provider);
 
         let request =
             client.anthropic_request(vec![ChatMessage::plain("user", "hi")], Vec::new(), false);
@@ -2665,6 +2901,21 @@ mod tests {
         assert_eq!(calls[0].id, "toolu_1");
         assert_eq!(calls[0].function.name, "calc");
         assert_eq!(calls[0].function.arguments, r#"{"x":1}"#);
+    }
+
+    fn test_client(provider: ProviderConfig) -> OpenAiCompatibleClient {
+        let endpoint = LlmEndpoint {
+            provider: provider.clone(),
+            api_key: "test".to_string(),
+            key_index: 0,
+        };
+        OpenAiCompatibleClient {
+            client: reqwest::Client::new(),
+            provider,
+            api_key: "test".to_string(),
+            key_index: 0,
+            endpoints: Arc::new(vec![endpoint]),
+        }
     }
 
     fn test_provider(id: &str, base_url: &str) -> ProviderConfig {
