@@ -2,7 +2,8 @@ use super::{ToolRegistry, ToolSpec};
 use crate::config::WebPluginConfig;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use urlencoding::decode as url_decode;
 
@@ -15,12 +16,211 @@ const CRAWLER_TIMEOUT: Duration = Duration::from_secs(15);
 
 static DDG_BLOCKED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 static SOGOU_BLOCKED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+static SEARCH_SCHEDULER: LazyLock<Mutex<SearchScheduler>> =
+    LazyLock::new(|| Mutex::new(SearchScheduler::default()));
 
 struct CrawlerResult {
     title: String,
     url: String,
     snippet: String,
     source: String,
+}
+
+#[derive(Clone, Copy)]
+enum SearchProvider {
+    Tavily,
+    Firecrawl,
+    AnySearch,
+    SearXng,
+    DuckDuckGo,
+}
+
+impl SearchProvider {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Tavily => "tavily",
+            Self::Firecrawl => "firecrawl",
+            Self::AnySearch => "anysearch",
+            Self::SearXng => "searxng",
+            Self::DuckDuckGo => "duckduckgo",
+        }
+    }
+}
+
+#[derive(Default)]
+struct SearchScheduler {
+    provider_cursor: usize,
+    key_cursors: HashMap<&'static str, usize>,
+    cooldowns: HashMap<String, Instant>,
+}
+
+impl SearchScheduler {
+    fn ordered_providers(&mut self, providers: &[SearchProvider]) -> Vec<SearchProvider> {
+        let available = providers
+            .iter()
+            .copied()
+            .filter(|provider| self.is_ready(&provider_cooldown_id(provider.id())))
+            .collect::<Vec<_>>();
+        if available.is_empty() {
+            return Vec::new();
+        }
+        let start = self.provider_cursor % available.len();
+        self.provider_cursor = self.provider_cursor.wrapping_add(1);
+        rotate_from(available, start)
+    }
+
+    fn ordered_key_positions(&mut self, provider: &'static str, key_count: usize) -> Vec<usize> {
+        let available = (0..key_count)
+            .filter(|&index| self.is_ready(&key_cooldown_id(provider, index)))
+            .collect::<Vec<_>>();
+        if available.is_empty() {
+            return Vec::new();
+        }
+        let cursor = self.key_cursors.entry(provider).or_insert(0);
+        let start = *cursor % available.len();
+        *cursor = cursor.wrapping_add(1);
+        rotate_from(available, start)
+    }
+
+    fn is_ready(&mut self, id: &str) -> bool {
+        match self.cooldowns.get(id).copied() {
+            Some(until) if until > Instant::now() => false,
+            Some(_) => {
+                self.cooldowns.remove(id);
+                true
+            }
+            None => true,
+        }
+    }
+
+    fn mark_success(&mut self, id: &str) {
+        self.cooldowns.remove(id);
+    }
+
+    fn mark_failure(&mut self, id: String, duration: Duration) {
+        self.cooldowns.insert(id, Instant::now() + duration);
+    }
+}
+
+fn rotate_from<T>(mut items: Vec<T>, start: usize) -> Vec<T> {
+    items.rotate_left(start);
+    items
+}
+
+fn provider_cooldown_id(provider: &str) -> String {
+    format!("provider:{provider}")
+}
+
+fn key_cooldown_id(provider: &str, index: usize) -> String {
+    format!("key:{provider}:{index}")
+}
+
+fn has_non_empty_key(keys: &[String]) -> bool {
+    keys.iter().any(|key| !key.trim().is_empty())
+}
+
+fn configured_primary_providers(config: &WebPluginConfig) -> Vec<SearchProvider> {
+    let mut providers = Vec::new();
+    if has_non_empty_key(&config.tavily_api_keys) {
+        providers.push(SearchProvider::Tavily);
+    }
+    if has_non_empty_key(&config.firecrawl_api_keys) {
+        providers.push(SearchProvider::Firecrawl);
+    }
+    if has_non_empty_key(&config.anysearch_api_keys) {
+        providers.push(SearchProvider::AnySearch);
+    }
+    if !config.searxng_base_url.trim().is_empty() {
+        providers.push(SearchProvider::SearXng);
+    }
+    providers
+}
+
+fn ordered_providers(providers: &[SearchProvider]) -> Vec<SearchProvider> {
+    SEARCH_SCHEDULER
+        .lock()
+        .map(|mut scheduler| scheduler.ordered_providers(providers))
+        .unwrap_or_else(|_| providers.to_vec())
+}
+
+fn ordered_key_positions(provider: &'static str, key_count: usize) -> Vec<usize> {
+    SEARCH_SCHEDULER
+        .lock()
+        .map(|mut scheduler| scheduler.ordered_key_positions(provider, key_count))
+        .unwrap_or_else(|_| (0..key_count).collect())
+}
+
+fn mark_provider_success(provider: &str) {
+    if let Ok(mut scheduler) = SEARCH_SCHEDULER.lock() {
+        scheduler.mark_success(&provider_cooldown_id(provider));
+    }
+}
+
+fn mark_key_success(provider: &'static str, index: usize) {
+    if let Ok(mut scheduler) = SEARCH_SCHEDULER.lock() {
+        scheduler.mark_success(&key_cooldown_id(provider, index));
+    }
+}
+
+fn mark_provider_failure(provider: &str, error: &str) {
+    let Some(duration) = cooldown_for_error(error) else {
+        return;
+    };
+    if let Ok(mut scheduler) = SEARCH_SCHEDULER.lock() {
+        scheduler.mark_failure(provider_cooldown_id(provider), duration);
+    }
+}
+
+fn mark_key_failure(provider: &'static str, index: usize, error: &str) {
+    let Some(duration) = cooldown_for_error(error) else {
+        return;
+    };
+    if let Ok(mut scheduler) = SEARCH_SCHEDULER.lock() {
+        scheduler.mark_failure(key_cooldown_id(provider, index), duration);
+    }
+}
+
+fn cooldown_for_status(status: u16) -> Option<Duration> {
+    match status {
+        401 | 403 | 429 => Some(Duration::from_secs(600)),
+        408 | 500..=599 => Some(Duration::from_secs(120)),
+        _ => None,
+    }
+}
+
+fn cooldown_for_error(error: &str) -> Option<Duration> {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("ratelimit")
+        || lower.contains("quota")
+    {
+        return Some(Duration::from_secs(600));
+    }
+    if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("invalid api key")
+    {
+        return Some(Duration::from_secs(600));
+    }
+    if lower.contains("408")
+        || lower.contains("500")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("504")
+        || lower.contains("request failed")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connection")
+    {
+        return Some(Duration::from_secs(120));
+    }
+    if lower.contains("captcha") || lower.contains("challenge") {
+        return Some(Duration::from_secs(300));
+    }
+    None
 }
 
 pub fn register(registry: &mut ToolRegistry, config: WebPluginConfig) {
@@ -89,39 +289,76 @@ async fn web_search(args: Value, config: WebPluginConfig) -> Result<String> {
         .timeout(CRAWLER_TIMEOUT)
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()?;
-    let order: Vec<&str> = if provider == "auto" {
-        vec!["tavily", "firecrawl", "anysearch", "searxng", "duckduckgo"]
-    } else {
-        vec![provider]
-    };
+    let order = search_provider_order(provider, &config)?;
     let mut errors = Vec::new();
     for item in order {
-        let result = match item {
-            "tavily" => search_tavily(&client, query, max_results, &config.tavily_api_keys).await,
-            "firecrawl" => {
-                search_firecrawl(&client, query, max_results, &config.firecrawl_api_keys).await
-            }
-            "anysearch" => {
-                search_anysearch(&client, query, max_results, &config.anysearch_api_keys).await
-            }
-            "searxng" => {
-                search_searxng(&client, query, max_results, &config.searxng_base_url).await
-            }
-            "duckduckgo" | "script" => search_duckduckgo(&client, query, max_results).await,
-            _ => {
-                errors.push(format!("{item}: unknown provider"));
-                continue;
-            }
-        };
+        let provider_id = item.id();
+        let result = search_with_provider(&client, query, max_results, &config, item).await;
         match result {
-            Ok(output) => return Ok(output),
-            Err(err) => errors.push(format!("{item}: {err}")),
+            Ok(output) => {
+                mark_provider_success(provider_id);
+                return Ok(output);
+            }
+            Err(err) => {
+                let message = err.to_string();
+                mark_provider_failure(provider_id, &message);
+                errors.push(format!("{provider_id}: {message}"));
+            }
         }
     }
     bail!(
         "no web search provider succeeded:\n- {}",
         errors.join("\n- ")
     )
+}
+
+fn search_provider_order(provider: &str, config: &WebPluginConfig) -> Result<Vec<SearchProvider>> {
+    if provider == "auto" {
+        let mut providers = ordered_providers(&configured_primary_providers(config));
+        if SEARCH_SCHEDULER
+            .lock()
+            .map(|mut scheduler| scheduler.is_ready(&provider_cooldown_id("duckduckgo")))
+            .unwrap_or(true)
+        {
+            providers.push(SearchProvider::DuckDuckGo);
+        }
+        if providers.is_empty() {
+            return Ok(vec![SearchProvider::DuckDuckGo]);
+        }
+        return Ok(providers);
+    }
+    match provider {
+        "tavily" => Ok(vec![SearchProvider::Tavily]),
+        "firecrawl" => Ok(vec![SearchProvider::Firecrawl]),
+        "anysearch" => Ok(vec![SearchProvider::AnySearch]),
+        "searxng" => Ok(vec![SearchProvider::SearXng]),
+        "duckduckgo" | "script" => Ok(vec![SearchProvider::DuckDuckGo]),
+        _ => bail!("{provider}: unknown provider"),
+    }
+}
+
+async fn search_with_provider(
+    client: &reqwest::Client,
+    query: &str,
+    max_results: usize,
+    config: &WebPluginConfig,
+    provider: SearchProvider,
+) -> Result<String> {
+    match provider {
+        SearchProvider::Tavily => {
+            search_tavily(client, query, max_results, &config.tavily_api_keys).await
+        }
+        SearchProvider::Firecrawl => {
+            search_firecrawl(client, query, max_results, &config.firecrawl_api_keys).await
+        }
+        SearchProvider::AnySearch => {
+            search_anysearch(client, query, max_results, &config.anysearch_api_keys).await
+        }
+        SearchProvider::SearXng => {
+            search_searxng(client, query, max_results, &config.searxng_base_url).await
+        }
+        SearchProvider::DuckDuckGo => search_duckduckgo(client, query, max_results).await,
+    }
 }
 
 async fn search_tavily(
@@ -139,30 +376,43 @@ async fn search_tavily(
         bail!("missing Tavily API key")
     }
     let payload = json!({"query": query, "max_results": max_results.min(20), "search_depth": "basic", "include_answer": false, "include_raw_content": "markdown"});
+    let order = ordered_key_positions("tavily", keys.len());
+    if order.is_empty() {
+        bail!("all Tavily API keys are cooling down")
+    }
     let mut errors = Vec::new();
-    for (index, key) in keys.iter().enumerate() {
+    for index in order {
+        let key = keys[index];
         let response = match client
             .post("https://api.tavily.com/search")
-            .bearer_auth(*key)
+            .bearer_auth(key)
             .json(&payload)
             .send()
             .await
         {
             Ok(response) => response,
             Err(err) => {
-                errors.push(format!("key#{} request failed: {err}", index + 1));
+                let message = format!("key#{} request failed: {err}", index + 1);
+                mark_key_failure("tavily", index, &message);
+                errors.push(message);
                 continue;
             }
         };
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            errors.push(format!(
+            let message = format!(
                 "key#{} HTTP {}: {}",
                 index + 1,
                 status.as_u16(),
                 clip(&body, 240)
-            ));
+            );
+            if let Some(duration) = cooldown_for_status(status.as_u16()) {
+                if let Ok(mut scheduler) = SEARCH_SCHEDULER.lock() {
+                    scheduler.mark_failure(key_cooldown_id("tavily", index), duration);
+                }
+            }
+            errors.push(message);
             continue;
         }
         let data: Value = match response.json().await {
@@ -178,7 +428,10 @@ async fn search_tavily(
             .cloned()
             .unwrap_or_default();
         match format_search_results(query, "Tavily", results) {
-            Ok(output) => return Ok(output),
+            Ok(output) => {
+                mark_key_success("tavily", index);
+                return Ok(output);
+            }
             Err(err) => errors.push(format!("key#{}: {err}", index + 1)),
         }
     }
@@ -203,30 +456,43 @@ async fn search_firecrawl(
         bail!("missing Firecrawl API key")
     }
     let payload = json!({"query": query, "limit": max_results.min(20), "sources": [{"type":"web"}], "scrapeOptions": {"formats": [{"type":"markdown"}], "onlyMainContent": true}});
+    let order = ordered_key_positions("firecrawl", keys.len());
+    if order.is_empty() {
+        bail!("all Firecrawl API keys are cooling down")
+    }
     let mut errors = Vec::new();
-    for (index, key) in keys.iter().enumerate() {
+    for index in order {
+        let key = keys[index];
         let response = match client
             .post("https://api.firecrawl.dev/v2/search")
-            .bearer_auth(*key)
+            .bearer_auth(key)
             .json(&payload)
             .send()
             .await
         {
             Ok(response) => response,
             Err(err) => {
-                errors.push(format!("key#{} request failed: {err}", index + 1));
+                let message = format!("key#{} request failed: {err}", index + 1);
+                mark_key_failure("firecrawl", index, &message);
+                errors.push(message);
                 continue;
             }
         };
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            errors.push(format!(
+            let message = format!(
                 "key#{} HTTP {}: {}",
                 index + 1,
                 status.as_u16(),
                 clip(&body, 240)
-            ));
+            );
+            if let Some(duration) = cooldown_for_status(status.as_u16()) {
+                if let Ok(mut scheduler) = SEARCH_SCHEDULER.lock() {
+                    scheduler.mark_failure(key_cooldown_id("firecrawl", index), duration);
+                }
+            }
+            errors.push(message);
             continue;
         }
         let data: Value = match response.json().await {
@@ -238,7 +504,10 @@ async fn search_firecrawl(
         };
         let raw = firecrawl_results(&data, max_results);
         match format_search_results(query, "Firecrawl", raw) {
-            Ok(output) => return Ok(output),
+            Ok(output) => {
+                mark_key_success("firecrawl", index);
+                return Ok(output);
+            }
             Err(err) => errors.push(format!("key#{}: {err}", index + 1)),
         }
     }
@@ -263,30 +532,43 @@ async fn search_anysearch(
         bail!("missing AnySearch API key")
     }
     let payload = json!({"query": query, "max_results": max_results.min(20)});
+    let order = ordered_key_positions("anysearch", keys.len());
+    if order.is_empty() {
+        bail!("all AnySearch API keys are cooling down")
+    }
     let mut errors = Vec::new();
-    for (index, key) in keys.iter().enumerate() {
+    for index in order {
+        let key = keys[index];
         let response = match client
             .post("https://api.anysearch.com/v1/search")
-            .bearer_auth(*key)
+            .bearer_auth(key)
             .json(&payload)
             .send()
             .await
         {
             Ok(response) => response,
             Err(err) => {
-                errors.push(format!("key#{} request failed: {err}", index + 1));
+                let message = format!("key#{} request failed: {err}", index + 1);
+                mark_key_failure("anysearch", index, &message);
+                errors.push(message);
                 continue;
             }
         };
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            errors.push(format!(
+            let message = format!(
                 "key#{} HTTP {}: {}",
                 index + 1,
                 status.as_u16(),
                 clip(&body, 240)
-            ));
+            );
+            if let Some(duration) = cooldown_for_status(status.as_u16()) {
+                if let Ok(mut scheduler) = SEARCH_SCHEDULER.lock() {
+                    scheduler.mark_failure(key_cooldown_id("anysearch", index), duration);
+                }
+            }
+            errors.push(message);
             continue;
         }
         let data: Value = match response.json().await {
@@ -298,7 +580,10 @@ async fn search_anysearch(
         };
         let raw = anysearch_results(&data, max_results);
         match format_search_results(query, "AnySearch", raw) {
-            Ok(output) => return Ok(output),
+            Ok(output) => {
+                mark_key_success("anysearch", index);
+                return Ok(output);
+            }
             Err(err) => errors.push(format!("key#{}: {err}", index + 1)),
         }
     }
