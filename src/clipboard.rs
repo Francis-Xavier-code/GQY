@@ -1,5 +1,6 @@
 use anyhow::Result;
 use base64::Engine;
+use std::cell::OnceCell;
 use sha2::Digest;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,7 @@ const CLIPBOARD_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 pub struct ClipboardImage {
     pub mime: String,
     pub data: Vec<u8>,
+    data_url: OnceCell<String>,
 }
 
 pub enum PastedImage {
@@ -19,9 +21,21 @@ pub enum PastedImage {
 }
 
 impl ClipboardImage {
+    pub fn new(mime: String, data: Vec<u8>) -> Self {
+        Self {
+            mime,
+            data,
+            data_url: OnceCell::new(),
+        }
+    }
+
     pub fn data_url(&self) -> String {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&self.data);
-        format!("data:{};base64,{}", self.mime, encoded)
+        self.data_url
+            .get_or_init(|| {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&self.data);
+                format!("data:{};base64,{}", self.mime, encoded)
+            })
+            .clone()
     }
 
     pub fn write_temp_file(&self, cache_dir: &std::path::Path, _index: usize) -> Result<PathBuf> {
@@ -71,10 +85,7 @@ fn try_command(cmd: &str, args: &[&str], mime: &str) -> Result<Option<ClipboardI
             if output.stdout.len() > MAX_CLIPBOARD_IMAGE_BYTES {
                 return Ok(None);
             }
-            Ok(Some(ClipboardImage {
-                mime: mime.to_string(),
-                data: output.stdout,
-            }))
+            Ok(Some(ClipboardImage::new(mime.to_string(), output.stdout)))
         }
         _ => Ok(None),
     }

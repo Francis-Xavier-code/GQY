@@ -1018,16 +1018,15 @@ impl UsageAccumulator {
 }
 
 fn estimate_result_tokens(result: &ChatResult) -> usize {
-    let mut text = String::new();
-    text.push_str(&result.content);
+    let mut tokens = crate::token_estimate::estimate_tokens(&result.content);
     if let Some(reasoning) = &result.reasoning {
-        text.push_str(reasoning);
+        tokens = tokens.saturating_add(crate::token_estimate::estimate_tokens(reasoning));
     }
     for call in &result.tool_calls {
-        text.push_str(&call.function.name);
-        text.push_str(&call.function.arguments);
+        tokens = tokens.saturating_add(crate::token_estimate::estimate_tokens(&call.function.name));
+        tokens = tokens.saturating_add(crate::token_estimate::estimate_tokens(&call.function.arguments));
     }
-    overflow::estimate_tokens(&text)
+    tokens.max(1)
 }
 
 fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {
@@ -1307,7 +1306,7 @@ fn clipboard_binary_image_from_tool_result(
         .unwrap_or("image/png")
         .to_string();
     let data = std::fs::read(path).ok()?;
-    Some(ClipboardImage { mime, data })
+    Some(ClipboardImage::new(mime, data))
 }
 
 fn resolve_pasted_image_paths(
