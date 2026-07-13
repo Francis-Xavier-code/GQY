@@ -901,9 +901,17 @@ impl Agent {
                     }
                 }
                 if tool_succeeded {
+                    let result_ok = if call.function.name == "run_command" {
+                        serde_json::from_str::<serde_json::Value>(&output)
+                            .ok()
+                            .and_then(|v| v.get("success").and_then(serde_json::Value::as_bool))
+                            .unwrap_or(true)
+                    } else {
+                        true
+                    };
                     on_event(AgentEvent::ToolResult {
                         name: event_name.clone(),
-                        ok: true,
+                        ok: result_ok,
                         output: output.clone(),
                     })?;
                     if let Some(report) =

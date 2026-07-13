@@ -338,11 +338,11 @@ impl StreamRenderer {
                     stats.ok += 1;
                 } else {
                     stats.error += 1;
-                    let mut stdout = io::stdout();
-                    write_command_error_block(&mut stdout, output)?;
-                    stdout.flush()?;
                 }
                 stats.progress = None;
+                let summary = self.tool_summary_text();
+                self.last_tool_summary = summary.clone();
+                self.render_summary_line(&summary, SummaryStyle::Tool)?;
                 return Ok(());
             }
             if self.tool_call_mode == ToolCallDisplayMode::Full {
@@ -917,6 +917,14 @@ impl StreamRenderer {
                 .is_some_and(|name| is_subagent_tool(name))
         {
             parts
+        } else if self.tool_stats.len() == 1
+            && self
+                .tool_stats
+                .keys()
+                .next()
+                .is_some_and(|name| name == "run_command")
+        {
+            format!("$ {parts}")
         } else {
             format!("~ {parts}")
         }
@@ -2283,16 +2291,8 @@ fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
         .trim();
     let total_lines = command.lines().count();
     let total_chars = command.chars().count();
+    writeln!(stdout, "\x1b[2m$ {}\x1b[0m", t("run command", "运行命令"))?;
     if total_lines > 1 {
-        if let Some(preview) = script_command_preview(command, 80) {
-            writeln!(
-                stdout,
-                "\x1b[2m~ {}\x1b[0m \x1b[33m{preview}\x1b[0m",
-                t("run script", "运行脚本")
-            )?;
-        } else {
-            writeln!(stdout, "\x1b[2m~ {}\x1b[0m", t("run script", "运行脚本"))?;
-        }
         writeln!(
             stdout,
             "\x1b[2m  ↳ {total_lines} {} · {total_chars} {}\x1b[0m",
@@ -2300,63 +2300,20 @@ fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
             t("chars", "字符")
         )?;
     } else {
-        let preview = command_preview(command, 120);
-        writeln!(
-            stdout,
-            "\x1b[2m~ {}\x1b[0m \x1b[33m{preview}\x1b[0m",
-            t("run command", "运行命令")
-        )?;
-        if total_chars > 120 {
-            writeln!(
-                stdout,
-                "\x1b[2m  ↳ {total_chars} {}\x1b[0m",
-                t("chars", "字符")
-            )?;
+        let terminal_width = terminal::size()
+            .map(|(w, _)| usize::from(w))
+            .unwrap_or(120);
+        let avail = terminal_width.saturating_sub(4).max(1);
+        let wrapped = wrap_ansi_text(command, avail);
+        for (i, line) in wrapped.iter().enumerate() {
+            if i == 0 {
+                writeln!(stdout, "\x1b[2m  ↳ \x1b[0m\x1b[33m{line}\x1b[0m")?;
+            } else {
+                writeln!(stdout, "    \x1b[33m{line}\x1b[0m")?;
+            }
         }
     }
     Ok(())
-}
-
-fn script_command_preview(command: &str, max_chars: usize) -> Option<String> {
-    command
-        .lines()
-        .map(str::trim)
-        .find(|line| is_meaningful_script_preview_line(line))
-        .map(|line| command_preview(line, max_chars))
-}
-
-fn is_meaningful_script_preview_line(line: &str) -> bool {
-    if line.is_empty() || line.starts_with('#') {
-        return false;
-    }
-    let lower = line.to_ascii_lowercase();
-    if lower.starts_with("echo ") || lower.starts_with("printf ") {
-        let text = lower
-            .trim_start_matches("echo")
-            .trim_start_matches("printf")
-            .trim()
-            .trim_matches(';')
-            .trim_matches('"')
-            .trim_matches('\'');
-        return !text
-            .chars()
-            .all(|ch| matches!(ch, '=' | '-' | '*' | '_' | '─' | '━' | '═'));
-    }
-    true
-}
-
-fn command_preview(command: &str, max_chars: usize) -> String {
-    let first_line = command.lines().next().unwrap_or(command).trim();
-    if first_line.chars().count() <= max_chars {
-        return first_line.to_string();
-    }
-    format!(
-        "{}...",
-        first_line
-            .chars()
-            .take(max_chars.saturating_sub(3))
-            .collect::<String>()
-    )
 }
 
 fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<()> {
@@ -2387,25 +2344,6 @@ fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<
         )?;
     }
     Ok(())
-}
-
-fn write_command_error_block(stdout: &mut io::Stdout, output: &str) -> Result<()> {
-    let Some(result) = parse_command_result(output) else {
-        return write_fenced_block(stdout, "err", output);
-    };
-    if result.success {
-        return Ok(());
-    }
-    let label = result
-        .exit_code
-        .map(|code| format!("err exit {code}"))
-        .unwrap_or_else(|| "err".to_string());
-    let message = if result.stderr.trim().is_empty() {
-        result.stdout.as_str()
-    } else {
-        result.stderr.as_str()
-    };
-    write_fenced_block(stdout, &label, message)
 }
 
 fn write_fenced_block(stdout: &mut io::Stdout, label: &str, text: &str) -> Result<()> {
@@ -2966,21 +2904,6 @@ mod tests {
             renderer.tool_summary_text(),
             "Linux 游戏兼容性调查 ok\n✓ 工具调用 1 次　消耗 Token 2.3K"
         );
-    }
-
-    #[test]
-    fn script_preview_skips_decorative_echo_lines() {
-        let command = "echo \"════════════════════════════════\"\ncargo test\necho done";
-        assert_eq!(
-            script_command_preview(command, 120).as_deref(),
-            Some("cargo test")
-        );
-    }
-
-    #[test]
-    fn script_preview_omits_all_decorative_scripts() {
-        let command = "echo \"════════\"\nprintf \"----\"";
-        assert!(script_command_preview(command, 120).is_none());
     }
 
     #[test]
