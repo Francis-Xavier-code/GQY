@@ -290,7 +290,6 @@ mod tests {
         let paths = MiyuPaths {
             config_dir: temp.path().to_path_buf(),
             config_file: temp.path().join("config.json"),
-            secrets_file: temp.path().join("secrets.json"),
             skills_dir: temp.path().join("skills"),
             data_dir: temp.path().join("data"),
             cache_dir: temp.path().join("cache"),

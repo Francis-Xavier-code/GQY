@@ -1161,7 +1161,6 @@ fn alarm_worker_paths(state_dir: PathBuf) -> MiyuPaths {
     MiyuPaths {
         config_dir: PathBuf::new(),
         config_file: PathBuf::new(),
-        secrets_file: PathBuf::new(),
         skills_dir: PathBuf::new(),
         data_dir: PathBuf::new(),
         cache_dir: PathBuf::new(),
@@ -4146,7 +4145,6 @@ mod repl_input_tests {
         let paths = MiyuPaths {
             config_dir: PathBuf::new(),
             config_file: PathBuf::new(),
-            secrets_file: PathBuf::new(),
             skills_dir: PathBuf::new(),
             data_dir: PathBuf::new(),
             cache_dir: PathBuf::new(),

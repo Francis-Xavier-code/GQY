@@ -3,6 +3,7 @@ use super::{
     ToolDefinition, Usage,
 };
 use crate::config::{AppConfig, ProviderConfig};
+use crate::default_models::OPENCODE_ZEN_BASE_URL;
 use crate::i18n::text as t;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
@@ -376,25 +377,13 @@ impl OpenAiCompatibleClient {
             "{}/chat/completions",
             self.provider.base_url.trim_end_matches('/')
         );
-        let mut response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&request)
-            .send()
-            .await?;
+        let mut response = self.send_chat_completion_request(&url, &request).await?;
         let mut status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             if stream_options_unsupported(status.as_u16(), &body) {
                 request.stream_options = None;
-                response = self
-                    .client
-                    .post(&url)
-                    .bearer_auth(&self.api_key)
-                    .json(&request)
-                    .send()
-                    .await?;
+                response = self.send_chat_completion_request(&url, &request).await?;
                 status = response.status();
                 if status.is_success() {
                     return self
@@ -402,13 +391,94 @@ impl OpenAiCompatibleClient {
                         .await;
                 }
                 let body = response.text().await.unwrap_or_default();
+                if let Some(result) = self
+                    .try_zen_chat_completion_compat_retry(
+                        &url,
+                        &request,
+                        status.as_u16(),
+                        &body,
+                        on_chunk,
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
                 return self.bail_chat_completion_failure(status.as_u16(), &body);
+            }
+            if let Some(result) = self
+                .try_zen_chat_completion_compat_retry(
+                    &url,
+                    &request,
+                    status.as_u16(),
+                    &body,
+                    on_chunk,
+                )
+                .await?
+            {
+                return Ok(result);
             }
             return self.bail_chat_completion_failure(status.as_u16(), &body);
         }
 
         self.consume_chat_completion_stream(response, on_chunk)
             .await
+    }
+
+    async fn send_chat_completion_request(
+        &self,
+        url: &str,
+        request: &ChatRequest,
+    ) -> Result<reqwest::Response> {
+        Ok(self
+            .client
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(request)
+            .send()
+            .await?)
+    }
+
+    async fn try_zen_chat_completion_compat_retry<F>(
+        &self,
+        url: &str,
+        request: &ChatRequest,
+        status: u16,
+        body: &str,
+        on_chunk: &mut F,
+    ) -> Result<Option<ChatResult>>
+    where
+        F: FnMut(ChatStreamChunk) -> Result<()>,
+    {
+        if !zen_upstream_failed(&self.provider, status, body) {
+            return Ok(None);
+        }
+
+        let mut retries = Vec::new();
+        if request.stream_options.is_some() {
+            let mut retry = request.clone();
+            retry.stream_options = None;
+            retries.push(retry);
+        }
+        if request.tools.is_some() {
+            let mut retry = request.clone();
+            retry.stream_options = None;
+            retry.tools = None;
+            retries.push(retry);
+        }
+
+        for retry in retries {
+            let response = self.send_chat_completion_request(url, &retry).await?;
+            let status = response.status();
+            if status.is_success() {
+                return self
+                    .consume_chat_completion_stream(response, on_chunk)
+                    .await
+                    .map(Some);
+            }
+            let _ = response.text().await;
+        }
+
+        Ok(None)
     }
 
     async fn consume_chat_completion_stream<F>(
@@ -797,7 +867,15 @@ fn stream_options_unsupported(status: u16, body: &str) -> bool {
             || body.contains("extra"))
 }
 
-#[derive(Debug, Serialize)]
+fn zen_upstream_failed(provider: &ProviderConfig, status: u16, body: &str) -> bool {
+    status == 400
+        && provider.base_url.trim_end_matches('/') == OPENCODE_ZEN_BASE_URL
+        && body
+            .to_ascii_lowercase()
+            .contains("upstream request failed")
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
@@ -811,7 +889,7 @@ struct ChatRequest {
     chat_template_kwargs: Option<ChatTemplateKwargs>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ChatStreamOptions {
     include_usage: bool,
 }
@@ -904,7 +982,7 @@ struct AnthropicTool {
     input_schema: Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ChatTemplateKwargs {
     enable_thinking: bool,
 }
@@ -2582,6 +2660,27 @@ mod tests {
         ));
         assert!(!stream_options_unsupported(403, "stream_options forbidden"));
         assert!(!stream_options_unsupported(400, "invalid api key"));
+    }
+
+    #[test]
+    fn zen_upstream_failed_detects_opencode_zen_compat_error() {
+        let provider = test_provider("myopencode", OPENCODE_ZEN_BASE_URL);
+
+        assert!(zen_upstream_failed(
+            &provider,
+            400,
+            r#"{"error":{"message":"Error from provider (Console): Upstream request failed"}}"#,
+        ));
+        assert!(!zen_upstream_failed(
+            &provider,
+            401,
+            "Upstream request failed"
+        ));
+        assert!(!zen_upstream_failed(
+            &test_provider("other", "https://example.com/v1"),
+            400,
+            "Upstream request failed"
+        ));
     }
 
     #[test]

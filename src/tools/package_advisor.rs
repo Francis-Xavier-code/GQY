@@ -557,7 +557,6 @@ mod tests {
         MiyuPaths {
             config_dir: PathBuf::new(),
             config_file: PathBuf::new(),
-            secrets_file: PathBuf::new(),
             skills_dir: PathBuf::new(),
             data_dir: PathBuf::new(),
             cache_dir: state_dir.join("cache"),

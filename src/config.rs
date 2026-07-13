@@ -561,12 +561,6 @@ pub struct DiagnosticsPluginConfig {
     pub max_stderr_chars: usize,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SecretsConfig {
-    #[serde(default)]
-    pub api_keys: HashMap<String, String>,
-}
-
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -1016,20 +1010,10 @@ impl ProviderConfig {
         crate::models_cache::input_modalities(&self.id, model)
     }
 
-    pub fn resolved_api_keys(&self, paths: &MiyuPaths) -> Result<Vec<ResolvedProviderKey>> {
+    pub fn resolved_api_keys(&self, _paths: &MiyuPaths) -> Result<Vec<ResolvedProviderKey>> {
         let mut keys = Vec::new();
         if let Some(api_key) = self.api_key.as_deref() {
             append_resolved_api_keys(&mut keys, api_key)?;
-        }
-
-        let secrets = SecretsConfig::load(paths)?;
-        if let Some(api_key) = secrets
-            .api_keys
-            .get(&self.id)
-            .cloned()
-            .filter(|value| !value.trim().is_empty())
-        {
-            append_resolved_api_keys(&mut keys, &api_key)?;
         }
 
         if keys.is_empty() && self.is_opencode_zen() {
@@ -1051,6 +1035,12 @@ impl ProviderConfig {
     pub fn is_opencode_zen(&self) -> bool {
         matches!(self.id.as_str(), OPENCODE_PROVIDER_ID | "opencodezen")
             && self.base_url.trim_end_matches('/') == OPENCODE_ZEN_BASE_URL
+    }
+
+    fn has_configured_model(&self, model: &str) -> bool {
+        let model = model.trim();
+        !model.is_empty()
+            && (self.default_model == model || self.models.iter().any(|item| item == model))
     }
 
     fn is_legacy_default_anthropic_model(&self) -> bool {
@@ -1090,6 +1080,13 @@ fn split_api_keys(raw: &str) -> Vec<&str> {
         .collect()
 }
 
+fn active_model_exists(providers: &[ProviderConfig], active: &ActiveProviderModelConfig) -> bool {
+    providers
+        .iter()
+        .find(|provider| provider.id == active.provider_id.trim())
+        .is_some_and(|provider| provider.has_configured_model(&active.model))
+}
+
 impl AppConfig {
     pub fn memory_config(&self) -> &MemoryConfig {
         if self.memory != MemoryConfig::default() {
@@ -1122,11 +1119,6 @@ impl AppConfig {
         paths.create_dirs()?;
         if !paths.config_file.exists() {
             Self::default().save(paths)?;
-        }
-        if !paths.secrets_file.exists() {
-            let raw = "{\n  // Optional provider API keys. Prefer $env:... in config.jsonc.\n  \"api_keys\": {}\n}\n";
-            std::fs::write(&paths.secrets_file, raw)?;
-            set_private_permissions(&paths.secrets_file)?;
         }
         Ok(())
     }
@@ -1193,6 +1185,7 @@ impl AppConfig {
                 }
             }
         }
+        self.prune_stale_active_provider_models();
         if self.plugins.vision.vision_provider_id == "opencodezen" {
             self.plugins.vision.vision_provider_id = OPENCODE_PROVIDER_ID.to_string();
         }
@@ -1212,6 +1205,15 @@ impl AppConfig {
                 provider_id: OPENCODE_PROVIDER_ID.to_string(),
                 model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             }]);
+        }
+    }
+
+    fn prune_stale_active_provider_models(&mut self) {
+        if let Some(active_models) = &mut self.active_provider_models {
+            active_models.retain(|active| active_model_exists(&self.providers, active));
+        }
+        if let Some(active_models) = &mut self.active_multimodal_provider_models {
+            active_models.retain(|active| active_model_exists(&self.providers, active));
         }
     }
 
@@ -1420,11 +1422,13 @@ impl AppConfig {
                 .filter_map(|active| {
                     let provider = self.provider(Some(active.provider_id.trim())).ok()?;
                     let model = active.model.trim();
-                    (!model.is_empty()).then(|| ProviderModelChoice {
-                        provider_id: provider.id.clone(),
-                        provider_name: provider.display_name.clone(),
-                        model: model.to_string(),
-                    })
+                    provider
+                        .has_configured_model(model)
+                        .then(|| ProviderModelChoice {
+                            provider_id: provider.id.clone(),
+                            provider_name: provider.display_name.clone(),
+                            model: model.to_string(),
+                        })
                 })
                 .collect(),
         }
@@ -1450,11 +1454,13 @@ impl AppConfig {
                 .filter_map(|active| {
                     let provider = self.provider(Some(active.provider_id.trim())).ok()?;
                     let model = active.model.trim();
-                    (!model.is_empty()).then(|| ProviderModelChoice {
-                        provider_id: provider.id.clone(),
-                        provider_name: provider.display_name.clone(),
-                        model: model.to_string(),
-                    })
+                    provider
+                        .has_configured_model(model)
+                        .then(|| ProviderModelChoice {
+                            provider_id: provider.id.clone(),
+                            provider_name: provider.display_name.clone(),
+                            model: model.to_string(),
+                        })
                 })
                 .collect(),
             None => Vec::new(),
@@ -1470,6 +1476,17 @@ impl AppConfig {
                     .any(|active| active.provider_id == provider_id && active.model == model)
             })
             .unwrap_or(false)
+    }
+
+    pub fn remove_active_model_references(&mut self, provider_id: &str, model: &str) {
+        if let Some(active_models) = &mut self.active_provider_models {
+            active_models
+                .retain(|active| !(active.provider_id == provider_id && active.model == model));
+        }
+        if let Some(active_models) = &mut self.active_multimodal_provider_models {
+            active_models
+                .retain(|active| !(active.provider_id == provider_id && active.model == model));
+        }
     }
 
     pub fn toggle_active_multimodal_provider_model(
@@ -1604,28 +1621,24 @@ impl AppConfig {
     }
 
     pub fn remove_active_provider_model(&mut self, provider_id: &str, model: &str) -> Result<()> {
-        let provider = self
+        let provider_index = self
             .providers
-            .iter_mut()
-            .find(|provider| provider.id == provider_id)
+            .iter()
+            .position(|provider| provider.id == provider_id)
             .with_context(|| format!("provider not found: {provider_id}"))?;
         if model.trim().is_empty() {
             bail!("model cannot be empty");
         }
-        provider.models.retain(|item| item != model);
-        provider.model_context_window.remove(model);
-        provider.model_modalities.remove(model);
-        if let Some(active_models) = &mut self.active_provider_models {
-            active_models
-                .retain(|active| !(active.provider_id == provider_id && active.model == model));
+        {
+            let provider = &mut self.providers[provider_index];
+            provider.models.retain(|item| item != model);
+            provider.model_context_window.remove(model);
+            provider.model_modalities.remove(model);
+            if provider.default_model == model {
+                provider.default_model = provider.models.first().cloned().unwrap_or_default();
+            }
         }
-        if let Some(active_models) = &mut self.active_multimodal_provider_models {
-            active_models
-                .retain(|active| !(active.provider_id == provider_id && active.model == model));
-        }
-        if provider.default_model == model {
-            provider.default_model = provider.models.first().cloned().unwrap_or_default();
-        }
+        self.remove_active_model_references(provider_id, model);
         Ok(())
     }
 
@@ -1831,17 +1844,6 @@ impl AppConfig {
             Some(index) => self.providers[index] = provider,
             None => self.providers.push(provider),
         }
-    }
-}
-
-impl SecretsConfig {
-    pub fn load(paths: &MiyuPaths) -> Result<Self> {
-        if !paths.secrets_file.exists() {
-            return Ok(Self::default());
-        }
-        let raw = std::fs::read_to_string(&paths.secrets_file)?;
-        let stripped = json_comments::StripComments::new(raw.as_bytes());
-        Ok(serde_json::from_reader(stripped)?)
     }
 }
 
@@ -2196,20 +2198,6 @@ fn default_on_overflow() -> String {
     "compact".to_string()
 }
 
-#[cfg(unix)]
-fn set_private_permissions(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_mode(0o600);
-    std::fs::set_permissions(path, permissions)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &std::path::Path) -> Result<()> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2246,6 +2234,77 @@ mod tests {
         assert_eq!(choices.len(), 1);
         assert_eq!(choices[0].provider_id, OPENCODE_PROVIDER_ID);
         assert_eq!(choices[0].model, OPENCODE_DEFAULT_CHAT_MODEL);
+    }
+
+    #[test]
+    fn active_provider_model_choices_ignore_stale_models() {
+        let mut config = AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
+        config.providers[0].models = vec!["deepseek-v4-flash-free".to_string()];
+        config.providers[0].default_model = "deepseek-v4-flash-free".to_string();
+        config.active_provider_models = Some(vec![
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "mimo-v2.5-free".to_string(),
+            },
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "deepseek-v4-flash-free".to_string(),
+            },
+        ]);
+
+        let choices = config.active_provider_model_choices();
+
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].provider_id, provider_id);
+        assert_eq!(choices[0].model, "deepseek-v4-flash-free");
+    }
+
+    #[test]
+    fn normalize_prunes_stale_active_provider_models() {
+        let mut config = AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
+        config.providers[0].models = vec!["deepseek-v4-flash-free".to_string()];
+        config.providers[0].default_model = "deepseek-v4-flash-free".to_string();
+        config.active_provider_models = Some(vec![
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "mimo-v2.5-free".to_string(),
+            },
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "deepseek-v4-flash-free".to_string(),
+            },
+        ]);
+
+        config.normalize_builtin_providers();
+
+        assert_eq!(
+            config.active_provider_models,
+            Some(vec![ActiveProviderModelConfig {
+                provider_id,
+                model: "deepseek-v4-flash-free".to_string(),
+            }])
+        );
+    }
+
+    #[test]
+    fn remove_active_model_references_clears_text_and_multimodal() {
+        let mut config = AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
+        config.active_provider_models = Some(vec![ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: "old-model".to_string(),
+        }]);
+        config.active_multimodal_provider_models = Some(vec![ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: "old-model".to_string(),
+        }]);
+
+        config.remove_active_model_references(&provider_id, "old-model");
+
+        assert_eq!(config.active_provider_models, Some(Vec::new()));
+        assert_eq!(config.active_multimodal_provider_models, Some(Vec::new()));
     }
 
     #[test]

@@ -1536,7 +1536,6 @@ mod tests {
         MiyuPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
-            secrets_file: root.join("config/secrets.jsonc"),
             skills_dir: root.join("config/skills"),
             data_dir: root.join("data"),
             cache_dir: root.join("cache"),

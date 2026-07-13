@@ -7,7 +7,6 @@ use std::path::PathBuf;
 pub struct MiyuPaths {
     pub config_dir: PathBuf,
     pub config_file: PathBuf,
-    pub secrets_file: PathBuf,
     pub skills_dir: PathBuf,
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
@@ -46,7 +45,6 @@ impl MiyuPaths {
 
         Ok(Self {
             config_file: config_dir.join("config.jsonc"),
-            secrets_file: config_dir.join("secrets.jsonc"),
             skills_dir: config_dir.join("skills"),
             config_dir,
             data_dir,
@@ -82,11 +80,6 @@ impl MiyuPaths {
             "{}: {}",
             t("config_file", "配置文件"),
             self.config_file.display()
-        );
-        println!(
-            "{}: {}",
-            t("secrets_file", "密钥文件"),
-            self.secrets_file.display()
         );
         println!(
             "{}: {}",

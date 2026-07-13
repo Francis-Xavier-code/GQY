@@ -1460,16 +1460,20 @@ impl<'a> ProviderBrowser<'a> {
         if self.active_col != 2 {
             return;
         }
+        let mut removed = None;
         if let (Some(provider), Some(model)) = (
             self.config.providers.get_mut(self.provider_idx),
             self.models.get(self.model_idx),
         ) {
             if let Some(index) = provider.models.iter().position(|item| item == &model.full) {
+                let provider_id = provider.id.clone();
+                let model = model.full.clone();
                 provider.models.remove(index);
-                if provider.default_model == model.full {
+                if provider.default_model == model {
                     provider.default_model = provider.models.first().cloned().unwrap_or_default();
                 }
-                self.status = format!("已取消激活模型: {}", model.full);
+                self.status = format!("已取消激活模型: {model}");
+                removed = Some((provider_id, model));
             } else {
                 provider.models.push(model.full.clone());
                 auto_configure_model_tags(self.paths, provider, &model.full);
@@ -1478,6 +1482,10 @@ impl<'a> ProviderBrowser<'a> {
                 }
                 self.status = format!("已激活模型: {}", model.full);
             }
+        }
+        if let Some((provider_id, model)) = removed {
+            self.config
+                .remove_active_model_references(&provider_id, &model);
         }
     }
 

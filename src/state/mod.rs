@@ -371,7 +371,6 @@ mod tests {
         let store = StateStore::new(&MiyuPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
-            secrets_file: temp.path().join("config/secrets.jsonc"),
             skills_dir: temp.path().join("config/skills"),
             data_dir: temp.path().join("data"),
             cache_dir: temp.path().join("cache"),
@@ -403,7 +402,6 @@ mod tests {
         let store = StateStore::new(&MiyuPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
-            secrets_file: temp.path().join("config/secrets.jsonc"),
             skills_dir: temp.path().join("config/skills"),
             data_dir: temp.path().join("data"),
             cache_dir: temp.path().join("cache"),
@@ -430,7 +428,6 @@ mod tests {
         let store = StateStore::new(&MiyuPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
-            secrets_file: temp.path().join("config/secrets.jsonc"),
             skills_dir: temp.path().join("config/skills"),
             data_dir: temp.path().join("data"),
             cache_dir: temp.path().join("cache"),
@@ -484,7 +481,6 @@ mod tests {
         let store = StateStore::new(&MiyuPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
-            secrets_file: temp.path().join("config/secrets.jsonc"),
             skills_dir: temp.path().join("config/skills"),
             data_dir: temp.path().join("data"),
             cache_dir: temp.path().join("cache"),
@@ -517,7 +513,6 @@ mod tests {
         let store = StateStore::new(&MiyuPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
-            secrets_file: temp.path().join("config/secrets.jsonc"),
             skills_dir: temp.path().join("config/skills"),
             data_dir: temp.path().join("data"),
             cache_dir: temp.path().join("cache"),
