@@ -2128,6 +2128,10 @@ fn render_patch_diff(path: &str, diff: &str) -> String {
         t("Modified", "已修改")
     ));
 
+    let terminal_width = terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(100);
+
     let mut old_line = 0usize;
     let mut new_line = 0usize;
     for raw_line in diff.lines() {
@@ -2162,12 +2166,35 @@ fn render_patch_diff(path: &str, diff: &str) -> String {
             (new_line, ' ', raw_line, "\x1b[38;5;245m")
         };
 
-        output.push_str(&format!(
-            "\x1b[38;5;102m{line_no:>5}\x1b[0m {style}{sign} │ {body}\x1b[0m\n"
-        ));
+        push_patch_diff_line(&mut output, line_no, sign, body, style, terminal_width);
     }
     output.push('\n');
     output
+}
+
+fn push_patch_diff_line(
+    output: &mut String,
+    line_no: usize,
+    sign: char,
+    body: &str,
+    style: &str,
+    terminal_width: usize,
+) {
+    let first_prefix = format!("\x1b[38;5;102m{line_no:>5}\x1b[0m {style}{sign} │ ");
+    let continuation_prefix = format!("\x1b[38;5;102m     \x1b[0m {style}  │ ");
+    let prefix_width = visible_width(&first_prefix);
+    let body_width = terminal_width.saturating_sub(prefix_width + 1).max(1);
+    let wrapped = wrap_ansi_text(body, body_width);
+
+    for (index, segment) in wrapped.iter().enumerate() {
+        if index == 0 {
+            output.push_str(&first_prefix);
+        } else {
+            output.push_str(&continuation_prefix);
+        }
+        output.push_str(segment);
+        output.push_str("\x1b[0m\n");
+    }
 }
 
 fn parse_diff_hunk_header(header: &str) -> Option<(usize, usize)> {
@@ -2654,6 +2681,54 @@ mod tests {
         assert!(visible.contains("[✔]"));
         assert!(visible.contains("[·]"));
         assert_eq!(visible.lines().filter(|line| line.contains('│')).count(), 3);
+    }
+
+    #[test]
+    fn patch_diff_wraps_long_lines_with_aligned_gutter() {
+        let diff = format!(
+            "--- a/run-vm.sh\n+++ b/run-vm.sh\n@@ -1,0 +1,1 @@\n+{}\n",
+            "RESULT=$(sudo virsh qemu-agent-command archlinux ".repeat(8)
+        );
+        let output = render_patch_diff("run-vm.sh", &diff);
+        let visible = strip_ansi_for_test(&output);
+        let diff_lines = visible
+            .lines()
+            .filter(|line| line.contains('│'))
+            .collect::<Vec<_>>();
+        assert!(diff_lines.len() > 1, "diff line was not wrapped: {visible}");
+        assert!(diff_lines[0].starts_with("    1 + │ "));
+        assert!(diff_lines[1].starts_with("        │ "));
+
+        let terminal_width = terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(100);
+        for line in output.lines().filter(|line| line.contains('│')) {
+            assert!(
+                visible_width(line) < terminal_width,
+                "diff line too wide: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_diff_wraps_wide_character_lines() {
+        let diff = format!(
+            "--- a/demo.txt\n+++ b/demo.txt\n@@ -1,0 +1,1 @@\n+{}\n",
+            "软换行问题".repeat(30)
+        );
+        let output = render_patch_diff("demo.txt", &diff);
+        let visible = strip_ansi_for_test(&output);
+        assert!(visible.lines().filter(|line| line.contains('│')).count() > 1);
+
+        let terminal_width = terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(100);
+        for line in output.lines().filter(|line| line.contains('│')) {
+            assert!(
+                visible_width(line) < terminal_width,
+                "wide-char diff line too wide: {line}"
+            );
+        }
     }
 
     fn strip_ansi_for_test(input: &str) -> String {
