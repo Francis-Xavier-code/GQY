@@ -47,7 +47,7 @@ impl OverflowCheck {
         let Some(threshold) = self.threshold() else {
             return false;
         };
-        usage.total_tokens as usize >= threshold
+        usage.effective_total_tokens() as usize >= threshold
     }
 
     #[allow(dead_code)]

@@ -81,11 +81,12 @@ enum TokenEstimateMethod {
 impl ResearchStats {
     fn add_usage_or_estimate(&mut self, usage: Option<&Usage>, texts: &[&str]) {
         if let Some(usage) = usage {
-            if usage.total_tokens > 0 {
+            let total_tokens = usage.effective_total_tokens();
+            if total_tokens > 0 {
                 self.prompt_tokens += usage.prompt_tokens;
                 self.completion_tokens += usage.completion_tokens;
-                self.total_tokens += usage.total_tokens;
-                self.token_estimate += usage.total_tokens;
+                self.total_tokens += total_tokens;
+                self.token_estimate += total_tokens;
                 self.token_estimate_method = match self.token_estimate_method {
                     TokenEstimateMethod::None | TokenEstimateMethod::ProviderUsage => {
                         TokenEstimateMethod::ProviderUsage

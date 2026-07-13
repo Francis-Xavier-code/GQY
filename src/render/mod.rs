@@ -69,6 +69,7 @@ pub fn print_token_usage(
     turn_tokens: u64,
     session_tokens: u64,
     context_window: Option<usize>,
+    cumulative_tokens: Option<u64>,
     estimated: bool,
 ) -> Result<()> {
     let prefix = if estimated {
@@ -78,7 +79,12 @@ pub fn print_token_usage(
     };
     let line = format!(
         "{prefix}Token: {}",
-        format_token_usage_inline(turn_tokens, session_tokens, context_window)
+        format_token_usage_inline(
+            turn_tokens,
+            session_tokens,
+            context_window,
+            cumulative_tokens
+        )
     );
     let mut stdout = io::stdout();
     writeln!(stdout, "\x1b[2m{line}\x1b[0m\n")?;
@@ -90,6 +96,7 @@ pub(crate) fn format_token_usage_inline(
     turn_tokens: u64,
     session_tokens: u64,
     context_window: Option<usize>,
+    cumulative_tokens: Option<u64>,
 ) -> String {
     let context_window = context_window.map(|value| value as u64);
     let context = context_window
@@ -104,11 +111,14 @@ pub(crate) fn format_token_usage_inline(
         "?".to_string()
     };
 
-    let session = format!(
+    let mut session = format!(
         "{}/{} ({usage_ratio})",
         format_compact_count(session_tokens),
         context,
     );
+    if let Some(cumulative_tokens) = cumulative_tokens {
+        session.push_str(&format!(" · Σ{}", format_compact_count(cumulative_tokens)));
+    }
     if turn_tokens == 0 {
         session
     } else {
@@ -133,7 +143,7 @@ pub(crate) fn format_compact_count(value: u64) -> String {
 }
 
 fn format_compact_unit(value: f64, suffix: &str) -> String {
-    if value >= 10.0 || (value.fract() - 0.0).abs() < f64::EPSILON {
+    if (value.fract() - 0.0).abs() < f64::EPSILON {
         format!("{value:.0}{suffix}")
     } else {
         format!("{value:.1}{suffix}")
@@ -2537,12 +2547,16 @@ mod tests {
     #[test]
     fn token_usage_hides_zero_turn_tokens() {
         assert_eq!(
-            format_token_usage_inline(0, 1_300, Some(272_000)),
+            format_token_usage_inline(0, 1_300, Some(272_000), None),
             "1.3k/272k (0.5%)"
         );
         assert_eq!(
-            format_token_usage_inline(1_300, 1_300, Some(272_000)),
+            format_token_usage_inline(1_300, 1_300, Some(272_000), None),
             "1.3k · 1.3k/272k (0.5%)"
+        );
+        assert_eq!(
+            format_token_usage_inline(5_300, 10_000, Some(200_000), Some(86_200)),
+            "5.3k · 10k/200k (5.0%) · Σ86.2k"
         );
     }
 

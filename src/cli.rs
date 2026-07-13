@@ -45,10 +45,15 @@ struct ReplTokenUsage {
     turn_tokens: u64,
     session_tokens: u64,
     context_window: Option<usize>,
+    cumulative_tokens: Option<u64>,
 }
 
 impl ReplFooterStatus {
-    fn from_config(config: &AppConfig, session_tokens: u64) -> Self {
+    fn from_config(
+        config: &AppConfig,
+        session_tokens: u64,
+        cumulative_tokens: Option<u64>,
+    ) -> Self {
         let active = config.active_provider_model_choices();
         let (provider_id, model) = match active.as_slice() {
             [] => ("-".to_string(), "None".to_string()),
@@ -68,6 +73,7 @@ impl ReplFooterStatus {
                 turn_tokens: 0,
                 session_tokens,
                 context_window: config.active_context_window().ok().flatten(),
+                cumulative_tokens,
             },
         }
     }
@@ -77,18 +83,44 @@ impl ReplFooterStatus {
         result: &crate::llm::ChatResult,
         session_tokens: u64,
         context_window: Option<usize>,
+        cumulative_tokens: Option<u64>,
     ) {
         if let Some(usage) = &result.usage {
-            self.token_usage = ReplTokenUsage {
-                turn_tokens: render::usage_total(usage),
+            self.set_token_usage(
+                render::usage_total(usage),
                 session_tokens,
-                context_window: context_window.or(self.token_usage.context_window),
-            };
+                context_window,
+                cumulative_tokens,
+            );
         }
+    }
+
+    fn set_token_usage(
+        &mut self,
+        turn_tokens: u64,
+        session_tokens: u64,
+        context_window: Option<usize>,
+        cumulative_tokens: Option<u64>,
+    ) {
+        self.token_usage = ReplTokenUsage {
+            turn_tokens,
+            session_tokens,
+            context_window: context_window.or(self.token_usage.context_window),
+            cumulative_tokens,
+        };
     }
 
     fn update_session_tokens(&mut self, session_tokens: u64) {
         self.token_usage.session_tokens = session_tokens;
+    }
+
+    fn reset_token_usage(&mut self, session_tokens: u64, context_window: Option<usize>) {
+        self.token_usage = ReplTokenUsage {
+            turn_tokens: 0,
+            session_tokens,
+            context_window: context_window.or(self.token_usage.context_window),
+            cumulative_tokens: None,
+        };
     }
 }
 
@@ -111,6 +143,7 @@ fn repl_footer_line(mode: AgentMode, footer: &ReplFooterStatus, cols: usize) -> 
         usage.turn_tokens,
         usage.session_tokens,
         usage.context_window,
+        usage.cumulative_tokens,
     );
     let right = format!("\x1b[2m{right_plain}\x1b[0m");
     let right_width = visible_width(&right);
@@ -1774,13 +1807,34 @@ async fn run_chat_with_images(
     renderer.finish()?;
     let result = result?;
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
+    let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
+    let context_tokens = state.visible_context_tokens()?;
     print_chat_token_usage(
         &result,
         show_token_usage,
-        state.token_total()?,
+        context_tokens,
         result_context_window(&display_config, &result).or(agent.context_window()),
+        Some(cumulative_tokens),
     )?;
-    handle_post_turn_overflow(&agent, &mut renderer, &result, show_token_usage, &state).await?;
+    let overflow_result = handle_post_turn_overflow(
+        &agent,
+        &mut renderer,
+        &result,
+        show_token_usage,
+        &state,
+        Some(&mut cumulative_tokens),
+    )
+    .await?;
+    let updated_context_tokens = state.visible_context_tokens()?;
+    if overflow_result.is_none() && updated_context_tokens != context_tokens {
+        print_chat_token_usage(
+            &result,
+            show_token_usage,
+            updated_context_tokens,
+            result_context_window(&display_config, &result).or(agent.context_window()),
+            Some(cumulative_tokens),
+        )?;
+    }
     Ok(())
 }
 
@@ -1885,13 +1939,34 @@ async fn run_chat_with_options(
     renderer.finish()?;
     let result = result?;
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
+    let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
+    let context_tokens = state.visible_context_tokens()?;
     print_chat_token_usage(
         &result,
         show_token_usage,
-        state.token_total()?,
+        context_tokens,
         result_context_window(&display_config, &result).or(agent.context_window()),
+        Some(cumulative_tokens),
     )?;
-    handle_post_turn_overflow(&agent, &mut renderer, &result, show_token_usage, &state).await?;
+    let overflow_result = handle_post_turn_overflow(
+        &agent,
+        &mut renderer,
+        &result,
+        show_token_usage,
+        &state,
+        Some(&mut cumulative_tokens),
+    )
+    .await?;
+    let updated_context_tokens = state.visible_context_tokens()?;
+    if overflow_result.is_none() && updated_context_tokens != context_tokens {
+        print_chat_token_usage(
+            &result,
+            show_token_usage,
+            updated_context_tokens,
+            result_context_window(&display_config, &result).or(agent.context_window()),
+            Some(cumulative_tokens),
+        )?;
+    }
     Ok(())
 }
 
@@ -1900,6 +1975,7 @@ fn print_chat_token_usage(
     enabled: bool,
     session_token_total: u64,
     context_window: Option<usize>,
+    cumulative_tokens: Option<u64>,
 ) -> Result<()> {
     if enabled {
         if let Some(usage) = &result.usage {
@@ -1908,6 +1984,7 @@ fn print_chat_token_usage(
                 turn_tokens,
                 session_token_total,
                 context_window,
+                cumulative_tokens,
                 result.usage_estimated,
             )?;
         }
@@ -1930,23 +2007,33 @@ async fn handle_post_turn_overflow(
     result: &crate::llm::ChatResult,
     show_token_usage: bool,
     state: &StateStore,
-) -> Result<()> {
+    cumulative_tokens: Option<&mut u64>,
+) -> Result<Option<crate::llm::ChatResult>> {
     let Some(usage) = result.usage.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     let compact_result = agent
         .handle_overflow_after_turn(usage, |event| handle_agent_event(renderer, event))
         .await?;
     renderer.finish()?;
     if let Some(compact_result) = compact_result {
+        let mut cumulative_display = None;
+        if let Some(total) = cumulative_tokens {
+            if let Some(usage) = compact_result.usage.as_ref() {
+                *total = total.saturating_add(render::usage_total(usage));
+                cumulative_display = Some(*total);
+            }
+        }
         print_chat_token_usage(
             &compact_result,
             show_token_usage,
-            state.token_total()?,
+            state.visible_context_tokens()?,
             agent.context_window(),
+            cumulative_display,
         )?;
+        return Ok(Some(compact_result));
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
@@ -1963,7 +2050,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
         println!("\x1b[2m{message}\x1b[0m");
     }
-    let mut footer = ReplFooterStatus::from_config(&config, state.token_total()?);
+    let mut cumulative_tokens = 0u64;
+    let mut footer = ReplFooterStatus::from_config(&config, state.visible_context_tokens()?, None);
     let mut show_shortcut_hint = true;
     let initial_registry = build_tool_registry(&config, paths, mode)?;
     let mut agent = Agent::new(
@@ -2004,7 +2092,11 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if command.eq_ignore_ascii_case("/models") {
             run_providers(paths, ProvidersArgs { index: None })?;
             reload_repl_config(paths, &mut config, &mut client)?;
-            footer = ReplFooterStatus::from_config(&config, state.token_total()?);
+            footer = ReplFooterStatus::from_config(
+                &config,
+                state.visible_context_tokens()?,
+                (cumulative_tokens > 0).then_some(cumulative_tokens),
+            );
             let registry = build_tool_registry(&config, paths, mode)?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
@@ -2015,7 +2107,11 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if command.eq_ignore_ascii_case("/config") {
             crate::config_tui::run(paths)?;
             reload_repl_config(paths, &mut config, &mut client)?;
-            footer = ReplFooterStatus::from_config(&config, state.token_total()?);
+            footer = ReplFooterStatus::from_config(
+                &config,
+                state.visible_context_tokens()?,
+                (cumulative_tokens > 0).then_some(cumulative_tokens),
+            );
             let registry = build_tool_registry(&config, paths, mode)?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
@@ -2025,7 +2121,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         }
         if command.eq_ignore_ascii_case("/undo") {
             let (removed, prompt) = state.undo_last_turn()?;
-            footer.update_session_tokens(state.token_total()?);
+            footer.update_session_tokens(state.visible_context_tokens()?);
             println!("{}: {removed}", t("undone messages", "已撤销消息数"));
             prefill = prompt;
             continue;
@@ -2047,17 +2143,23 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             {
                 Ok(Some(result)) => {
                     renderer.finish()?;
+                    if let Some(usage) = result.usage.as_ref() {
+                        cumulative_tokens =
+                            cumulative_tokens.saturating_add(render::usage_total(usage));
+                    }
                     footer.update_token_usage(
                         &result,
-                        state.token_total()?,
+                        state.visible_context_tokens()?,
                         agent.context_window(),
+                        (cumulative_tokens > 0).then_some(cumulative_tokens),
                     );
                     if config.display.show_token_usage {
                         print_chat_token_usage(
                             &result,
                             true,
-                            state.token_total()?,
+                            state.visible_context_tokens()?,
                             agent.context_window(),
+                            (cumulative_tokens > 0).then_some(cumulative_tokens),
                         )?;
                     }
                 }
@@ -2067,7 +2169,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                         "\x1b[2m{}\x1b[0m",
                         t("nothing to compact", "没有可压缩的上下文")
                     );
-                    footer.update_session_tokens(state.token_total()?);
+                    footer.update_session_tokens(state.visible_context_tokens()?);
                 }
                 Err(err) => {
                     renderer.finish()?;
@@ -2079,14 +2181,16 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if command.eq_ignore_ascii_case("/reset") {
             run_reset(paths, None)?;
             input_history.clear();
-            footer.update_session_tokens(state.token_total()?);
+            cumulative_tokens = 0;
+            footer.reset_token_usage(state.visible_context_tokens()?, agent.context_window());
             continue;
         }
         if command.eq_ignore_ascii_case("/reset all") {
             run_reset(paths, Some("all"))?;
             input_history.clear();
             agent.reset_memory()?;
-            footer.update_session_tokens(state.token_total()?);
+            cumulative_tokens = 0;
+            footer.reset_token_usage(state.visible_context_tokens()?, agent.context_window());
             continue;
         }
         if input.is_empty() {
@@ -2134,19 +2238,46 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             Ok(Some(result)) => {
                 let context_window =
                     result_context_window(&config, &result).or(agent.context_window());
-                footer.update_token_usage(&result, state.token_total()?, context_window);
+                let mut turn_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
+                if let Some(usage) = result.usage.as_ref() {
+                    cumulative_tokens =
+                        cumulative_tokens.saturating_add(render::usage_total(usage));
+                }
+                footer.update_token_usage(
+                    &result,
+                    state.visible_context_tokens()?,
+                    context_window,
+                    (cumulative_tokens > 0).then_some(cumulative_tokens),
+                );
                 print_mixed_model_endpoint(show_mixed_model_endpoint(&config, true), &result);
-                if let Err(err) = handle_post_turn_overflow(
+                match handle_post_turn_overflow(
                     &agent,
                     &mut renderer,
                     &result,
                     config.display.show_token_usage,
                     &state,
+                    Some(&mut cumulative_tokens),
                 )
                 .await
                 {
-                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
-                    continue;
+                    Ok(Some(compact_result)) => {
+                        if let Some(usage) = compact_result.usage.as_ref() {
+                            turn_tokens = turn_tokens.saturating_add(render::usage_total(usage));
+                        }
+                        footer.set_token_usage(
+                            turn_tokens,
+                            state.visible_context_tokens()?,
+                            agent.context_window(),
+                            (cumulative_tokens > 0).then_some(cumulative_tokens),
+                        );
+                    }
+                    Ok(None) => {
+                        footer.update_session_tokens(state.visible_context_tokens()?);
+                    }
+                    Err(err) => {
+                        eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                        continue;
+                    }
                 }
                 show_shortcut_hint = false;
             }
@@ -3663,6 +3794,20 @@ fn truncate_visible_width(value: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod repl_input_tests {
     use super::*;
+
+    #[test]
+    fn footer_reset_clears_turn_and_cumulative_tokens() {
+        let config = AppConfig::default();
+        let mut footer = ReplFooterStatus::from_config(&config, 100, Some(250));
+        footer.set_token_usage(50, 100, Some(200_000), Some(250));
+
+        footer.reset_token_usage(0, Some(200_000));
+
+        assert_eq!(footer.token_usage.turn_tokens, 0);
+        assert_eq!(footer.token_usage.session_tokens, 0);
+        assert_eq!(footer.token_usage.context_window, Some(200_000));
+        assert_eq!(footer.token_usage.cumulative_tokens, None);
+    }
 
     #[test]
     fn prompt_rows_wrap_at_terminal_width() {

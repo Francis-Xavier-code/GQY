@@ -1004,11 +1004,7 @@ impl UsageAccumulator {
         self.completion_tokens = self
             .completion_tokens
             .saturating_add(usage.completion_tokens);
-        let total = if usage.total_tokens > 0 {
-            usage.total_tokens
-        } else {
-            usage.prompt_tokens.saturating_add(usage.completion_tokens)
-        };
+        let total = usage.effective_total_tokens();
         self.total_tokens = self.total_tokens.saturating_add(total);
         self.has_usage = true;
         self.estimated |= estimated;
@@ -1632,7 +1628,7 @@ mod tests {
     #[test]
     fn overflow_check_estimate_triggers() {
         let check = overflow::OverflowCheck::new(Some(1_000), 0.9, None);
-        let big_msg = ChatMessage::plain("user", &"x".repeat(4_000));
+        let big_msg = ChatMessage::plain("user", &"token ".repeat(2_000));
         let small_msg = ChatMessage::plain("user", "hi");
         assert!(check.check_estimate(&[big_msg]));
         assert!(!check.check_estimate(&[small_msg]));

@@ -238,8 +238,9 @@ impl StateStore {
         usage::clear_last_usage(&self.usage_file())
     }
 
-    pub fn token_total(&self) -> Result<u64> {
-        self.conv_db.token_total()
+    pub fn visible_context_tokens(&self) -> Result<u64> {
+        let turns = self.conv_db.load_visible_turns()?;
+        Ok(turns.iter().map(turn_estimated_tokens).sum::<usize>() as u64)
     }
 
     #[allow(dead_code)]
@@ -596,6 +597,22 @@ mod tests {
 
         store.reset_conversation().unwrap();
         assert!(store.load_session_loaded_tools().unwrap().is_empty());
+    }
+
+    #[test]
+    fn visible_context_tokens_tracks_visible_text_not_provider_usage_total() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "short", 999999).unwrap();
+        store
+            .complete_turn_with_usage("t1", "reply", None, Some(100_000), false)
+            .unwrap();
+
+        let context_tokens = store.visible_context_tokens().unwrap();
+        assert!(context_tokens > 0);
+        assert!(context_tokens < 100_000);
+
+        store.reset_conversation().unwrap();
+        assert_eq!(store.visible_context_tokens().unwrap(), 0);
     }
 
     #[test]

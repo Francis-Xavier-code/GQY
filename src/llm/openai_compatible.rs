@@ -361,11 +361,14 @@ impl OpenAiCompatibleClient {
                 bail!("OpenAI Responses protocol is not supported by this provider");
             }
         }
-        let request = ChatRequest {
+        let mut request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
             temperature: self.provider.temperature,
             stream: true,
+            stream_options: Some(ChatStreamOptions {
+                include_usage: true,
+            }),
             tools: (!tools.is_empty()).then_some(tools),
             chat_template_kwargs: taotoken_glm_chat_template_kwargs(&self.provider),
         };
@@ -373,35 +376,49 @@ impl OpenAiCompatibleClient {
             "{}/chat/completions",
             self.provider.base_url.trim_end_matches('/')
         );
-        let response = self
+        let mut response = self
             .client
-            .post(url)
+            .post(&url)
             .bearer_auth(&self.api_key)
             .json(&request)
             .send()
             .await?;
-        let status = response.status();
+        let mut status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            let hint = claude_protocol_hint(&self.provider);
-            if let Some(duration) = cooldown_for_status(status.as_u16()) {
-                if let Ok(mut scheduler) = LLM_SCHEDULER.lock() {
-                    scheduler.mark_failure(
-                        endpoint_id(
-                            &self.provider.id,
-                            &self.provider.default_model,
-                            self.key_index,
-                        ),
-                        duration,
-                    );
+            if stream_options_unsupported(status.as_u16(), &body) {
+                request.stream_options = None;
+                response = self
+                    .client
+                    .post(&url)
+                    .bearer_auth(&self.api_key)
+                    .json(&request)
+                    .send()
+                    .await?;
+                status = response.status();
+                if status.is_success() {
+                    return self
+                        .consume_chat_completion_stream(response, on_chunk)
+                        .await;
                 }
+                let body = response.text().await.unwrap_or_default();
+                return self.bail_chat_completion_failure(status.as_u16(), &body);
             }
-            bail!(
-                "{} ({status}): {body}{hint}",
-                t("chat completions stream request failed", "聊天流式请求失败",)
-            );
+            return self.bail_chat_completion_failure(status.as_u16(), &body);
         }
 
+        self.consume_chat_completion_stream(response, on_chunk)
+            .await
+    }
+
+    async fn consume_chat_completion_stream<F>(
+        &self,
+        response: reqwest::Response,
+        on_chunk: &mut F,
+    ) -> Result<ChatResult>
+    where
+        F: FnMut(ChatStreamChunk) -> Result<()>,
+    {
         let dsml = dsml_enabled_for(&self.provider);
         let mut buffer = Utf8LineBuffer::default();
         let mut content = String::new();
@@ -449,6 +466,29 @@ impl OpenAiCompatibleClient {
             )?;
         }
         finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)
+    }
+
+    fn bail_chat_completion_failure<T>(&self, status: u16, body: &str) -> Result<T> {
+        let hint = claude_protocol_hint(&self.provider);
+        if let Some(duration) = cooldown_for_status(status) {
+            if let Ok(mut scheduler) = LLM_SCHEDULER.lock() {
+                scheduler.mark_failure(
+                    endpoint_id(
+                        &self.provider.id,
+                        &self.provider.default_model,
+                        self.key_index,
+                    ),
+                    duration,
+                );
+            }
+        }
+        bail!(
+            "{} ({}): {}{}",
+            t("chat completions stream request failed", "聊天流式请求失败",),
+            status,
+            body,
+            hint
+        )
     }
 
     async fn chat_anthropic_stream<F>(
@@ -743,6 +783,20 @@ fn responses_unsupported(status: u16, body: &str) -> bool {
         || body.contains("not found")
 }
 
+fn stream_options_unsupported(status: u16, body: &str) -> bool {
+    if status != 400 && status != 422 {
+        return false;
+    }
+    let body = body.to_ascii_lowercase();
+    body.contains("stream_options")
+        && (body.contains("unsupported")
+            || body.contains("not supported")
+            || body.contains("unknown")
+            || body.contains("unrecognized")
+            || body.contains("invalid")
+            || body.contains("extra"))
+}
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
@@ -750,9 +804,16 @@ struct ChatRequest {
     temperature: f32,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<ChatStreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<ChatTemplateKwargs>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatStreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1842,10 +1903,17 @@ where
         }
         "response.completed" | "response.incomplete" => {
             if let Some(next_usage) = event.response.and_then(|response| response.usage) {
+                let total_tokens = if next_usage.total_tokens > 0 {
+                    next_usage.total_tokens
+                } else {
+                    next_usage
+                        .input_tokens
+                        .saturating_add(next_usage.output_tokens)
+                };
                 *usage = Some(Usage {
                     prompt_tokens: next_usage.input_tokens,
                     completion_tokens: next_usage.output_tokens,
-                    total_tokens: next_usage.total_tokens,
+                    total_tokens,
                 });
             }
             flush_buffer(
@@ -1900,7 +1968,7 @@ where
     match event.kind.as_str() {
         "message_start" => {
             if let Some(usage) = event.message.and_then(|message| message.usage) {
-                state.usage = Some(map_anthropic_usage(usage));
+                merge_anthropic_usage(&mut state.usage, usage);
             }
         }
         "content_block_start" => {
@@ -1976,7 +2044,7 @@ where
         }
         "message_delta" => {
             if let Some(usage) = event.usage {
-                state.usage = Some(map_anthropic_usage(usage));
+                merge_anthropic_usage(&mut state.usage, usage);
             }
             flush_anthropic_state(state, on_chunk)?;
         }
@@ -2021,12 +2089,23 @@ where
     )
 }
 
-fn map_anthropic_usage(usage: AnthropicUsage) -> Usage {
-    Usage {
-        prompt_tokens: usage.input_tokens,
-        completion_tokens: usage.output_tokens,
-        total_tokens: usage.input_tokens + usage.output_tokens,
-    }
+fn merge_anthropic_usage(current: &mut Option<Usage>, usage: AnthropicUsage) {
+    let previous = current.take().unwrap_or_default();
+    let prompt_tokens = if usage.input_tokens > 0 {
+        usage.input_tokens
+    } else {
+        previous.prompt_tokens
+    };
+    let completion_tokens = if usage.output_tokens > 0 {
+        usage.output_tokens
+    } else {
+        previous.completion_tokens
+    };
+    *current = Some(Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens.saturating_add(completion_tokens),
+    });
 }
 
 fn delta_reasoning_text(delta: &ChatChoiceMessage) -> Option<String> {
@@ -2473,6 +2552,39 @@ mod tests {
     }
 
     #[test]
+    fn chat_request_includes_stream_usage_options() {
+        let request = ChatRequest {
+            model: "model".to_string(),
+            messages: vec![ChatMessage::plain("user", "hi")],
+            temperature: 0.0,
+            stream: true,
+            stream_options: Some(ChatStreamOptions {
+                include_usage: true,
+            }),
+            tools: None,
+            chat_template_kwargs: None,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(value["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn stream_options_unsupported_detects_retryable_error() {
+        assert!(stream_options_unsupported(
+            400,
+            "unknown parameter: stream_options"
+        ));
+        assert!(stream_options_unsupported(
+            422,
+            "stream_options is not supported"
+        ));
+        assert!(!stream_options_unsupported(403, "stream_options forbidden"));
+        assert!(!stream_options_unsupported(400, "invalid api key"));
+    }
+
+    #[test]
     fn openai_gpt5_uses_responses_api() {
         let mut provider = test_provider("openai", "https://api.openai.com/v1");
         provider.default_model = "gpt-5.5".to_string();
@@ -2852,7 +2964,7 @@ mod tests {
             r#"{"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"想"}}"#,
             r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"答"}}"#,
-            r#"{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":2},"delta":{"stop_reason":"end_turn"}}"#,
+            r#"{"type":"message_delta","usage":{"output_tokens":2},"delta":{"stop_reason":"end_turn"}}"#,
             r#"{"type":"message_stop"}"#,
         ] {
             let done = handle_anthropic_sse_data(data, &mut state, &mut on_chunk).unwrap();

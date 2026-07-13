@@ -61,7 +61,7 @@ fn add_usage_with_scope(path: &Path, usage: &Usage, is_conversation: bool) -> Re
     state.requests += 1;
     state.prompt_tokens += usage.prompt_tokens;
     state.completion_tokens += usage.completion_tokens;
-    state.total_tokens += usage.total_tokens;
+    state.total_tokens += usage.effective_total_tokens();
     state.last_usage = Some(usage.clone());
     if is_conversation {
         state.last_conversation_usage = Some(usage.clone());
@@ -151,5 +151,24 @@ mod tests {
         assert_eq!(snapshot.total_tokens, 127);
         assert_eq!(snapshot.last_usage.unwrap().prompt_tokens, 5);
         assert_eq!(snapshot.last_conversation_usage.unwrap().prompt_tokens, 100);
+    }
+
+    #[test]
+    fn total_tokens_falls_back_to_prompt_plus_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("usage.json");
+
+        add_usage(
+            &path,
+            &Usage {
+                prompt_tokens: 7,
+                completion_tokens: 3,
+                total_tokens: 0,
+            },
+        )
+        .unwrap();
+
+        let snapshot = snapshot(&path).unwrap();
+        assert_eq!(snapshot.total_tokens, 10);
     }
 }

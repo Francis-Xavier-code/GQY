@@ -333,16 +333,6 @@ impl ConversationDb {
         Ok(())
     }
 
-    pub fn token_total(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
-        let total: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(token_total), 0) FROM turns WHERE status = 'completed' AND hidden = 0",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(total.max(0) as u64)
-    }
-
     pub fn load_last_summary(&self) -> Result<Option<Turn>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
