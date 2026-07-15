@@ -185,28 +185,11 @@ impl StateStore {
         self.conv_db.load_last_summary()
     }
 
-    pub fn trim_visible_to_token_budget(
-        &self,
-        context_window: usize,
-        trim_at_ratio: f32,
-        trim_batch_ratio: f32,
-    ) -> Result<Vec<StoredConversationEntry>> {
-        let turns = self.conv_db.load_visible_turns()?;
-        let trigger = (context_window as f32 * trim_at_ratio).max(1.0) as usize;
-        let mut total: usize = turns.iter().map(|t| turn_estimated_tokens(t)).sum();
-        if total <= trigger {
+    pub fn trim_oldest_visible_turns(&self, count: usize) -> Result<Vec<StoredConversationEntry>> {
+        if count == 0 {
             return Ok(Vec::new());
         }
-        let target = (context_window as f32 * (1.0 - trim_batch_ratio)).max(1.0) as usize;
-        let mut start = 0usize;
-        while start < turns.len() && total > target {
-            total = total.saturating_sub(turn_estimated_tokens(&turns[start]));
-            start += 1;
-        }
-        if start == 0 {
-            return Ok(Vec::new());
-        }
-        let evicted = turns_to_entries(self.conv_db.trim_oldest_visible_turns(start)?);
+        let evicted = turns_to_entries(self.conv_db.trim_oldest_visible_turns(count)?);
         Ok(evicted)
     }
 
@@ -236,11 +219,6 @@ impl StateStore {
 
     pub fn clear_last_usage(&self) -> Result<()> {
         usage::clear_last_usage(&self.usage_file())
-    }
-
-    pub fn visible_context_tokens(&self) -> Result<u64> {
-        let turns = self.conv_db.load_visible_turns()?;
-        Ok(turns.iter().map(turn_estimated_tokens).sum::<usize>() as u64)
     }
 
     #[allow(dead_code)]
@@ -307,16 +285,6 @@ fn turn_chars(turn: &Turn) -> usize {
             .iter()
             .map(|r| r.chars().count())
             .sum::<usize>()
-}
-
-fn turn_estimated_tokens(turn: &Turn) -> usize {
-    crate::agent::overflow::estimate_tokens(&format!(
-        "{}{}{}{}",
-        turn.user_content,
-        turn.assistant_content,
-        turn.assistant_reasoning.as_deref().unwrap_or(""),
-        turn.tool_reports.join("")
-    ))
 }
 
 fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {
@@ -595,22 +563,6 @@ mod tests {
     }
 
     #[test]
-    fn visible_context_tokens_tracks_visible_text_not_provider_usage_total() {
-        let (_temp, store) = test_store();
-        store.start_turn("t1", "short", 999999).unwrap();
-        store
-            .complete_turn_with_usage("t1", "reply", None, Some(100_000), false)
-            .unwrap();
-
-        let context_tokens = store.visible_context_tokens().unwrap();
-        assert!(context_tokens > 0);
-        assert!(context_tokens < 100_000);
-
-        store.reset_conversation().unwrap();
-        assert_eq!(store.visible_context_tokens().unwrap(), 0);
-    }
-
-    #[test]
     fn hide_before_seq_hides_old_summary_too() {
         let (_temp, store) = test_store();
         store.start_turn("t1", "old", 999999).unwrap();
@@ -633,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn token_trim_pops_oldest() {
+    fn trim_oldest_visible_turns_pops_oldest() {
         let (_temp, store) = test_store();
         for i in 0..10 {
             let id = format!("t{i}");
@@ -642,25 +594,42 @@ mod tests {
             store.complete_turn(&id, &content, None).unwrap();
         }
 
-        let evicted = store.trim_visible_to_token_budget(2000, 0.9, 0.15).unwrap();
+        let evicted = store.trim_oldest_visible_turns(3).unwrap();
         assert!(!evicted.is_empty(), "should have evicted some turns");
 
         let visible = store.load_visible_turns().unwrap();
-        assert!(visible.len() < 10, "should have fewer turns after trim");
+        assert_eq!(visible.len(), 7);
     }
 
     #[test]
-    fn token_trim_noop_when_under_threshold() {
+    fn trim_oldest_visible_turns_noop_for_zero() {
         let (_temp, store) = test_store();
         store.start_turn("t1", "short", 999999).unwrap();
         store.complete_turn("t1", "reply", None).unwrap();
 
-        let evicted = store
-            .trim_visible_to_token_budget(100_000, 0.9, 0.15)
-            .unwrap();
+        let evicted = store.trim_oldest_visible_turns(0).unwrap();
         assert!(evicted.is_empty());
 
         let visible = store.load_visible_turns().unwrap();
         assert_eq!(visible.len(), 1);
+    }
+
+    #[test]
+    fn trim_oldest_visible_turns_does_not_count_summary() {
+        let (_temp, store) = test_store();
+        store
+            .insert_summary_turn("summary", Some(1), false)
+            .unwrap();
+        for id in ["t1", "t2"] {
+            store.start_turn(id, id, 999999).unwrap();
+            store.complete_turn(id, "reply", None).unwrap();
+        }
+
+        store.trim_oldest_visible_turns(1).unwrap();
+
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 2);
+        assert!(visible[0].is_summary);
+        assert_eq!(visible[1].turn_id, "t2");
     }
 }

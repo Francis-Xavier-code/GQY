@@ -222,6 +222,37 @@ impl Agent {
         Ok(tokens)
     }
 
+    fn trim_visible_context(&self) -> Result<Vec<crate::state::StoredConversationEntry>> {
+        self.trim_visible_context_from(
+            usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX),
+        )
+    }
+
+    fn trim_visible_context_from(
+        &self,
+        mut total: usize,
+    ) -> Result<Vec<crate::state::StoredConversationEntry>> {
+        let Some(context_window) = self.context_window else {
+            return Ok(Vec::new());
+        };
+        let trigger = (context_window as f32 * self.trim_at_ratio).max(1.0) as usize;
+        if total < trigger {
+            return Ok(Vec::new());
+        }
+
+        let target = (context_window as f32 * (1.0 - self.trim_batch_ratio)).max(1.0) as usize;
+        let turns = self.state.load_visible_turns()?;
+        let mut count = 0usize;
+        for turn in turns.iter().filter(|turn| !turn.is_summary) {
+            if total <= target {
+                break;
+            }
+            total = total.saturating_sub(turn_context_tokens(turn));
+            count += 1;
+        }
+        self.state.trim_oldest_visible_turns(count)
+    }
+
     pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
         self.mode = mode;
         self.tools = Arc::new(Mutex::new(tools));
@@ -268,15 +299,7 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         self.state.mark_interrupted_turn_if_needed()?;
-        let evicted = if let Some(window) = self.context_window {
-            self.state.trim_visible_to_token_budget(
-                window,
-                self.trim_at_ratio,
-                self.trim_batch_ratio,
-            )?
-        } else {
-            Vec::new()
-        };
+        let evicted = self.trim_visible_context()?;
         let evicted = evicted
             .into_iter()
             .map(|entry| EvictedTurn {
@@ -423,14 +446,14 @@ impl Agent {
 
     pub async fn handle_overflow_after_turn<F>(
         &self,
-        usage: &Usage,
+        context_tokens: u64,
         on_event: F,
     ) -> Result<Option<ChatResult>>
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
         let mut on_event = on_event;
-        let Some(compact) = self.handle_overflow(usage, &mut on_event).await? else {
+        let Some(compact) = self.handle_overflow(context_tokens, &mut on_event).await? else {
             return Ok(None);
         };
         self.state.add_auxiliary_usage(&compact.usage)?;
@@ -493,14 +516,15 @@ impl Agent {
 
     async fn handle_overflow<F>(
         &self,
-        usage: &Usage,
+        context_tokens: u64,
         on_event: &mut F,
     ) -> Result<Option<compact::CompactResult>>
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
         let check = overflow::OverflowCheck::new(self.context_window, self.trim_at_ratio, None);
-        if !check.is_enabled() || !check.check_usage(usage) {
+        let context_tokens = usize::try_from(context_tokens).unwrap_or(usize::MAX);
+        if !check.is_enabled() || !check.check_tokens(context_tokens) {
             return Ok(None);
         }
         let compact_result = match self.on_overflow.as_str() {
@@ -531,11 +555,7 @@ impl Agent {
             }
             "pop" => {
                 on_event(AgentEvent::PopStart)?;
-                let evicted = self.state.trim_visible_to_token_budget(
-                    self.context_window.unwrap(),
-                    self.trim_at_ratio,
-                    self.trim_batch_ratio,
-                )?;
+                let evicted = self.trim_visible_context_from(context_tokens)?;
                 let evicted_turns: Vec<EvictedTurn> = evicted
                     .into_iter()
                     .map(|entry| EvictedTurn {
@@ -1115,6 +1135,17 @@ fn private_tool_memory(reports: &[String]) -> String {
     )
 }
 
+fn turn_context_tokens(turn: &crate::state::Turn) -> usize {
+    let mut messages = vec![
+        ChatMessage::plain("user", &turn.user_content),
+        ChatMessage::plain("assistant", &turn.assistant_content),
+    ];
+    if !turn.tool_reports.is_empty() {
+        messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
+    }
+    overflow::estimate_messages_tokens(&messages)
+}
+
 fn compact_remembered_fact_report(output: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(output).ok()?;
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -1517,7 +1548,6 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::llm::Usage;
     use crate::paths::MiyuPaths;
     use crate::tools::{empty_parameters, ToolSpec};
     use std::path::PathBuf;
@@ -1685,29 +1715,17 @@ mod tests {
     }
 
     #[test]
-    fn overflow_check_usage_triggers_at_threshold() {
+    fn overflow_check_tokens_triggers_at_threshold() {
         let check = overflow::OverflowCheck::new(Some(100_000), 0.9, None);
-        assert!(!check.check_usage(&Usage {
-            prompt_tokens: 50_000,
-            completion_tokens: 10_000,
-            total_tokens: 60_000,
-        }));
-        assert!(check.check_usage(&Usage {
-            prompt_tokens: 85_000,
-            completion_tokens: 10_000,
-            total_tokens: 95_000,
-        }));
+        assert!(!check.check_tokens(60_000));
+        assert!(check.check_tokens(95_000));
     }
 
     #[test]
     fn overflow_check_disabled_when_no_window() {
         let check = overflow::OverflowCheck::new(None, 0.9, None);
         assert!(!check.is_enabled());
-        assert!(!check.check_usage(&Usage {
-            prompt_tokens: 999_999,
-            completion_tokens: 999_999,
-            total_tokens: 1_998_998,
-        }));
+        assert!(!check.check_tokens(1_998_998));
     }
 
     #[test]
@@ -1717,6 +1735,79 @@ mod tests {
         let small_msg = ChatMessage::plain("user", "hi");
         assert!(check.check_estimate(&[big_msg]));
         assert!(!check.check_estimate(&[small_msg]));
+    }
+
+    #[test]
+    fn turn_context_tokens_match_sent_messages() {
+        let mut turn = crate::state::Turn {
+            turn_id: "t1".to_string(),
+            seq: 1,
+            user_content: "question".to_string(),
+            user_timestamp: String::new(),
+            assistant_content: "answer".to_string(),
+            assistant_reasoning: Some("hidden reasoning ".repeat(1_000)),
+            assistant_timestamp: None,
+            status: crate::state::TurnStatus::Completed,
+            tool_reports: Vec::new(),
+            hidden: false,
+            is_summary: false,
+            owner_pid: None,
+            token_total: 0,
+            token_usage_estimated: false,
+        };
+        let without_reports = turn_context_tokens(&turn);
+        turn.assistant_reasoning = None;
+        assert_eq!(turn_context_tokens(&turn), without_reports);
+
+        turn.tool_reports.push("persisted tool result".to_string());
+        assert!(turn_context_tokens(&turn) > without_reports);
+    }
+
+    #[test]
+    fn trim_visible_context_keeps_summary_and_removes_oldest_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig {
+            tools: crate::config::ToolsConfig {
+                enabled: false,
+                ..AppConfig::default().tools
+            },
+            ..AppConfig::default()
+        };
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let mut agent = Agent::new(
+            config,
+            &paths,
+            state.clone(),
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap();
+        state
+            .insert_summary_turn(&"summary ".repeat(2_000), None, true)
+            .unwrap();
+        for id in ["t1", "t2"] {
+            state
+                .start_turn(id, &format!("{id} {}", "question ".repeat(2_000)), 999999)
+                .unwrap();
+            state
+                .complete_turn(id, &"answer ".repeat(2_000), None)
+                .unwrap();
+        }
+        agent.trim_at_ratio = 1.0;
+        agent.context_window = Some(agent.effective_context_tokens().unwrap() as usize);
+
+        let evicted = agent.trim_visible_context().unwrap();
+
+        assert!(!evicted.is_empty());
+        let visible = state.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 2);
+        assert!(visible[0].is_summary);
+        assert_eq!(visible[1].turn_id, "t2");
     }
 
     fn test_paths(root: &std::path::Path) -> MiyuPaths {

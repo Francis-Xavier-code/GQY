@@ -50,7 +50,10 @@ impl Compactor {
             return Ok(None);
         }
 
-        let head: Vec<&Turn> = turns.iter().collect();
+        let head: Vec<&Turn> = turns.iter().filter(|turn| !turn.is_summary).collect();
+        if head.is_empty() {
+            return Ok(None);
+        }
         let previous_summary = self.state.load_last_summary()?;
         let prev_text = previous_summary
             .as_ref()

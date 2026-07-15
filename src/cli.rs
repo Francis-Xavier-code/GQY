@@ -1818,7 +1818,7 @@ async fn run_chat_with_images(
     let overflow_result = handle_post_turn_overflow(
         &agent,
         &mut renderer,
-        &result,
+        context_tokens,
         show_token_usage,
         Some(&mut cumulative_tokens),
     )
@@ -1949,7 +1949,7 @@ async fn run_chat_with_options(
     let overflow_result = handle_post_turn_overflow(
         &agent,
         &mut renderer,
-        &result,
+        context_tokens,
         show_token_usage,
         Some(&mut cumulative_tokens),
     )
@@ -2001,15 +2001,12 @@ fn result_context_window(config: &AppConfig, result: &crate::llm::ChatResult) ->
 async fn handle_post_turn_overflow(
     agent: &Agent,
     renderer: &mut render::StreamRenderer,
-    result: &crate::llm::ChatResult,
+    context_tokens: u64,
     show_token_usage: bool,
     cumulative_tokens: Option<&mut u64>,
 ) -> Result<Option<crate::llm::ChatResult>> {
-    let Some(usage) = result.usage.as_ref() else {
-        return Ok(None);
-    };
     let compact_result = agent
-        .handle_overflow_after_turn(usage, |event| handle_agent_event(renderer, event))
+        .handle_overflow_after_turn(context_tokens, |event| handle_agent_event(renderer, event))
         .await?;
     renderer.finish()?;
     if let Some(compact_result) = compact_result {
@@ -2240,9 +2237,10 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                     cumulative_tokens =
                         cumulative_tokens.saturating_add(render::usage_total(usage));
                 }
+                let context_tokens = agent.effective_context_tokens()?;
                 footer.update_token_usage(
                     &result,
-                    agent.effective_context_tokens()?,
+                    context_tokens,
                     context_window,
                     (cumulative_tokens > 0).then_some(cumulative_tokens),
                 );
@@ -2250,7 +2248,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 match handle_post_turn_overflow(
                     &agent,
                     &mut renderer,
-                    &result,
+                    context_tokens,
                     config.display.show_token_usage,
                     Some(&mut cumulative_tokens),
                 )

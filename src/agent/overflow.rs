@@ -1,4 +1,4 @@
-use crate::llm::{ChatContent, ChatMessage, Usage};
+use crate::llm::{ChatContent, ChatMessage};
 
 const IMAGE_TOKEN_ESTIMATE: usize = 765;
 const RESERVED_RATIO: f32 = 0.1;
@@ -43,11 +43,11 @@ impl OverflowCheck {
             .map(|w| (w as f32 * self.trim_at_ratio).max(1.0) as usize)
     }
 
-    pub fn check_usage(&self, usage: &Usage) -> bool {
+    pub fn check_tokens(&self, tokens: usize) -> bool {
         let Some(threshold) = self.threshold() else {
             return false;
         };
-        usage.effective_total_tokens() as usize >= threshold
+        tokens >= threshold
     }
 
     #[allow(dead_code)]

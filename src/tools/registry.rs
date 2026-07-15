@@ -176,7 +176,7 @@ pub struct UnregisteredScript {
 
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
-    tools: HashMap<String, ToolSpec>,
+    tools: HashMap<String, Arc<ToolSpec>>,
     script_tool_names: BTreeSet<String>,
     unregistered_scripts: Vec<UnregisteredScript>,
 }
@@ -188,7 +188,7 @@ impl ToolRegistry {
 
     pub fn register(&mut self, tool: ToolSpec) {
         let tool = tool.apply_built_in_description();
-        self.tools.insert(tool.name.clone(), tool);
+        self.tools.insert(tool.name.clone(), Arc::new(tool));
     }
 
     pub fn replace_script_tools(
@@ -222,7 +222,7 @@ impl ToolRegistry {
 
         for script in accepted {
             self.script_tool_names.insert(script.name.clone());
-            self.tools.insert(script.name.clone(), script);
+            self.tools.insert(script.name.clone(), Arc::new(script));
         }
 
         unregistered.sort_by(|a, b| a.name.cmp(&b.name).then(a.path.cmp(&b.path)));
@@ -234,7 +234,7 @@ impl ToolRegistry {
         let mut definitions = self
             .tools
             .values()
-            .map(ToolSpec::definition)
+            .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
         definitions
@@ -276,7 +276,7 @@ impl ToolRegistry {
         self.tools
             .values()
             .filter(|tool| !excluded.iter().any(|name| *name == tool.name))
-            .map(ToolSpec::definition)
+            .map(|tool| tool.definition())
             .collect()
     }
 
@@ -329,7 +329,7 @@ impl ToolRegistry {
 
     #[allow(dead_code)]
     pub fn get(&self, name: &str) -> Option<&ToolSpec> {
-        self.tools.get(name)
+        self.tools.get(name).map(Arc::as_ref)
     }
 
     pub fn tool_names(&self) -> Vec<String> {
@@ -340,6 +340,7 @@ impl ToolRegistry {
         let mut tools = self
             .tools
             .values()
+            .map(Arc::as_ref)
             .filter(|tool| {
                 tool.name != "load_tools" && !tool.always_loaded && !loaded.contains(&tool.name)
             })
@@ -461,7 +462,7 @@ impl ToolRegistry {
         let mut registry = ToolRegistry::new();
         for name in allowed {
             if let Some(spec) = self.tools.get(*name) {
-                registry.register(spec.clone());
+                registry.tools.insert(spec.name.clone(), Arc::clone(spec));
             }
         }
         registry
@@ -546,5 +547,51 @@ mod tests {
 
         let loaded = BTreeSet::from(["custom_lazy_tool".to_string()]);
         assert!(!registry.requires_lazy_load("custom_lazy_tool", &loaded));
+    }
+
+    #[test]
+    fn cloned_registry_shares_immutable_tool_specs() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolSpec::new(
+            "shared_tool",
+            "description",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok(String::new()) },
+        ));
+
+        let cloned = registry.clone();
+
+        assert!(Arc::ptr_eq(
+            registry.tools.get("shared_tool").unwrap(),
+            cloned.tools.get("shared_tool").unwrap()
+        ));
+    }
+
+    #[test]
+    fn cloned_registry_keeps_snapshot_when_tool_is_replaced() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolSpec::new(
+            "replaceable_tool",
+            "old description",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok(String::new()) },
+        ));
+        let cloned = registry.clone();
+
+        registry.register(ToolSpec::new(
+            "replaceable_tool",
+            "new description",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok(String::new()) },
+        ));
+
+        assert_eq!(
+            cloned.get("replaceable_tool").unwrap().description,
+            "old description"
+        );
+        assert_eq!(
+            registry.get("replaceable_tool").unwrap().description,
+            "new description"
+        );
     }
 }
