@@ -1,4 +1,4 @@
-use super::{ToolProgress, ToolRegistry, ToolSpec};
+use super::{CommandOutputStream, ToolProgress, ToolRegistry, ToolSpec};
 use crate::i18n::text as t;
 use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::{bail, Result};
@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 const MAX_READ_BYTES: u64 = 50 * 1024;
@@ -18,11 +19,13 @@ const SEARCH_TIMEOUT_SECONDS: u64 = 30;
 
 pub fn register(registry: &mut ToolRegistry, allow_command_execution: bool) {
     register_readonly(registry);
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "run_command",
         t("Run a shell command in the workspace when skills.allow_command_execution is enabled.", "当 skills.allow_command_execution 启用时，在工作区运行 shell 命令。"),
         json!({"type":"object","properties":{"command":{"type":"string","description": t("Command to run.", "要运行的命令。")},"timeout_seconds":{"type":"integer","description": t("Optional timeout in seconds.", "可选超时时间，单位秒。")}},"required":["command"],"additionalProperties":false}),
-        move |args| async move { run_command(args, allow_command_execution).await },
+        move |args, progress| async move {
+            run_command(args, allow_command_execution, progress).await
+        },
     ).writes());
     registry.register(ToolSpec::new_with_progress(
         "edit_file",
@@ -39,11 +42,11 @@ pub fn register(registry: &mut ToolRegistry, allow_command_execution: bool) {
 }
 
 pub fn register_readonly(registry: &mut ToolRegistry) {
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "run_command",
         t("Run an explicitly read-only shell command for inspection. Mutating commands are blocked in plan mode.", "运行明确只读的 shell 命令用于检查。计划模式会阻止修改性命令。"),
         json!({"type":"object","properties":{"command":{"type":"string","description": t("Read-only command to run.", "要运行的只读命令。")},"timeout_seconds":{"type":"integer","description": t("Optional timeout in seconds.", "可选超时时间，单位秒。")}},"required":["command"],"additionalProperties":false}),
-        |args| async move { run_readonly_command(args).await },
+        |args, progress| async move { run_readonly_command(args, progress).await },
     ));
     registry.register(ToolSpec::new(
         "check_os_info",
@@ -440,7 +443,7 @@ async fn grep_text(args: Value) -> Result<String> {
     search_output_limited(output, max_results)
 }
 
-async fn run_command(args: Value, allowed: bool) -> Result<String> {
+async fn run_command(args: Value, allowed: bool, progress: ToolProgress) -> Result<String> {
     if !allowed {
         bail!("{}", t("command execution is disabled; set skills.allow_command_execution=true in config.jsonc to enable run_command", "命令执行已禁用；请在 config.jsonc 中设置 skills.allow_command_execution=true 以启用 run_command"));
     }
@@ -450,19 +453,10 @@ async fn run_command(args: Value, allowed: bool) -> Result<String> {
         .and_then(Value::as_u64)
         .unwrap_or(30)
         .min(120);
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout),
-        Command::new("sh")
-            .arg("-lc")
-            .arg(command)
-            .stdin(Stdio::null())
-            .output(),
-    )
-    .await??;
-    command_output(output)
+    execute_command(&command, timeout, progress).await
 }
 
-async fn run_readonly_command(args: Value) -> Result<String> {
+async fn run_readonly_command(args: Value, progress: ToolProgress) -> Result<String> {
     let command = required(&args, "command")?;
     ensure_readonly_command(&command)?;
     let timeout = args
@@ -470,16 +464,113 @@ async fn run_readonly_command(args: Value) -> Result<String> {
         .and_then(Value::as_u64)
         .unwrap_or(30)
         .min(120);
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout),
-        Command::new("sh")
-            .arg("-lc")
-            .arg(command)
-            .stdin(Stdio::null())
-            .output(),
-    )
-    .await??;
-    command_output(output)
+    execute_command(&command, timeout, progress).await
+}
+
+async fn execute_command(command: &str, timeout: u64, progress: ToolProgress) -> Result<String> {
+    let mut command_process = Command::new("sh");
+    command_process
+        .arg("-lc")
+        .arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command_process.process_group(0);
+    let mut child = command_process.spawn()?;
+    let mut process_group = CommandProcessGroup::new(child.id());
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture command stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture command stderr"))?;
+
+    let execution = tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
+        tokio::join!(
+            child.wait(),
+            read_command_output(stdout, progress.clone(), |progress, chunk| {
+                progress.report_command_output(CommandOutputStream::Stdout, chunk);
+            }),
+            read_command_output(stderr, progress, |progress, chunk| {
+                progress.report_command_output(CommandOutputStream::Stderr, chunk);
+            }),
+        )
+    })
+    .await;
+
+    let (status, stdout, stderr) = match execution {
+        Ok((status, stdout, stderr)) => {
+            process_group.disarm();
+            (status?, stdout?, stderr?)
+        }
+        Err(elapsed) => {
+            process_group.terminate();
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            process_group.disarm();
+            return Err(elapsed.into());
+        }
+    };
+    command_output(status, stdout, stderr)
+}
+
+struct CommandProcessGroup {
+    #[cfg(unix)]
+    pgid: Option<i32>,
+}
+
+impl CommandProcessGroup {
+    fn new(child_id: Option<u32>) -> Self {
+        Self {
+            #[cfg(unix)]
+            pgid: child_id.and_then(|id| i32::try_from(id).ok()),
+        }
+    }
+
+    fn terminate(&self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid {
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+
+    fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.pgid = None;
+        }
+    }
+}
+
+impl Drop for CommandProcessGroup {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+async fn read_command_output(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    progress: ToolProgress,
+    report: impl Fn(&ToolProgress, Vec<u8>),
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let chunk = buffer[..read].to_vec();
+        output.extend_from_slice(&chunk);
+        report(&progress, chunk);
+    }
+    Ok(output)
 }
 
 fn ensure_readonly_command(command: &str) -> Result<()> {
@@ -547,12 +638,16 @@ fn ensure_readonly_command(command: &str) -> Result<()> {
     Ok(())
 }
 
-fn command_output(output: std::process::Output) -> Result<String> {
-    let stdout = clip_output_with_meta(&String::from_utf8_lossy(&output.stdout));
-    let stderr = clip_output_with_meta(&String::from_utf8_lossy(&output.stderr));
+fn command_output(
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+) -> Result<String> {
+    let stdout = clip_output_with_meta(&String::from_utf8_lossy(&stdout));
+    let stderr = clip_output_with_meta(&String::from_utf8_lossy(&stderr));
     Ok(serde_json::to_string_pretty(&json!({
-        "success": output.status.success(),
-        "exit_code": output.status.code(),
+        "success": status.success(),
+        "exit_code": status.code(),
         "stdout": stdout.text,
         "stderr": stderr.text,
         "truncated": stdout.truncated || stderr.truncated,
@@ -872,6 +967,65 @@ fn required(args: &Value, key: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn command_execution_streams_stdout_and_stderr() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let output = execute_command("printf 'out'; printf 'err' >&2", 5, ToolProgress::new(tx))
+            .await
+            .unwrap();
+        let output: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(output["stdout"], "out");
+        assert_eq!(output["stderr"], "err");
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let crate::tools::ToolProgressEvent::CommandOutput { stream, chunk } = event {
+                match stream {
+                    CommandOutputStream::Stdout => stdout.extend(chunk),
+                    CommandOutputStream::Stderr => stderr.extend(chunk),
+                }
+            }
+        }
+        assert_eq!(stdout, b"out");
+        assert_eq!(stderr, b"err");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn command_timeout_kills_descendant_processes() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = execute_command("sleep 30 & echo $!; wait", 1, ToolProgress::new(tx)).await;
+        assert!(result.is_err());
+
+        let mut stdout = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let crate::tools::ToolProgressEvent::CommandOutput {
+                stream: CommandOutputStream::Stdout,
+                chunk,
+            } = event
+            {
+                stdout.extend(chunk);
+            }
+        }
+        let pid = String::from_utf8(stdout)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        let mut gone = false;
+        for _ in 0..20 {
+            if unsafe { libc::kill(pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(gone, "descendant process {pid} survived command timeout");
+    }
 
     #[test]
     fn readonly_command_allows_inspection() {

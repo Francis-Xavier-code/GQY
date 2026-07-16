@@ -9,6 +9,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub const MAX_COMMAND_OUTPUT_LINES: usize = 1_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub active_provider: String,
@@ -57,6 +59,8 @@ pub struct DisplayConfig {
     pub show_token_usage: bool,
     #[serde(default = "default_mixed_model_endpoint_display")]
     pub mixed_model_endpoint_display: String,
+    #[serde(default = "default_command_output_lines")]
+    pub command_output_lines: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -79,6 +83,8 @@ struct RawDisplayConfig {
     show_mixed_model_endpoint: Option<bool>,
     #[serde(default)]
     mixed_model_endpoint_display: Option<String>,
+    #[serde(default)]
+    command_output_lines: Option<usize>,
 }
 
 impl<'de> Deserialize<'de> for DisplayConfig {
@@ -113,6 +119,9 @@ impl<'de> Deserialize<'de> for DisplayConfig {
                     None => default_mixed_model_endpoint_display(),
                 }
             }),
+            command_output_lines: raw
+                .command_output_lines
+                .unwrap_or_else(default_command_output_lines),
         })
     }
 }
@@ -602,6 +611,7 @@ impl Default for DisplayConfig {
             readable_tool_names: default_true(),
             show_token_usage: false,
             mixed_model_endpoint_display: default_mixed_model_endpoint_display(),
+            command_output_lines: default_command_output_lines(),
         }
     }
 }
@@ -1241,6 +1251,9 @@ impl AppConfig {
         match self.context.on_overflow.as_str() {
             "pop" | "compact" => {}
             value => bail!("context.on_overflow must be 'pop' or 'compact', got: {value}"),
+        }
+        if self.display.command_output_lines > MAX_COMMAND_OUTPUT_LINES {
+            bail!("display.command_output_lines must be between 0 and {MAX_COMMAND_OUTPUT_LINES}");
         }
         if self.plugins.print_image.width_percent == 0
             || self.plugins.print_image.width_percent > 100
@@ -1965,6 +1978,10 @@ fn default_tool_call_display() -> String {
     "summary".to_string()
 }
 
+fn default_command_output_lines() -> usize {
+    10
+}
+
 fn default_mixed_model_endpoint_display() -> String {
     "interactive".to_string()
 }
@@ -2499,6 +2516,17 @@ mod tests {
         assert!(display.readable_tool_names);
         assert!(!display.show_token_usage);
         assert_eq!(display.mixed_model_endpoint_display, "interactive");
+        assert_eq!(display.command_output_lines, 10);
+
+        let display: DisplayConfig = serde_json::from_str(r#"{"command_output_lines":3}"#).unwrap();
+        assert_eq!(display.command_output_lines, 3);
+        assert!(serde_json::to_string(&display)
+            .unwrap()
+            .contains(r#""command_output_lines":3"#));
+
+        let mut config = AppConfig::default();
+        config.display.command_output_lines = MAX_COMMAND_OUTPUT_LINES + 1;
+        assert!(config.validate().is_err());
 
         let display: DisplayConfig = serde_json::from_str(r#"{"show_token_usage":true}"#).unwrap();
         assert!(display.show_token_usage);

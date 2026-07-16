@@ -45,7 +45,10 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 #[allow(unused_imports)]
-pub use registry::{empty_parameters, ToolPermission, ToolProgress, ToolRegistry, ToolSpec};
+pub use registry::{
+    empty_parameters, CommandOutputStream, ToolPermission, ToolProgress, ToolProgressEvent,
+    ToolRegistry, ToolSpec,
+};
 pub(crate) use scripts::rescan_scripts;
 pub use skills::register_skills;
 

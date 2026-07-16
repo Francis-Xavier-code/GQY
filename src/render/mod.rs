@@ -2,15 +2,18 @@ pub(crate) mod wait_spinner;
 
 use crate::i18n::text as t;
 use crate::llm::{ChatResult, ChatStreamChunk, ChatStreamKind, Usage};
-use crate::render::wait_spinner::{SpinnerStyle, WaitSpinner, SPINNER_INTERVAL};
+use crate::render::wait_spinner::{braille_frame, SpinnerStyle, WaitSpinner, SPINNER_INTERVAL};
+use crate::tools::CommandOutputStream;
 use anyhow::Result;
-use crossterm::cursor::{Hide, MoveToColumn, Show};
+use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::{execute, terminal};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, IsTerminal, Write};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReasoningDisplayMode {
@@ -42,6 +45,447 @@ impl ToolCallDisplayMode {
             "hidden" => Self::Hidden,
             "full" => Self::Full,
             _ => Self::Summary,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CommandLogLine {
+    stream: CommandOutputStream,
+    text: String,
+    sequence: u64,
+}
+
+#[derive(Default)]
+struct CommandStreamState {
+    utf8_pending: Vec<u8>,
+    current: String,
+    control: TerminalControlState,
+    last_update: u64,
+    current_sequence: Option<u64>,
+    pending_cr: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+enum TerminalControlState {
+    #[default]
+    Text,
+    Escape,
+    EscapeIntermediate,
+    Csi,
+    Osc,
+    OscEscape,
+}
+
+impl CommandStreamState {
+    fn push(&mut self, chunk: &[u8], sequence: u64) -> Vec<CommandLogLine> {
+        self.last_update = sequence;
+        let decoded = decode_utf8_chunk(&mut self.utf8_pending, chunk);
+        let mut completed = Vec::new();
+        for ch in decoded.chars() {
+            let Some(ch) = sanitize_terminal_char(&mut self.control, ch) else {
+                continue;
+            };
+            if self.pending_cr {
+                self.pending_cr = false;
+                if ch == '\n' {
+                    completed.push(CommandLogLine {
+                        stream: CommandOutputStream::Stdout,
+                        text: std::mem::take(&mut self.current),
+                        sequence: self.current_sequence.take().unwrap_or(sequence),
+                    });
+                    continue;
+                }
+                self.current.clear();
+                self.current_sequence = None;
+            }
+            match ch {
+                '\n' => completed.push(CommandLogLine {
+                    stream: CommandOutputStream::Stdout,
+                    text: std::mem::take(&mut self.current),
+                    sequence: self.current_sequence.take().unwrap_or(sequence),
+                }),
+                '\r' => self.pending_cr = true,
+                '\t' => {
+                    self.current_sequence.get_or_insert(sequence);
+                    self.current.push_str("    ");
+                }
+                _ => {
+                    self.current_sequence.get_or_insert(sequence);
+                    self.current.push(ch);
+                }
+            }
+        }
+        const MAX_LIVE_LINE_CHARS: usize = 20_000;
+        if self.current.chars().count() > MAX_LIVE_LINE_CHARS {
+            self.current = self
+                .current
+                .chars()
+                .rev()
+                .take(MAX_LIVE_LINE_CHARS)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+        }
+        completed
+    }
+
+    fn finalize_pending(&mut self, sequence: u64) {
+        if !self.utf8_pending.is_empty() {
+            self.utf8_pending.clear();
+            self.current_sequence.get_or_insert(sequence);
+            self.current.push('\u{fffd}');
+        }
+        self.pending_cr = false;
+        self.control = TerminalControlState::Text;
+    }
+}
+
+struct CommandLiveDisplay {
+    command: String,
+    max_output_rows: usize,
+    show_output: bool,
+    stdout: CommandStreamState,
+    stderr: CommandStreamState,
+    completed: VecDeque<CommandLogLine>,
+    omitted_lines: bool,
+    sequence: u64,
+    frame: usize,
+    rendered_line_widths: Vec<usize>,
+}
+
+impl CommandLiveDisplay {
+    fn new(arguments: &str, max_output_rows: usize, show_output: bool) -> Self {
+        Self {
+            command: command_from_arguments(arguments),
+            max_output_rows,
+            show_output,
+            stdout: CommandStreamState::default(),
+            stderr: CommandStreamState::default(),
+            completed: VecDeque::new(),
+            omitted_lines: false,
+            sequence: 0,
+            frame: 0,
+            rendered_line_widths: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, stream: CommandOutputStream, chunk: &[u8]) {
+        self.sequence = self.sequence.wrapping_add(1);
+        let completed = match stream {
+            CommandOutputStream::Stdout => self.stdout.push(chunk, self.sequence),
+            CommandOutputStream::Stderr => self.stderr.push(chunk, self.sequence),
+        };
+        self.completed.extend(completed.into_iter().map(|mut line| {
+            line.stream = stream;
+            line
+        }));
+        let keep = self.max_output_rows.saturating_mul(4).max(100);
+        while self.completed.len() > keep {
+            self.completed.pop_front();
+            self.omitted_lines = true;
+        }
+    }
+
+    fn tick(&mut self) -> Result<()> {
+        self.redraw(true)?;
+        self.frame = self.frame.wrapping_add(1);
+        Ok(())
+    }
+
+    fn redraw(&mut self, spinning: bool) -> Result<()> {
+        let width = command_terminal_width();
+        let lines = self.rendered_lines(width, spinning);
+        self.clear()?;
+        let mut stdout = io::stdout();
+        for (index, line) in lines.iter().enumerate() {
+            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            write!(stdout, "{line}")?;
+            if index + 1 < lines.len() {
+                writeln!(stdout)?;
+            }
+        }
+        stdout.flush()?;
+        self.rendered_line_widths = lines.iter().map(|line| command_ansi_width(line)).collect();
+        Ok(())
+    }
+
+    fn commit(&mut self, include_output: bool) -> Result<()> {
+        self.stdout.finalize_pending(self.sequence);
+        self.stderr.finalize_pending(self.sequence);
+        let show_output = self.show_output;
+        self.show_output = include_output && show_output;
+        self.redraw(false)?;
+        self.show_output = show_output;
+        if !self.rendered_line_widths.is_empty() {
+            let mut stdout = io::stdout();
+            writeln!(stdout)?;
+            stdout.flush()?;
+            self.rendered_line_widths.clear();
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self) -> Result<()> {
+        if self.rendered_line_widths.is_empty() {
+            return Ok(());
+        }
+        let columns = command_terminal_width().max(1);
+        let rendered_rows = self
+            .rendered_line_widths
+            .iter()
+            .map(|width| (*width).max(1).div_ceil(columns))
+            .sum::<usize>()
+            .min(u16::MAX as usize) as u16;
+        let mut stdout = io::stdout();
+        if rendered_rows > 1 {
+            execute!(stdout, MoveUp(rendered_rows - 1))?;
+        }
+        for index in 0..rendered_rows {
+            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            if index + 1 < rendered_rows {
+                writeln!(stdout)?;
+            }
+        }
+        if rendered_rows > 1 {
+            execute!(stdout, MoveUp(rendered_rows - 1))?;
+        }
+        execute!(stdout, MoveToColumn(0))?;
+        stdout.flush()?;
+        self.rendered_line_widths.clear();
+        Ok(())
+    }
+
+    fn rendered_lines(&self, width: usize, spinning: bool) -> Vec<String> {
+        let usable = width.saturating_sub(1).max(5);
+        let body_width = usable.saturating_sub(4).max(1);
+        let command = if self.command.lines().count() > 1 {
+            format!(
+                "{} {} · {} {}",
+                self.command.lines().count(),
+                t("lines", "行"),
+                self.command.chars().count(),
+                t("chars", "字符")
+            )
+        } else {
+            self.command.clone()
+        };
+        let wrapped_command = wrap_plain_text(&command, body_width);
+        let mut output = Vec::with_capacity(wrapped_command.len() + self.max_output_rows);
+        for (index, line) in wrapped_command.iter().enumerate() {
+            let prefix = if index == 0 {
+                if spinning {
+                    format!(
+                        "\x1b[2m\x1b[36m{}\x1b[0m \x1b[2m↳\x1b[0m ",
+                        braille_frame(self.frame)
+                    )
+                } else {
+                    "  \x1b[2m↳\x1b[0m ".to_string()
+                }
+            } else {
+                "    ".to_string()
+            };
+            output.push(format!("{prefix}\x1b[33m{line}\x1b[0m"));
+        }
+        if self.show_output && self.max_output_rows > 0 {
+            output.extend(self.rendered_log_lines(body_width));
+        }
+        output
+    }
+
+    fn rendered_log_lines(&self, body_width: usize) -> Vec<String> {
+        let mut logical = self.completed.iter().cloned().collect::<Vec<_>>();
+        let mut pending = [
+            (CommandOutputStream::Stdout, &self.stdout),
+            (CommandOutputStream::Stderr, &self.stderr),
+        ];
+        pending.sort_by_key(|(_, state)| state.last_update);
+        for (stream, state) in pending {
+            if !state.current.is_empty() {
+                logical.push(CommandLogLine {
+                    stream,
+                    text: state.current.clone(),
+                    sequence: state.current_sequence.unwrap_or(state.last_update),
+                });
+            }
+        }
+        logical.sort_by_key(|line| line.sequence);
+        let mut rows = Vec::new();
+        for line in logical {
+            for text in wrap_plain_text(&line.text, body_width) {
+                rows.push(CommandLogLine {
+                    stream: line.stream,
+                    text,
+                    sequence: line.sequence,
+                });
+            }
+        }
+        let omitted = self.omitted_lines || rows.len() > self.max_output_rows;
+        let keep = if omitted && self.max_output_rows > 1 {
+            self.max_output_rows - 1
+        } else {
+            self.max_output_rows
+        };
+        let start = rows.len().saturating_sub(keep);
+        let mut output = Vec::with_capacity(self.max_output_rows);
+        if omitted && self.max_output_rows > 1 {
+            output.push(format!(
+                "\x1b[2m  ⋮ {}\x1b[0m",
+                t("earlier output omitted", "已省略较早输出")
+            ));
+        }
+        output.extend(rows[start..].iter().map(|line| {
+            let color = match line.stream {
+                CommandOutputStream::Stdout => 33,
+                CommandOutputStream::Stderr => 31,
+            };
+            format!("\x1b[2m  │\x1b[0m \x1b[{color}m{}\x1b[0m", line.text)
+        }));
+        output
+    }
+}
+
+fn command_terminal_width() -> usize {
+    terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(120)
+}
+
+fn command_from_arguments(arguments: &str) -> String {
+    let parsed = serde_json::from_str::<Value>(arguments).ok();
+    let command = parsed
+        .as_ref()
+        .and_then(|value| value.get("command"))
+        .and_then(Value::as_str)
+        .unwrap_or(arguments);
+    sanitize_terminal_text(command).trim().to_string()
+}
+
+fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if current_width > 0 && current_width + grapheme_width > width {
+            lines.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        current.push_str(grapheme);
+        current_width += grapheme_width;
+    }
+    lines.push(current);
+    lines
+}
+
+fn command_ansi_width(text: &str) -> usize {
+    let mut plain = String::new();
+    let mut state = TerminalControlState::Text;
+    for ch in text.chars() {
+        if let Some(ch) = sanitize_terminal_char(&mut state, ch) {
+            plain.push(ch);
+        }
+    }
+    UnicodeWidthStr::width(plain.as_str())
+}
+
+fn sanitize_terminal_text(text: &str) -> String {
+    let mut state = CommandStreamState::default();
+    let completed = state.push(text.as_bytes(), 0);
+    state.finalize_pending(0);
+    let mut lines = completed
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>();
+    if !state.current.is_empty() {
+        lines.push(state.current);
+    }
+    lines.join("\n")
+}
+
+fn decode_utf8_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
+    pending.extend_from_slice(chunk);
+    let bytes = std::mem::take(pending);
+    let mut output = String::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match std::str::from_utf8(&bytes[offset..]) {
+            Ok(text) => {
+                output.push_str(text);
+                break;
+            }
+            Err(error) => {
+                let valid_end = offset + error.valid_up_to();
+                output.push_str(std::str::from_utf8(&bytes[offset..valid_end]).unwrap_or_default());
+                match error.error_len() {
+                    Some(length) => {
+                        output.push('\u{fffd}');
+                        offset = valid_end + length;
+                    }
+                    None => {
+                        pending.extend_from_slice(&bytes[valid_end..]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    output
+}
+
+fn sanitize_terminal_char(state: &mut TerminalControlState, ch: char) -> Option<char> {
+    match *state {
+        TerminalControlState::Text => {
+            if ch == '\x1b' {
+                *state = TerminalControlState::Escape;
+                None
+            } else if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
+                None
+            } else {
+                Some(ch)
+            }
+        }
+        TerminalControlState::Escape => {
+            *state = match ch {
+                '[' => TerminalControlState::Csi,
+                ']' | 'P' | 'X' | '^' | '_' => TerminalControlState::Osc,
+                ' '..='/' => TerminalControlState::EscapeIntermediate,
+                _ => TerminalControlState::Text,
+            };
+            None
+        }
+        TerminalControlState::EscapeIntermediate => {
+            if ('0'..='~').contains(&ch) {
+                *state = TerminalControlState::Text;
+            }
+            None
+        }
+        TerminalControlState::Csi => {
+            if ('@'..='~').contains(&ch) {
+                *state = TerminalControlState::Text;
+            }
+            None
+        }
+        TerminalControlState::Osc => {
+            if ch == '\x07' {
+                *state = TerminalControlState::Text;
+            } else if ch == '\x1b' {
+                *state = TerminalControlState::OscEscape;
+            }
+            None
+        }
+        TerminalControlState::OscEscape => {
+            *state = if ch == '\\' {
+                TerminalControlState::Text
+            } else {
+                TerminalControlState::Osc
+            };
+            None
         }
     }
 }
@@ -162,6 +606,8 @@ pub struct StreamRenderer {
     reasoning_line_open: bool,
     tool_stats: BTreeMap<String, ToolStats>,
     readable_tool_names: bool,
+    command_output_lines: usize,
+    command_display: Option<CommandLiveDisplay>,
     summary_line_active: bool,
     summary_lines_active: u16,
     last_tool_summary: String,
@@ -181,6 +627,7 @@ impl StreamRenderer {
         tool_call_mode: ToolCallDisplayMode,
         plain: bool,
         readable_tool_names: bool,
+        command_output_lines: usize,
     ) -> Self {
         Self {
             reasoning_mode,
@@ -194,6 +641,8 @@ impl StreamRenderer {
             reasoning_line_open: false,
             tool_stats: BTreeMap::new(),
             readable_tool_names,
+            command_output_lines,
+            command_display: None,
             summary_line_active: false,
             summary_lines_active: 0,
             last_tool_summary: String::new(),
@@ -223,14 +672,19 @@ impl StreamRenderer {
     }
 
     pub fn tick_spinner(&mut self) -> Result<()> {
-        if let Some(spinner) = &mut self.wait_spinner {
-            let now = std::time::Instant::now();
-            let should_tick = self
-                .last_tick
-                .map(|last| now.duration_since(last) >= SPINNER_INTERVAL)
-                .unwrap_or(true);
-            if should_tick {
+        let now = std::time::Instant::now();
+        let should_tick = self
+            .last_tick
+            .map(|last| now.duration_since(last) >= SPINNER_INTERVAL)
+            .unwrap_or(true);
+        if should_tick {
+            if let Some(spinner) = &mut self.wait_spinner {
                 spinner.tick()?;
+            }
+            if let Some(display) = &mut self.command_display {
+                display.tick()?;
+            }
+            if self.wait_spinner.is_some() || self.command_display.is_some() {
                 self.last_tick = Some(now);
             }
         }
@@ -302,7 +756,19 @@ impl StreamRenderer {
         }
         if name == "run_command" {
             let mut stdout = io::stdout();
-            write_command_block(&mut stdout, arguments)?;
+            if self.live_summary {
+                write_command_heading(&mut stdout)?;
+                stdout.flush()?;
+                self.command_display = Some(CommandLiveDisplay::new(
+                    arguments,
+                    self.command_output_lines,
+                    self.tool_call_mode != ToolCallDisplayMode::Hidden,
+                ));
+                self.last_tick = None;
+                self.tick_spinner()?;
+            } else {
+                write_command_block(&mut stdout, arguments)?;
+            }
             stdout.flush()?;
             if self.tool_call_mode == ToolCallDisplayMode::Summary {
                 self.tool_stats.entry(name.to_string()).or_default().calls += 1;
@@ -332,6 +798,13 @@ impl StreamRenderer {
         }
         let status = if ok { "ok" } else { "err" };
         if name == "run_command" {
+            if let Some(mut display) = self.command_display.take() {
+                display.commit(
+                    self.tool_call_mode == ToolCallDisplayMode::Summary
+                        || (self.tool_call_mode == ToolCallDisplayMode::Full && !ok),
+                )?;
+                self.last_tick = None;
+            }
             if self.tool_call_mode == ToolCallDisplayMode::Summary {
                 let stats = self.tool_stats.entry(name.to_string()).or_default();
                 if ok {
@@ -348,6 +821,11 @@ impl StreamRenderer {
             if self.tool_call_mode == ToolCallDisplayMode::Full {
                 let mut stdout = io::stdout();
                 write_command_result_blocks(&mut stdout, output)?;
+                writeln!(
+                    stdout,
+                    "\x1b[2m$ {}×1 {status}\x1b[0m",
+                    self.display_tool_name(name)
+                )?;
                 stdout.flush()?;
                 return Ok(());
             }
@@ -380,6 +858,21 @@ impl StreamRenderer {
             let summary = self.tool_summary_text();
             self.last_tool_summary = summary.clone();
             self.render_summary_line(&summary, SummaryStyle::Tool)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_command_output(
+        &mut self,
+        name: &str,
+        stream: CommandOutputStream,
+        chunk: &[u8],
+    ) -> Result<()> {
+        if self.plain || name != "run_command" {
+            return Ok(());
+        }
+        if let Some(display) = &mut self.command_display {
+            display.push(stream, chunk);
         }
         Ok(())
     }
@@ -568,6 +1061,9 @@ impl StreamRenderer {
 
     pub fn prepare_for_external_output(&mut self) -> Result<()> {
         self.stop_waiting()?;
+        if let Some(mut display) = self.command_display.take() {
+            display.commit(self.tool_call_mode == ToolCallDisplayMode::Summary)?;
+        }
         self.end_subagent_stream_line()?;
         if self.summary_line_active {
             let mut stdout = io::stdout();
@@ -615,6 +1111,9 @@ impl StreamRenderer {
 
     pub fn finish(&mut self) -> Result<()> {
         self.stop_waiting()?;
+        if let Some(mut display) = self.command_display.take() {
+            display.commit(self.tool_call_mode == ToolCallDisplayMode::Summary)?;
+        }
         self.end_subagent_stream_line()?;
         if self.mode == Some(ChatStreamKind::Content) && !self.plain {
             let mut stdout = io::stdout();
@@ -2282,16 +2781,10 @@ fn escape_table_cell(value: &str) -> String {
 }
 
 fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
-    let parsed = serde_json::from_str::<Value>(arguments).ok();
-    let command = parsed
-        .as_ref()
-        .and_then(|value| value.get("command"))
-        .and_then(Value::as_str)
-        .unwrap_or(arguments)
-        .trim();
+    let command = command_from_arguments(arguments);
     let total_lines = command.lines().count();
     let total_chars = command.chars().count();
-    writeln!(stdout, "\x1b[2m$ {}\x1b[0m", t("run command", "运行命令"))?;
+    write_command_heading(stdout)?;
     if total_lines > 1 {
         writeln!(
             stdout,
@@ -2300,11 +2793,9 @@ fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
             t("chars", "字符")
         )?;
     } else {
-        let terminal_width = terminal::size()
-            .map(|(w, _)| usize::from(w))
-            .unwrap_or(120);
-        let avail = terminal_width.saturating_sub(4).max(1);
-        let wrapped = wrap_ansi_text(command, avail);
+        let terminal_width = terminal::size().map(|(w, _)| usize::from(w)).unwrap_or(120);
+        let avail = terminal_width.saturating_sub(5).max(1);
+        let wrapped = wrap_plain_text(&command, avail);
         for (i, line) in wrapped.iter().enumerate() {
             if i == 0 {
                 writeln!(stdout, "\x1b[2m  ↳ \x1b[0m\x1b[33m{line}\x1b[0m")?;
@@ -2316,9 +2807,14 @@ fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
     Ok(())
 }
 
+fn write_command_heading(stdout: &mut io::Stdout) -> Result<()> {
+    writeln!(stdout, "\x1b[2m$ {}\x1b[0m", t("run command", "运行命令"))?;
+    Ok(())
+}
+
 fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<()> {
     let Some(result) = parse_command_result(output) else {
-        return write_tool_payload(stdout, t("output", "输出"), output);
+        return write_tool_payload(stdout, t("output", "输出"), &sanitize_terminal_text(output));
     };
     if !result.stdout.trim().is_empty() {
         write_fenced_block(stdout, t("output", "输出"), &result.stdout)?;
@@ -2348,7 +2844,8 @@ fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<
 
 fn write_fenced_block(stdout: &mut io::Stdout, label: &str, text: &str) -> Result<()> {
     writeln!(stdout, "\x1b[2m,-- {label}\x1b[0m")?;
-    for line in truncate_chars(text.trim(), 2400).lines() {
+    let sanitized = sanitize_terminal_text(text);
+    for line in truncate_chars(sanitized.trim(), 2400).lines() {
         writeln!(stdout, "\x1b[33m{line}\x1b[0m")?;
     }
     writeln!(stdout, "\x1b[2m`--\x1b[0m")?;
@@ -2434,6 +2931,9 @@ fn clip_progress_line_preserving_spaces(text: &str, max_chars: usize) -> String 
 impl Drop for StreamRenderer {
     fn drop(&mut self) {
         let _ = self.stop_waiting();
+        if let Some(mut display) = self.command_display.take() {
+            let _ = display.clear();
+        }
         if self.summary_line_active {
             let _ = self.clear_summary_lines();
             eprintln!();
@@ -2465,6 +2965,118 @@ fn print_reasoning(reasoning: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn visible_command_lines(lines: Vec<String>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|line| strip_ansi_for_test(&line))
+            .collect()
+    }
+
+    #[test]
+    fn command_stream_handles_split_utf8_and_crlf() {
+        let mut state = CommandStreamState::default();
+        let text = "开始\r\n完成\n".as_bytes();
+        let split = "开始".len() - 1;
+
+        assert!(state.push(&text[..split], 1).is_empty());
+        let completed = state.push(&text[split..], 2);
+
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0].text, "开始");
+        assert_eq!(completed[1].text, "完成");
+        assert!(state.current.is_empty());
+    }
+
+    #[test]
+    fn command_stream_carriage_return_replaces_current_line() {
+        let mut state = CommandStreamState::default();
+
+        assert!(state.push(b"progress 10%\r", 1).is_empty());
+        let completed = state.push(b"progress 20%\n", 2);
+
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].text, "progress 20%");
+    }
+
+    #[test]
+    fn command_stream_strips_split_terminal_sequences() {
+        let mut state = CommandStreamState::default();
+
+        assert!(state.push(b"safe\x1b[31", 1).is_empty());
+        let completed = state.push(b"m red\x1b[0m\n", 2);
+
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].text, "safe red");
+    }
+
+    #[test]
+    fn command_stream_finalizes_incomplete_utf8() {
+        let mut state = CommandStreamState::default();
+
+        assert!(state.push(&[0xe4, 0xb8], 1).is_empty());
+        state.finalize_pending(1);
+
+        assert_eq!(state.current, "�");
+    }
+
+    #[test]
+    fn command_text_strips_cursor_and_osc_sequences() {
+        assert_eq!(
+            sanitize_terminal_text("safe\x1b[2J text\x1b]52;c;secret\x07 end"),
+            "safe text end"
+        );
+        assert_eq!(sanitize_terminal_text("a\x1b(Bb"), "ab");
+    }
+
+    #[test]
+    fn command_wrap_uses_terminal_width_for_wide_graphemes() {
+        assert_eq!(wrap_plain_text("中文测试", 4), vec!["中文", "测试"]);
+        assert_eq!(wrap_plain_text("a👨‍👩‍👧‍👦b", 3), vec!["a👨‍👩‍👧‍👦", "b"]);
+        assert_eq!(wrap_plain_text("e\u{301}x", 1), vec!["e\u{301}", "x"]);
+    }
+
+    #[test]
+    fn command_preview_limits_physical_rows_and_keeps_tail() {
+        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 3, true);
+        display.push(CommandOutputStream::Stdout, b"one\ntwo\nthree\nfour\n");
+
+        let lines = visible_command_lines(display.rendered_log_lines(80));
+
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("omitted") || lines[0].contains("省略"));
+        assert!(lines[1].ends_with("three"));
+        assert!(lines[2].ends_with("four"));
+    }
+
+    #[test]
+    fn command_preview_counts_soft_wrapped_rows() {
+        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 3, true);
+        display.push(
+            CommandOutputStream::Stdout,
+            "第一行很长\n第二行\n".as_bytes(),
+        );
+
+        let lines = visible_command_lines(display.rendered_log_lines(4));
+
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("omitted") || lines[0].contains("省略"));
+        assert!(lines[1].ends_with("第二"));
+        assert!(lines[2].ends_with("行"));
+    }
+
+    #[test]
+    fn command_preview_orders_interleaved_streams_and_colors_stderr() {
+        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 4, true);
+        display.push(CommandOutputStream::Stdout, b"out");
+        display.push(CommandOutputStream::Stderr, b"err");
+
+        let lines = display.rendered_log_lines(80);
+
+        assert!(strip_ansi_for_test(&lines[0]).ends_with("out"));
+        assert!(strip_ansi_for_test(&lines[1]).ends_with("err"));
+        assert!(lines[1].contains("\x1b[31m"));
+    }
 
     #[test]
     fn streams_only_complete_lines() {
@@ -2888,6 +3500,7 @@ mod tests {
             ToolCallDisplayMode::Summary,
             true,
             true,
+            10,
         );
         renderer.tool_stats.insert(
             "deep_research_linux_game_compatibility".to_string(),
@@ -2913,6 +3526,7 @@ mod tests {
             ToolCallDisplayMode::Summary,
             true,
             true,
+            10,
         );
         renderer.tool_stats.insert(
             "task".to_string(),
@@ -2944,6 +3558,7 @@ mod tests {
                 ToolCallDisplayMode::Summary,
                 true,
                 true,
+                10,
             );
             renderer.tool_stats.insert(
                 name.to_string(),
@@ -3042,6 +3657,7 @@ mod tests {
             ToolCallDisplayMode::Summary,
             false,
             true,
+            10,
         );
         renderer.reasoning_chars = 12;
         renderer.reasoning_lines = 1;
@@ -3060,6 +3676,7 @@ mod tests {
             ToolCallDisplayMode::Summary,
             false,
             true,
+            10,
         );
         renderer.record_reasoning_text("one\nt");
         renderer.record_reasoning_text("wo\nthree");

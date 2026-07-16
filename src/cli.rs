@@ -1788,6 +1788,7 @@ async fn run_chat_with_images(
     let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
     let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
+    let command_output_lines = config.display.command_output_lines;
     let show_token_usage = config.display.show_token_usage;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
@@ -1799,8 +1800,13 @@ async fn run_chat_with_images(
         registry,
         AgentMode::Normal,
     )?;
-    let mut renderer =
-        render::StreamRenderer::new(reasoning_mode, tool_call_mode, false, readable_tool_names);
+    let mut renderer = render::StreamRenderer::new(
+        reasoning_mode,
+        tool_call_mode,
+        false,
+        readable_tool_names,
+        command_output_lines,
+    );
     renderer.start_waiting()?;
     let result = agent
         .chat_stream_with_images(&message, &pasted_images, |event| {
@@ -1928,12 +1934,18 @@ async fn run_chat_with_options(
         render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
     };
     let readable_tool_names = config.display.readable_tool_names;
+    let command_output_lines = config.display.command_output_lines;
     let show_token_usage = config.display.show_token_usage && !plain;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
     let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
-    let mut renderer =
-        render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain, readable_tool_names);
+    let mut renderer = render::StreamRenderer::new(
+        reasoning_mode,
+        tool_call_mode,
+        plain,
+        readable_tool_names,
+        command_output_lines,
+    );
     renderer.start_waiting()?;
     let result = agent
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
@@ -2144,6 +2156,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 tool_call_mode,
                 false,
                 config.display.readable_tool_names,
+                config.display.command_output_lines,
             );
             match agent
                 .compact_now(|event| handle_agent_event(&mut renderer, event))
@@ -2217,6 +2230,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             tool_call_mode,
             false,
             config.display.readable_tool_names,
+            config.display.command_output_lines,
         );
         renderer.start_waiting()?;
         let chat_result = {
@@ -4482,6 +4496,14 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         }
         AgentEvent::ToolProgress { name, message } => {
             renderer.write_tool_progress(&name, &message)?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::CommandOutput {
+            name,
+            stream,
+            chunk,
+        } => {
+            renderer.write_command_output(&name, stream, &chunk)?;
             renderer.tick_spinner()
         }
         AgentEvent::SpinnerTick => renderer.tick_spinner(),

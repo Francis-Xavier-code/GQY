@@ -15,6 +15,10 @@ const ACTIVE_DOTS: [&str; TRAIL_LEN] = ["▪", "▪", "▫", "▫", "·", "·"];
 const INACTIVE_DOT: &str = "·";
 const BRAILLE_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+pub(crate) fn braille_frame(frame: usize) -> &'static str {
+    BRAILLE_FRAMES[frame % BRAILLE_FRAMES.len()]
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpinnerStyle {
     Scanner,
@@ -101,7 +105,7 @@ fn render_frame(frame: usize, state: &WaitSpinner) -> (String, u16) {
                 .map(|char_index| render_cell(char_index, scanner))
                 .collect::<String>()
         }
-        SpinnerStyle::Braille => paint_secondary(BRAILLE_FRAMES[frame % BRAILLE_FRAMES.len()]),
+        SpinnerStyle::Braille => paint_secondary(braille_frame(frame)),
     };
     let main_line = format!(
         "{} {}{}",

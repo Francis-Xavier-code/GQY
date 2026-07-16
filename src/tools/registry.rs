@@ -11,13 +11,28 @@ use tokio::sync::mpsc;
 pub type ToolFuture = Pin<Box<dyn Future<Output = Result<String>> + Send>>;
 pub type ToolHandler = Arc<dyn Fn(Value, ToolProgress) -> ToolFuture + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug)]
+pub enum ToolProgressEvent {
+    Message(String),
+    CommandOutput {
+        stream: CommandOutputStream,
+        chunk: Vec<u8>,
+    },
+}
+
 #[derive(Clone, Default)]
 pub struct ToolProgress {
-    sender: Option<mpsc::UnboundedSender<String>>,
+    sender: Option<mpsc::UnboundedSender<ToolProgressEvent>>,
 }
 
 impl ToolProgress {
-    pub fn new(sender: mpsc::UnboundedSender<String>) -> Self {
+    pub fn new(sender: mpsc::UnboundedSender<ToolProgressEvent>) -> Self {
         Self {
             sender: Some(sender),
         }
@@ -25,7 +40,13 @@ impl ToolProgress {
 
     pub fn report(&self, message: impl Into<String>) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(message.into());
+            let _ = sender.send(ToolProgressEvent::Message(message.into()));
+        }
+    }
+
+    pub fn report_command_output(&self, stream: CommandOutputStream, chunk: Vec<u8>) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(ToolProgressEvent::CommandOutput { stream, chunk });
         }
     }
 }
@@ -306,7 +327,7 @@ impl ToolRegistry {
         &self,
         name: &str,
         arguments: &str,
-        sender: mpsc::UnboundedSender<String>,
+        sender: mpsc::UnboundedSender<ToolProgressEvent>,
     ) -> Result<ToolFuture> {
         let Some(tool) = self.tools.get(name) else {
             bail!("unknown tool: {name}");

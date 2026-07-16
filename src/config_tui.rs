@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, ProviderConfig};
+use crate::config::{AppConfig, ProviderConfig, MAX_COMMAND_OUTPUT_LINES};
 use crate::default_kb;
 use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
 use crate::paths::MiyuPaths;
@@ -1862,6 +1862,10 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
             .choices(&["summary", "full", "hidden"]),
         Field::new("显示工具调用信息", config.display.tool_calls.clone())
             .choices(&["summary", "full", "hidden"]),
+        Field::new(
+            "命令输出显示行数",
+            config.display.command_output_lines.to_string(),
+        ),
         Field::boolean("工具名可读显示", config.display.readable_tool_names),
         Field::boolean(
             "Shell 无缝对话显示 Token 计数",
@@ -1884,10 +1888,15 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
     config.skills.allow_command_execution = parse_bool_field(&fields[5].value)?;
     config.display.reasoning = fields[6].value.trim().to_string();
     config.display.tool_calls = fields[7].value.trim().to_string();
-    config.display.readable_tool_names = parse_bool_field(&fields[8].value)?;
-    config.display.show_token_usage = parse_bool_field(&fields[9].value)?;
-    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[10].value);
-    config.context.on_overflow = fields[11].value.trim().to_string();
+    config.display.command_output_lines = fields[8]
+        .value
+        .trim()
+        .parse::<usize>()?
+        .min(MAX_COMMAND_OUTPUT_LINES);
+    config.display.readable_tool_names = parse_bool_field(&fields[9].value)?;
+    config.display.show_token_usage = parse_bool_field(&fields[10].value)?;
+    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[11].value);
+    config.context.on_overflow = fields[12].value.trim().to_string();
     Ok(())
 }
 

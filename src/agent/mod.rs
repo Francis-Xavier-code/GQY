@@ -122,12 +122,40 @@ pub enum AgentEvent {
         name: String,
         message: String,
     },
+    CommandOutput {
+        name: String,
+        stream: tools::CommandOutputStream,
+        chunk: Vec<u8>,
+    },
     SpinnerTick,
     CompactStart,
     CompactChunk(ChatStreamChunk),
     CompactEnd,
     PopStart,
     PopEnd,
+}
+
+fn emit_tool_progress<F>(
+    on_event: &mut F,
+    name: &str,
+    progress: tools::ToolProgressEvent,
+) -> Result<()>
+where
+    F: FnMut(AgentEvent) -> Result<()>,
+{
+    match progress {
+        tools::ToolProgressEvent::Message(message) => on_event(AgentEvent::ToolProgress {
+            name: name.to_string(),
+            message,
+        }),
+        tools::ToolProgressEvent::CommandOutput { stream, chunk } => {
+            on_event(AgentEvent::CommandOutput {
+                name: name.to_string(),
+                stream,
+                chunk,
+            })
+        }
+    }
 }
 
 pub struct Agent {
@@ -813,20 +841,14 @@ impl Agent {
                         result = &mut tool_future => {
                             break match result {
                                 Ok(output) => {
-                                    while let Ok(message) = progress_rx.try_recv() {
-                                        on_event(AgentEvent::ToolProgress {
-                                            name: event_name.clone(),
-                                            message,
-                                        })?;
+                                    while let Ok(progress) = progress_rx.try_recv() {
+                                        emit_tool_progress(on_event, &event_name, progress)?;
                                     }
                                     (output, true)
                                 }
                                 Err(err) => {
-                                    while let Ok(message) = progress_rx.try_recv() {
-                                        on_event(AgentEvent::ToolProgress {
-                                            name: event_name.clone(),
-                                            message,
-                                        })?;
+                                    while let Ok(progress) = progress_rx.try_recv() {
+                                        emit_tool_progress(on_event, &event_name, progress)?;
                                     }
                                     on_event(AgentEvent::ToolResult {
                                         name: event_name.clone(),
@@ -837,11 +859,8 @@ impl Agent {
                                 }
                             };
                         }
-                        Some(message) = progress_rx.recv() => {
-                            on_event(AgentEvent::ToolProgress {
-                                name: event_name.clone(),
-                                message,
-                            })?;
+                        Some(progress) = progress_rx.recv() => {
+                            emit_tool_progress(on_event, &event_name, progress)?;
                         }
                         _ = spinner_interval.tick() => {
                             on_event(AgentEvent::SpinnerTick)?;
