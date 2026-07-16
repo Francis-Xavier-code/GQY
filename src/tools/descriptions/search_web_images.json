@@ -1,7 +1,7 @@
 {
   "name": "search_web_images",
   "display_name": "搜索图片",
-  "description": "搜索网络图片。",
+  "description": "并行使用多个来源搜索网络图片，统一排序、去重并进行安全审核。",
   "parameters": {
     "type": "object",
     "properties": {

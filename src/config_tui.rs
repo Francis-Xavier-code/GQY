@@ -362,6 +362,11 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
         ],
         4 => vec![
             Field::boolean("启用", config.plugins.web_images.enabled),
+            Field::new(
+                "搜索来源模式",
+                config.plugins.web_images.source_mode.clone(),
+            )
+            .choices(&["auto", "global", "mainland"]),
             Field::boolean(
                 "视觉模型审核",
                 config.plugins.web_images.vision_screening_enabled,
@@ -613,18 +618,22 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
         }
         4 => {
             config.plugins.web_images.enabled = parse_bool_field(&fields[0].value)?;
+            config.plugins.web_images.source_mode = match fields[1].value.trim() {
+                "auto" | "global" | "mainland" => fields[1].value.trim().to_string(),
+                other => anyhow::bail!("未知搜图来源模式: {other}"),
+            };
             config.plugins.web_images.vision_screening_enabled =
-                parse_bool_field(&fields[1].value)?;
+                parse_bool_field(&fields[2].value)?;
             config.plugins.web_images.max_results =
-                fields[2].value.trim().parse::<usize>()?.clamp(1, 10);
-            config.plugins.web_images.safe_search = parse_bool_field(&fields[3].value)?;
-            config.plugins.web_images.auto_preview = parse_bool_field(&fields[4].value)?;
+                fields[3].value.trim().parse::<usize>()?.clamp(1, 10);
+            config.plugins.web_images.safe_search = parse_bool_field(&fields[4].value)?;
+            config.plugins.web_images.auto_preview = parse_bool_field(&fields[5].value)?;
             config.plugins.web_images.preview_count =
-                fields[5].value.trim().parse::<usize>()?.min(5);
+                fields[6].value.trim().parse::<usize>()?.min(5);
             config.plugins.web_images.max_download_mb =
-                fields[6].value.trim().parse::<f64>()?.clamp(0.1, 50.0);
+                fields[7].value.trim().parse::<f64>()?.clamp(0.1, 50.0);
             config.plugins.web_images.timeout_seconds =
-                fields[7].value.trim().parse::<u64>()?.clamp(5, 120);
+                fields[8].value.trim().parse::<u64>()?.clamp(5, 120);
         }
         5 => {
             config.plugins.print_image.enabled = parse_bool_field(&fields[0].value)?;

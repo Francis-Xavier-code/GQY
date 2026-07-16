@@ -19,6 +19,7 @@ directories = "5.0"
 hex = "0.4"
 html2md = "0.2"
 html2text = "0.12"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 json_comments = "0.2"
 futures-util = "0.3"
 flate2 = "1.0"
@@ -40,7 +41,7 @@ syntect = { version = "5.2", default-features = false, features = ["default-synt
 termimad = "0.34"
 tempfile = "3.15"
 tar = "0.4"
-tokio = { version = "1.38", features = ["io-util", "macros", "process", "rt-multi-thread", "signal"] }
+tokio = { version = "1.38", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal"] }
 trash = "5.2"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"

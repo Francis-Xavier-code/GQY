@@ -372,6 +372,8 @@ pub struct WebPluginConfig {
 pub struct WebImagesPluginConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_web_images_source_mode")]
+    pub source_mode: String,
     #[serde(default = "default_web_images_max_results")]
     pub max_results: usize,
     #[serde(default = "default_web_images_max_download_mb")]
@@ -687,6 +689,7 @@ impl Default for WebImagesPluginConfig {
     fn default() -> Self {
         Self {
             enabled: default_true(),
+            source_mode: default_web_images_source_mode(),
             max_results: default_web_images_max_results(),
             max_download_mb: default_web_images_max_download_mb(),
             safe_search: default_true(),
@@ -2060,6 +2063,10 @@ fn default_web_search_max_results() -> usize {
 
 fn default_web_images_max_results() -> usize {
     5
+}
+
+fn default_web_images_source_mode() -> String {
+    "auto".to_string()
 }
 
 fn default_web_images_max_download_mb() -> f64 {
