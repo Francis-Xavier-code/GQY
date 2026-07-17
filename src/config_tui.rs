@@ -1815,27 +1815,11 @@ fn edit_provider_form(
         let timeout = fields[7].value.trim().parse().unwrap_or(60);
         let temperature = fields[8].value.trim().parse().unwrap_or(0.7);
 
-        // 解析 extra_body
-        let extra_body = if fields[9].value.trim().is_empty() {
-            None
-        } else {
-            // 在 match 中显式标注类型
-            match serde_json::from_str::<serde_json::Value>(&fields[9].value.trim()) {
-                Ok(json) => {
-                    if json.is_object() {
-                        Some(json)
-                    } else {
-                        message(
-                            stdout,
-                            "额外请求体必须是 JSON 对象 (如 {\"key\": \"value\"})",
-                        )?;
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    message(stdout, &format!("无效 JSON: {}", e))?;
-                    continue;
-                }
+        let extra_body = match parse_extra_body(&fields[9].value) {
+            Ok(extra_body) => extra_body,
+            Err(error) => {
+                message(stdout, &error)?;
+                continue;
             }
         };
 
@@ -1873,6 +1857,21 @@ fn edit_provider_form(
         }));
     }
 }
+
+fn parse_extra_body(
+    value: &str,
+) -> std::result::Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    match serde_json::from_str::<serde_json::Value>(value) {
+        Ok(serde_json::Value::Object(object)) => Ok(Some(object)),
+        Ok(_) => Err("额外请求体必须是 JSON 对象 (如 {\"key\": \"value\"})".to_string()),
+        Err(error) => Err(format!("无效 JSON: {error}")),
+    }
+}
+
 fn edit_model_form(
     stdout: &mut io::Stdout,
     provider: &mut ProviderConfig,
@@ -2999,7 +2998,7 @@ impl Field {
 
 #[cfg(test)]
 mod tests {
-    use super::{field_display_value, Field};
+    use super::{field_display_value, parse_extra_body, Field};
 
     #[test]
     fn sensitive_field_is_masked_until_actively_edited() {
@@ -3031,19 +3030,15 @@ mod tests {
     }
 
     #[test]
-    fn extra_body_reject_non_object() {
-        let invalid_inputs = vec!["true", "\"hello\"", "[1, 2, 3]"];
-
-        for input in invalid_inputs {
-            let result = serde_json::from_str::<serde_json::Value>(input);
-            assert!(result.is_ok());
-            let json = result.unwrap();
-            assert!(!json.is_object(), "Non-object JSON should be rejected");
-            // 在你的 TUI 逻辑中，你会检查 is_object() 并报错，这里模拟
-            if !json.is_object() {
-                // 模拟错误处理
-                assert!(true); // 测试通过
-            }
+    fn extra_body_parser_accepts_only_json_objects() {
+        for input in ["true", "\"hello\"", "[1, 2, 3]", "{invalid"] {
+            assert!(parse_extra_body(input).is_err());
         }
+
+        let parsed = parse_extra_body(r#"{"enable_thinking":false}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed["enable_thinking"], false);
+        assert!(parse_extra_body("  ").unwrap().is_none());
     }
 }

@@ -162,7 +162,7 @@ pub struct ProviderConfig {
     )]
     pub anthropic_max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra_body: Option<serde_json::Value>,
+    pub extra_body: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone)]
@@ -2568,7 +2568,6 @@ mod tests {
 
     #[test]
     fn extra_body_roundtrip() {
-        // 构造一个包含 extra_body 的 ProviderConfig
         let original = ProviderConfig {
             id: "test".to_string(),
             display_name: "Test".to_string(),
@@ -2582,19 +2581,36 @@ mod tests {
             timeout_seconds: 60,
             temperature: 0.7,
             anthropic_max_tokens: 4096,
-            extra_body: Some(
-                serde_json::json!({ "enable_thinking": false, "reasoning_effort": "low" }),
-            ),
+            extra_body: serde_json::json!({
+                "enable_thinking": false,
+                "reasoning_effort": "low"
+            })
+            .as_object()
+            .cloned(),
         };
 
-        // 序列化为 JSON 字符串
         let serialized = serde_json::to_string(&original).unwrap();
-        // 反序列化回来
         let deserialized: ProviderConfig = serde_json::from_str(&serialized).unwrap();
 
-        // 比较两个对象的 extra_body 字段是否相等
         assert_eq!(original.extra_body, deserialized.extra_body);
-        // 也可比较其他字段确保一致
         assert_eq!(original.id, deserialized.id);
+    }
+
+    #[test]
+    fn extra_body_rejects_non_object_config_values() {
+        for extra_body in [
+            serde_json::json!(true),
+            serde_json::json!("invalid"),
+            serde_json::json!([1, 2, 3]),
+        ] {
+            let provider = serde_json::json!({
+                "id": "test",
+                "display_name": "Test",
+                "base_url": "https://example.com",
+                "extra_body": extra_body
+            });
+
+            assert!(serde_json::from_value::<ProviderConfig>(provider).is_err());
+        }
     }
 }

@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -20,24 +20,44 @@ static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LLM_SCHEDULER: LazyLock<Mutex<LlmScheduler>> =
     LazyLock::new(|| Mutex::new(LlmScheduler::default()));
 
-//过滤 extra_body 中与保留字段冲突的键
+const CHAT_RESERVED_BODY_KEYS: &[&str] = &[
+    "model",
+    "messages",
+    "temperature",
+    "stream",
+    "stream_options",
+    "tools",
+    "chat_template_kwargs",
+];
+const RESPONSES_RESERVED_BODY_KEYS: &[&str] = &[
+    "model",
+    "input",
+    "instructions",
+    "stream",
+    "tools",
+    "reasoning",
+    "temperature",
+];
+const ANTHROPIC_RESERVED_BODY_KEYS: &[&str] = &[
+    "model",
+    "system",
+    "messages",
+    "tools",
+    "stream",
+    "max_tokens",
+    "temperature",
+    "thinking",
+];
+
 fn sanitize_extra_body(
-    extra: Option<serde_json::Value>,
+    extra: Option<Map<String, Value>>,
     reserved_keys: &[&str],
-) -> Option<serde_json::Value> {
+) -> Option<Map<String, Value>> {
     let mut extra = extra?;
-    if let Some(obj) = extra.as_object_mut() {
-        for key in reserved_keys {
-            obj.remove(*key);
-        }
-        //若过滤后为空对象，返回None
-        if obj.is_empty() {
-            return None;
-        }
-        return Some(serde_json::Value::Object(obj.clone()));
-    } else {
-        return Some(extra);
+    for key in reserved_keys {
+        extra.remove(*key);
     }
+    (!extra.is_empty()).then_some(extra)
 }
 
 fn gen_tool_call_id() -> String {
@@ -421,18 +441,8 @@ impl OpenAiCompatibleClient {
                 bail!("OpenAI Responses protocol is not supported by this provider");
             }
         }
-        let extra_body = sanitize_extra_body(
-            self.provider.extra_body.clone(),
-            &[
-                "model",
-                "messages",
-                "temperature",
-                "stream",
-                "stream_options",
-                "tools",
-                "chat_template_kwargs",
-            ],
-        );
+        let extra_body =
+            sanitize_extra_body(self.provider.extra_body.clone(), CHAT_RESERVED_BODY_KEYS);
         let mut request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
@@ -443,7 +453,7 @@ impl OpenAiCompatibleClient {
             }),
             tools: (!tools.is_empty()).then_some(tools),
             chat_template_kwargs: taotoken_glm_chat_template_kwargs(&self.provider),
-            extra_body: extra_body,
+            extra_body,
         };
         let url = format!(
             "{}/chat/completions",
@@ -684,15 +694,7 @@ impl OpenAiCompatibleClient {
     ) -> AnthropicRequest {
         let extra_body = sanitize_extra_body(
             self.provider.extra_body.clone(),
-            &[
-                "model",
-                "messages",
-                "temperature",
-                "stream",
-                "stream_options",
-                "tools",
-                "chat_template_kwargs",
-            ],
+            ANTHROPIC_RESERVED_BODY_KEYS,
         );
         AnthropicRequest {
             model: self.provider.default_model.clone(),
@@ -703,7 +705,7 @@ impl OpenAiCompatibleClient {
             max_tokens: self.provider.anthropic_max_tokens,
             temperature: Some(self.provider.temperature),
             thinking: thinking.then(anthropic_thinking_config),
-            extra_body: extra_body,
+            extra_body,
         }
     }
 
@@ -771,15 +773,7 @@ impl OpenAiCompatibleClient {
     {
         let extra_body = sanitize_extra_body(
             self.provider.extra_body.clone(),
-            &[
-                "model",
-                "messages",
-                "temperature",
-                "stream",
-                "stream_options",
-                "tools",
-                "chat_template_kwargs",
-            ],
+            RESPONSES_RESERVED_BODY_KEYS,
         );
         let request = ResponsesRequest {
             model: self.provider.default_model.clone(),
@@ -792,7 +786,7 @@ impl OpenAiCompatibleClient {
                 summary: Some("concise"),
             }),
             temperature: Some(self.provider.temperature),
-            extra_body: extra_body,
+            extra_body,
         };
         let url = format!("{}/responses", self.provider.base_url.trim_end_matches('/'));
         let response = self
@@ -986,7 +980,7 @@ struct ChatRequest {
     chat_template_kwargs: Option<ChatTemplateKwargs>,
     #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    extra_body: Option<serde_json::Value>,
+    extra_body: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1009,7 +1003,7 @@ struct ResponsesRequest {
     temperature: Option<f32>,
     #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    extra_body: Option<serde_json::Value>,
+    extra_body: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1036,7 +1030,7 @@ struct AnthropicRequest {
     thinking: Option<AnthropicThinkingConfig>,
     #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    extra_body: Option<serde_json::Value>,
+    extra_body: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -3368,10 +3362,14 @@ mod tests {
     fn test_chat_request_extra_body_flatten() {
         use serde_json::json;
 
-        let extra = Some(json!({
+        let extra = json!({
+            "model": "override",
+            "messages": [],
             "enable_thinking": false,
             "custom_param": "value"
-        }));
+        })
+        .as_object()
+        .cloned();
 
         let request = ChatRequest {
             model: "gpt-4".to_string(),
@@ -3383,33 +3381,34 @@ mod tests {
             }),
             tools: None,
             chat_template_kwargs: None,
-            extra_body: extra.clone(),
+            extra_body: sanitize_extra_body(extra, CHAT_RESERVED_BODY_KEYS),
         };
 
+        let serialized = serde_json::to_string(&request).unwrap();
         let value = serde_json::to_value(&request).unwrap();
 
-        // 验证展平字段
         assert_eq!(value["enable_thinking"], false);
         assert_eq!(value["custom_param"], "value");
-
-        // 验证顶层字段
         assert_eq!(value["model"], "gpt-4");
-        // 浮点数比较使用近似
         let temp = value["temperature"].as_f64().unwrap();
         assert!((temp - 0.7).abs() < 1e-6);
-
-        // 验证 extra_body 消失
         assert!(value.get("extra_body").is_none());
+        assert_eq!(serialized.matches("\"model\":").count(), 1);
+        assert_eq!(serialized.matches("\"messages\":").count(), 1);
     }
 
     #[test]
     fn test_responses_request_extra_body_flatten() {
         use serde_json::json;
 
-        let extra = Some(json!({
+        let extra = json!({
+            "input": [],
+            "reasoning": {"effort": "high"},
             "reasoning_effort": "high",
             "parallel_tool_calls": false
-        }));
+        })
+        .as_object()
+        .cloned();
 
         let request = ResponsesRequest {
             model: "gpt-5".to_string(),
@@ -3417,85 +3416,83 @@ mod tests {
             instructions: None,
             stream: true,
             tools: None,
-            reasoning: None,
+            reasoning: Some(ResponsesReasoning {
+                effort: Some("medium"),
+                summary: Some("concise"),
+            }),
             temperature: Some(0.5),
-            extra_body: extra.clone(),
+            extra_body: sanitize_extra_body(extra, RESPONSES_RESERVED_BODY_KEYS),
         };
 
+        let serialized = serde_json::to_string(&request).unwrap();
         let value = serde_json::to_value(&request).unwrap();
 
-        // 验证展平字段
         assert_eq!(value["reasoning_effort"], "high");
         assert_eq!(value["parallel_tool_calls"], false);
-
-        // 验证顶层字段
         assert_eq!(value["model"], "gpt-5");
+        assert_eq!(value["reasoning"]["effort"], "medium");
         assert_eq!(value["temperature"], 0.5);
-
-        // 验证 extra_body 消失
         assert!(value.get("extra_body").is_none());
+        assert_eq!(serialized.matches("\"input\":").count(), 1);
+        assert_eq!(serialized.matches("\"reasoning\":").count(), 1);
     }
 
     #[test]
     fn test_anthropic_request_extra_body_flatten() {
         use serde_json::json;
 
-        let extra = Some(json!({
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 1024
-            },
+        let extra = json!({
+            "system": "override",
+            "max_tokens": 1,
+            "thinking": {"type": "disabled"},
             "metadata": {"user_id": "123"}
-        }));
+        })
+        .as_object()
+        .cloned();
+        let mut provider = test_provider("anthropic", "https://api.anthropic.com/v1");
+        provider.default_model = "claude-3-opus".to_string();
+        provider.extra_body = extra;
+        let client = test_client(provider);
+        let request = client.anthropic_request(
+            vec![
+                ChatMessage::plain("system", "You are helpful"),
+                ChatMessage::plain("user", "Hello"),
+            ],
+            Vec::new(),
+            true,
+        );
 
-        let request = AnthropicRequest {
-            model: "claude-3-opus".to_string(),
-            system: Some("You are helpful".to_string()),
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: vec![AnthropicContentBlock::Text {
-                    text: "Hello".to_string(),
-                }],
-            }],
-            tools: None,
-            stream: true,
-            max_tokens: 4096,
-            temperature: Some(0.7),
-            thinking: None,
-            extra_body: extra.clone(),
-        };
-
+        let serialized = serde_json::to_string(&request).unwrap();
         let value = serde_json::to_value(&request).unwrap();
 
-        // 验证展平字段（包括嵌套对象）
-        assert_eq!(value["thinking"]["type"], "enabled");
-        assert_eq!(value["thinking"]["budget_tokens"], 1024);
         assert_eq!(value["metadata"]["user_id"], "123");
-
-        // 验证顶层字段
+        assert_eq!(value["system"], "You are helpful");
+        assert_eq!(value["thinking"]["type"], "adaptive");
         assert_eq!(value["model"], "claude-3-opus");
         assert_eq!(value["max_tokens"], 4096);
-
-        // 验证 extra_body 消失
         assert!(value.get("extra_body").is_none());
+        assert_eq!(serialized.matches("\"system\":").count(), 1);
+        assert_eq!(serialized.matches("\"max_tokens\":").count(), 1);
+        assert_eq!(serialized.matches("\"thinking\":").count(), 1);
     }
 
     #[test]
-    fn extra_body_conflict_resolution() {
-        let extra = Some(serde_json::json!({
-            "temperature": 0.9,   // 冲突
-            "model": "gpt-5",     // 冲突
-            "custom": "keep"      // 不冲突
-        }));
+    fn extra_body_reserved_keys_match_each_protocol() {
+        for reserved in [
+            CHAT_RESERVED_BODY_KEYS,
+            RESPONSES_RESERVED_BODY_KEYS,
+            ANTHROPIC_RESERVED_BODY_KEYS,
+        ] {
+            let mut extra = serde_json::Map::new();
+            for key in reserved {
+                extra.insert((*key).to_string(), serde_json::json!("override"));
+            }
+            extra.insert("custom".to_string(), serde_json::json!("keep"));
 
-        let reserved = vec!["model", "temperature", "stream", "tools"];
-        let sanitized = sanitize_extra_body(extra, &reserved);
-
-        // 由于有非冲突字段 "custom"，sanitized 应为 Some
-        let sanitized_value = sanitized.unwrap();
-        assert!(sanitized_value.get("temperature").is_none());
-        assert!(sanitized_value.get("model").is_none());
-        assert_eq!(sanitized_value["custom"], "keep");
+            let sanitized = sanitize_extra_body(Some(extra), reserved).unwrap();
+            assert_eq!(sanitized.len(), 1);
+            assert_eq!(sanitized["custom"], "keep");
+        }
     }
 }
 
