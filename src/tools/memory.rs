@@ -39,28 +39,30 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
     if !config.memory_config().enabled {
         return;
     }
-    registry.register(ToolSpec::new(
-        "search_evicted_context",
-        t("Search conversation turns that were moved out of the active context window. Use this when the current context appears to be missing earlier discussion.", "搜索已经移出当前上下文窗口的对话轮次。当当前上下文明显缺少早前讨论时使用。"),
-        json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": t("Search keywords or question.", "搜索关键词或问题。") },
-                "max_results": { "type": "integer", "description": t("Optional result limit.", "可选结果数量限制。") }
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        }),
-        {
-            let config = config.clone();
-            let paths = paths.clone();
-            move |args| {
+    if config.memory_config().evicted_context_enabled && config.context.on_overflow == "pop" {
+        registry.register(ToolSpec::new(
+            "search_evicted_context",
+            t("Search conversation turns that were moved out of the active context window. Use this when the current context appears to be missing earlier discussion.", "搜索已经移出当前上下文窗口的对话轮次。当当前上下文明显缺少早前讨论时使用。"),
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": t("Search keywords or question.", "搜索关键词或问题。") },
+                    "max_results": { "type": "integer", "description": t("Optional result limit.", "可选结果数量限制。") }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+            {
                 let config = config.clone();
                 let paths = paths.clone();
-                async move { search_evicted_context(args, config, paths).await }
-            }
-        },
-    ));
+                move |args| {
+                    let config = config.clone();
+                    let paths = paths.clone();
+                    async move { search_evicted_context(args, config, paths).await }
+                }
+            },
+        ));
+    }
     registry.register(ToolSpec::new(
         "recall_past_events",
         t("Search the assistant's diary-like memory of things that happened in previous conversations.", "搜索助手对过往对话事件的日记式记忆。"),
@@ -176,4 +178,52 @@ fn optional_limit(args: &Value) -> usize {
         .and_then(Value::as_u64)
         .unwrap_or(5)
         .clamp(1, 50) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    fn test_paths() -> MiyuPaths {
+        let root = PathBuf::from("/tmp/miyu-memory-tool-test");
+        MiyuPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish-hook.fish"),
+            bash_hook_file: root.join("bash-hook.sh"),
+            zsh_hook_file: root.join("zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        }
+    }
+
+    fn tool_names(registry: &ToolRegistry) -> BTreeSet<String> {
+        registry
+            .lazy_definitions(&BTreeSet::new())
+            .into_iter()
+            .map(|definition| definition.function.name)
+            .collect()
+    }
+
+    #[test]
+    fn search_evicted_context_is_available_only_for_pop_overflow() {
+        let paths = test_paths();
+        let compact_config = AppConfig::default();
+        let mut compact_registry = ToolRegistry::new();
+        register_readonly(&mut compact_registry, compact_config, paths.clone());
+        assert!(!tool_names(&compact_registry).contains("search_evicted_context"));
+
+        let mut pop_config = AppConfig::default();
+        pop_config.context.on_overflow = "pop".to_string();
+        let mut pop_registry = ToolRegistry::new();
+        register_readonly(&mut pop_registry, pop_config, paths);
+        assert!(tool_names(&pop_registry).contains("search_evicted_context"));
+    }
 }
