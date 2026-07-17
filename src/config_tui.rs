@@ -1792,6 +1792,7 @@ fn edit_provider_form(
         ),
         Field::new("超时秒数", provider.timeout_seconds.to_string()),
         Field::new("Temperature", provider.temperature.to_string()),
+        Field::textarea("额外请求体(JSON)",provider.extra_body.as_ref().map(|v| v.to_string()).unwrap_or_default()),
     ];
     if !run_form(stdout, " EDIT PROVIDER ", &mut fields)? {
         return Ok(None);
@@ -1810,6 +1811,21 @@ fn edit_provider_form(
     if !default_model.trim().is_empty() && !models.iter().any(|item| item == &default_model) {
         models.push(default_model.clone());
     }
+    //解析extra_body JSON
+    let extra_body = if fields[9].value.trim().is_empty() {
+        None
+    } else {
+        match serde_json::from_str(&fields[9].value.trim()) {
+            Ok(json) => Some(json),
+            Err(e) => {
+                // 显示错误并返回，让用户重新编辑
+                let error_msg = format!("无效 JSON: {}", e);
+                message(stdout, &error_msg)?;
+                return Ok(None);
+            }
+        }
+    };
+
     Ok(Some(ProviderConfig {
         id: fields[0].value.trim().to_string(),
         display_name: fields[1].value.trim().to_string(),
@@ -1823,6 +1839,7 @@ fn edit_provider_form(
         timeout_seconds: fields[7].value.trim().parse().unwrap_or(60),
         temperature: fields[8].value.trim().parse().unwrap_or(0.7),
         anthropic_max_tokens: provider.anthropic_max_tokens,
+        extra_body,
     }))
 }
 

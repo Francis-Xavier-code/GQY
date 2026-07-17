@@ -161,6 +161,9 @@ pub struct ProviderConfig {
         skip_serializing_if = "is_default_anthropic_max_tokens"
     )]
     pub anthropic_max_tokens: u32,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -933,6 +936,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body: None
         }
     }
 
@@ -950,6 +954,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body:None
         }
     }
 
@@ -991,6 +996,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body:None
         }
     }
 
@@ -1008,6 +1014,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body:None
         }
     }
 

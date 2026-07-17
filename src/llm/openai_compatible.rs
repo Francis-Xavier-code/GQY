@@ -411,6 +411,7 @@ impl OpenAiCompatibleClient {
             }),
             tools: (!tools.is_empty()).then_some(tools),
             chat_template_kwargs: taotoken_glm_chat_template_kwargs(&self.provider),
+            extra_body: self.provider.extra_body.clone(),
         };
         let url = format!(
             "{}/chat/completions",
@@ -659,6 +660,7 @@ impl OpenAiCompatibleClient {
             max_tokens: self.provider.anthropic_max_tokens,
             temperature: Some(self.provider.temperature),
             thinking: thinking.then(anthropic_thinking_config),
+            extra_body: self.provider.extra_body.clone()
         }
     }
 
@@ -735,6 +737,7 @@ impl OpenAiCompatibleClient {
                 summary: Some("concise"),
             }),
             temperature: Some(self.provider.temperature),
+            extra_body: self.provider.extra_body.clone(),
         };
         let url = format!("{}/responses", self.provider.base_url.trim_end_matches('/'));
         let response = self
@@ -926,6 +929,9 @@ struct ChatRequest {
     tools: Option<Vec<ToolDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<ChatTemplateKwargs>,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -946,6 +952,9 @@ struct ResponsesRequest {
     reasoning: Option<ResponsesReasoning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -970,6 +979,9 @@ struct AnthropicRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinkingConfig>,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -2731,6 +2743,7 @@ mod tests {
             }),
             tools: None,
             chat_template_kwargs: None,
+            extra_body: None
         };
 
         let value = serde_json::to_value(request).unwrap();
