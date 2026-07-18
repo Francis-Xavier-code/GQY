@@ -27,7 +27,7 @@ pub fn alarms_file(paths: &MiyuPaths) -> PathBuf {
 }
 
 pub fn alarm_log_file(paths: &MiyuPaths) -> PathBuf {
-    paths.state_dir.join("alarm.log")
+    paths.logs_dir().join("alarm.log")
 }
 
 pub fn parse_alarm_seconds(value: &str) -> Result<u64> {
@@ -181,12 +181,13 @@ mod tests {
     use super::*;
 
     fn test_paths(state_dir: PathBuf) -> MiyuPaths {
+        let cache_dir = state_dir.join("cache");
         MiyuPaths {
             config_dir: PathBuf::new(),
             config_file: PathBuf::new(),
             skills_dir: PathBuf::new(),
             data_dir: PathBuf::new(),
-            cache_dir: PathBuf::new(),
+            cache_dir,
             state_dir,
             pictures_dir: PathBuf::new(),
             fish_hook_file: PathBuf::new(),
@@ -203,6 +204,17 @@ mod tests {
         assert_eq!(parse_alarm_seconds("10m").unwrap(), 600);
         assert_eq!(parse_alarm_seconds("1h 2m 3s").unwrap(), 3723);
         assert!(parse_alarm_seconds("0s").is_err());
+    }
+
+    #[test]
+    fn alarm_log_uses_cache_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path().join("state"));
+
+        assert_eq!(
+            alarm_log_file(&paths),
+            paths.cache_dir.join("logs/alarm.log")
+        );
     }
 
     #[test]

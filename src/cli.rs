@@ -21,6 +21,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io::Cursor;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -260,6 +261,9 @@ pub struct Cli {
     #[arg(long)]
     pub plan: bool,
 
+    #[arg(long, global = true)]
+    pub debug: bool,
+
     #[arg(long)]
     pub stdout: bool,
 
@@ -286,8 +290,32 @@ pub struct Cli {
 }
 
 pub fn parse() -> Cli {
-    let matches = localized_command().get_matches();
-    Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
+    parse_args(std::env::args_os().collect()).unwrap_or_else(|err| err.exit())
+}
+
+fn parse_args(mut args: Vec<OsString>) -> std::result::Result<Cli, clap::Error> {
+    let debug = extract_debug_flag(&mut args);
+    let matches = localized_command().try_get_matches_from(args)?;
+    let mut cli = Cli::from_arg_matches(&matches)?;
+    cli.debug |= debug;
+    Ok(cli)
+}
+
+fn extract_debug_flag(args: &mut Vec<OsString>) -> bool {
+    let mut debug = false;
+    let mut index = 1;
+    while index < args.len() {
+        if args[index] == "--" {
+            break;
+        }
+        if args[index] == "--debug" {
+            args.remove(index);
+            debug = true;
+        } else {
+            index += 1;
+        }
+    }
+    debug
 }
 
 fn localized_command() -> clap::Command {
@@ -376,6 +404,12 @@ fn localize_top_args(command: clap::Command) -> clap::Command {
     command
         .mut_arg("plan", |arg| {
             arg.help(t("Run in read-only planning mode", "使用只读计划模式运行"))
+        })
+        .mut_arg("debug", |arg| {
+            arg.help(t(
+                "Write detailed diagnostics to the Miyu log directory",
+                "将详细诊断信息写入 Miyu 日志目录",
+            ))
         })
         .mut_arg("stdout", |arg| {
             arg.help(t(
@@ -665,6 +699,8 @@ pub struct AlarmWorkerArgs {
     #[arg(long)]
     pub state_dir: PathBuf,
     #[arg(long)]
+    pub cache_dir: PathBuf,
+    #[arg(long)]
     pub audio_file: Option<PathBuf>,
 }
 
@@ -846,6 +882,22 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 
     let paths = MiyuPaths::new()?;
+    if cli.clipboard_paste {
+        return run_clipboard_paste(&paths);
+    }
+    let _logging_guard = match crate::logging::init(&paths, cli.debug) {
+        Ok(guard) => Some(guard),
+        Err(err) => {
+            eprintln!(
+                "{}: {err:#}",
+                t(
+                    "warning: diagnostic logging is unavailable",
+                    "警告：诊断日志不可用"
+                )
+            );
+            None
+        }
+    };
     let mode = if cli.plan {
         AgentMode::Plan
     } else {
@@ -859,10 +911,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
         let message = shell_message_from_input(cli.stdin, cli.message)?;
         return run_shell_intercept(&paths, shell_name, message).await;
-    }
-
-    if cli.clipboard_paste {
-        return run_clipboard_paste(&paths);
     }
 
     if !paths.config_file.exists()
@@ -1115,7 +1163,7 @@ fn remove_shell_hooks(paths: &MiyuPaths) -> Result<()> {
 }
 
 fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {
-    let paths = alarm_worker_paths(args.state_dir);
+    let paths = alarm_worker_paths(args.state_dir, args.cache_dir);
     let seconds = crate::alarm::parse_alarm_seconds(&args.time)?;
     let source = args
         .audio_file
@@ -1168,7 +1216,7 @@ fn terminal_bell_fallback() {
 }
 
 fn append_alarm_log(paths: &MiyuPaths, line: &str) -> Result<()> {
-    std::fs::create_dir_all(&paths.state_dir)?;
+    std::fs::create_dir_all(paths.logs_dir())?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1177,13 +1225,13 @@ fn append_alarm_log(paths: &MiyuPaths, line: &str) -> Result<()> {
     Ok(())
 }
 
-fn alarm_worker_paths(state_dir: PathBuf) -> MiyuPaths {
+fn alarm_worker_paths(state_dir: PathBuf, cache_dir: PathBuf) -> MiyuPaths {
     MiyuPaths {
         config_dir: PathBuf::new(),
         config_file: PathBuf::new(),
         skills_dir: PathBuf::new(),
         data_dir: PathBuf::new(),
-        cache_dir: PathBuf::new(),
+        cache_dir,
         state_dir,
         pictures_dir: PathBuf::new(),
         fish_hook_file: PathBuf::new(),
@@ -4473,6 +4521,26 @@ mod repl_input_tests {
         let old_cli = Cli::from_arg_matches(&old_matches).unwrap();
         assert!(old_cli.command.is_none());
         assert_eq!(old_cli.message, ["providers"]);
+    }
+
+    #[test]
+    fn debug_is_a_global_cli_option() {
+        for args in [
+            &["miyu", "--debug", "models", "1"][..],
+            &["miyu", "models", "--debug", "1"][..],
+            &["miyu", "hello", "--debug"][..],
+            &["miyu", "ask", "hello", "--debug"][..],
+        ] {
+            let cli = parse_args(args.iter().map(OsString::from).collect()).unwrap();
+            assert!(cli.debug);
+        }
+
+        let cli = parse_args(["miyu", "hello", "--debug"].map(OsString::from).to_vec()).unwrap();
+        assert_eq!(cli.message, ["hello"]);
+
+        let cli = parse_args(["miyu", "--", "--debug"].map(OsString::from).to_vec()).unwrap();
+        assert!(!cli.debug);
+        assert_eq!(cli.message, ["--debug"]);
     }
 
     #[test]

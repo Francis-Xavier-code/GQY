@@ -70,6 +70,10 @@ impl MiyuPaths {
         Ok(())
     }
 
+    pub fn logs_dir(&self) -> PathBuf {
+        self.cache_dir.join("logs")
+    }
+
     pub fn print(&self) {
         println!(
             "{}: {}",
@@ -96,6 +100,11 @@ impl MiyuPaths {
             "{}: {}",
             t("state_dir", "状态目录"),
             self.state_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("logs_dir", "日志目录"),
+            self.logs_dir().display()
         );
         println!(
             "{}: {}",

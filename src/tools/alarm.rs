@@ -97,7 +97,9 @@ async fn set_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
         .arg("--label")
         .arg(label)
         .arg("--state-dir")
-        .arg(&paths.state_dir);
+        .arg(&paths.state_dir)
+        .arg("--cache-dir")
+        .arg(&paths.cache_dir);
     if let Some(path) = &audio_file {
         command.arg("--audio-file").arg(path);
     }

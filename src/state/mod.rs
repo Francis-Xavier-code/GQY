@@ -7,7 +7,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -34,9 +33,6 @@ impl StateStore {
         std::fs::create_dir_all(&self.state_dir)?;
         if !self.usage_file().exists() {
             std::fs::write(self.usage_file(), "{\n  \"requests\": 0,\n  \"prompt_tokens\": 0,\n  \"completion_tokens\": 0,\n  \"total_tokens\": 0\n}\n")?;
-        }
-        if !self.log_file().exists() {
-            touch(self.log_file())?;
         }
         if !self.profile_file().exists() {
             std::fs::write(self.profile_file(), "# Miyu Profile\n\n")?;
@@ -280,10 +276,6 @@ impl StateStore {
         self.state_dir.join("usage.json")
     }
 
-    fn log_file(&self) -> PathBuf {
-        self.state_dir.join("miyu.log")
-    }
-
     fn profile_file(&self) -> PathBuf {
         self.state_dir.join("profile.md")
     }
@@ -373,11 +365,6 @@ pub struct StoredConversationEntry {
     pub reasoning: Option<String>,
 }
 
-fn touch(path: PathBuf) -> Result<()> {
-    OpenOptions::new().create(true).append(true).open(path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +387,9 @@ mod tests {
             system_scripts_dir: PathBuf::new(),
         })
         .unwrap();
+
+        store.init_files().unwrap();
+        assert!(!temp.path().join("state/miyu.log").exists());
 
         store.start_turn("turn_1", "hello", 999999).unwrap();
         let turns = store.load_turns().unwrap();

@@ -8,6 +8,7 @@ mod default_kb;
 mod default_models;
 mod i18n;
 mod llm;
+mod logging;
 mod memory;
 mod models_cache;
 mod paths;

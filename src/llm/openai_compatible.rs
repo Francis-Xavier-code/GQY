@@ -18,8 +18,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LLM_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LLM_SCHEDULER: LazyLock<Mutex<LlmScheduler>> =
     LazyLock::new(|| Mutex::new(LlmScheduler::default()));
+
+const TRANSPORT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 const CHAT_RESERVED_BODY_KEYS: &[&str] = &[
     "model",
@@ -99,6 +102,102 @@ fn gen_tool_call_id() -> String {
         .unwrap_or(0);
     let n = TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("call_{ts}_{n}")
+}
+
+fn gen_llm_request_id() -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let n = LLM_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("llm_{ts}_{n}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportFailureKind {
+    Connect,
+    Timeout,
+    Other,
+}
+
+impl std::fmt::Display for TransportFailureKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Connect => "connect",
+            Self::Timeout => "timeout",
+            Self::Other => "request",
+        })
+    }
+}
+
+fn retryable_transport_failure(kind: TransportFailureKind) -> bool {
+    kind == TransportFailureKind::Connect
+}
+
+#[derive(Debug)]
+struct TransportFailure {
+    stage: &'static str,
+    kind: TransportFailureKind,
+}
+
+impl std::fmt::Display for TransportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} transport failed ({})", self.stage, self.kind)
+    }
+}
+
+impl std::error::Error for TransportFailure {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpFailureKind {
+    Status,
+    Authentication,
+    RateLimit,
+}
+
+#[derive(Debug)]
+struct HttpStatusFailure {
+    status: u16,
+    kind: HttpFailureKind,
+}
+
+impl HttpStatusFailure {
+    fn classify(status: u16, body: &str) -> Self {
+        let body = body.to_ascii_lowercase();
+        let kind = if body.contains("rate limit")
+            || body.contains("ratelimit")
+            || body.contains("quota")
+        {
+            HttpFailureKind::RateLimit
+        } else if body.contains("unauthorized")
+            || body.contains("forbidden")
+            || body.contains("invalid api key")
+        {
+            HttpFailureKind::Authentication
+        } else {
+            HttpFailureKind::Status
+        };
+        Self { status, kind }
+    }
+}
+
+impl std::fmt::Display for HttpStatusFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "upstream returned HTTP {}", self.status)
+    }
+}
+
+impl std::error::Error for HttpStatusFailure {}
+
+fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        message.push_str(": ");
+        message.push_str(&error.to_string());
+        source = error.source();
+    }
+    message
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,13 +364,13 @@ pub struct OpenAiCompatibleClient {
     client: Client,
     provider: ProviderConfig,
     api_key: String,
-    key_index: usize,
     endpoints: Arc<Vec<LlmEndpoint>>,
     thinking_variants: HashMap<String, String>,
 }
 
 #[derive(Clone)]
 struct LlmEndpoint {
+    client: Client,
     provider: ProviderConfig,
     api_key: String,
     key_index: usize,
@@ -350,7 +449,7 @@ fn mark_endpoint_success(endpoint: &LlmEndpoint) {
     }
 }
 
-fn mark_endpoint_failure(endpoint: &LlmEndpoint, error: &str) {
+fn mark_endpoint_failure(endpoint: &LlmEndpoint, error: &anyhow::Error) {
     let Some(duration) = cooldown_for_error(error) else {
         return;
     };
@@ -367,36 +466,29 @@ fn cooldown_for_status(status: u16) -> Option<Duration> {
     }
 }
 
-fn cooldown_for_error(error: &str) -> Option<Duration> {
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("429")
-        || lower.contains("rate limit")
-        || lower.contains("ratelimit")
-        || lower.contains("quota")
-    {
-        return Some(Duration::from_secs(600));
+fn cooldown_for_error(error: &anyhow::Error) -> Option<Duration> {
+    if let Some(failure) = error.downcast_ref::<HttpStatusFailure>() {
+        return match failure.kind {
+            HttpFailureKind::Authentication | HttpFailureKind::RateLimit => {
+                Some(Duration::from_secs(600))
+            }
+            HttpFailureKind::Status => cooldown_for_status(failure.status),
+        };
     }
-    if lower.contains("401")
-        || lower.contains("403")
-        || lower.contains("unauthorized")
-        || lower.contains("forbidden")
-        || lower.contains("invalid api key")
-    {
-        return Some(Duration::from_secs(600));
-    }
-    if lower.contains("408")
-        || lower.contains("500")
-        || lower.contains("502")
-        || lower.contains("503")
-        || lower.contains("504")
-        || lower.contains("request failed")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("connection")
-    {
+    if error.downcast_ref::<TransportFailure>().is_some() {
         return Some(Duration::from_secs(120));
     }
-    None
+    error
+        .downcast_ref::<reqwest::Error>()
+        .filter(|error| error.is_connect() || error.is_timeout())
+        .map(|_| Duration::from_secs(120))
+}
+
+fn endpoint_client(provider: &ProviderConfig) -> Result<Client> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(provider.timeout_seconds.clamp(5, 30)))
+        .build()
+        .with_context(|| format!("building HTTP client for provider {}", provider.id))
 }
 
 fn llm_endpoints(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<LlmEndpoint>> {
@@ -405,10 +497,12 @@ fn llm_endpoints(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<LlmEndpoin
     for choice in config.active_provider_model_choices() {
         let mut provider = config.provider(Some(&choice.provider_id))?.clone();
         provider.default_model = choice.model;
+        let client = endpoint_client(&provider)?;
         match provider.resolved_api_keys(paths) {
             Ok(keys) => {
                 for key in keys {
                     endpoints.push(LlmEndpoint {
+                        client: client.clone(),
                         provider: provider.clone(),
                         api_key: key.value,
                         key_index: key.index,
@@ -436,16 +530,10 @@ impl OpenAiCompatibleClient {
         let first = endpoints
             .first()
             .with_context(|| "no active provider/model endpoint is configured")?;
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(
-                first.provider.timeout_seconds.clamp(5, 30),
-            ))
-            .build()?;
         Ok(Self {
-            client,
+            client: first.client.clone(),
             provider: first.provider.clone(),
             api_key: first.api_key.clone(),
-            key_index: first.key_index,
             endpoints: Arc::new(endpoints),
             thinking_variants: HashMap::new(),
         })
@@ -462,15 +550,14 @@ impl OpenAiCompatibleClient {
                 provider.id
             );
         }
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(provider.timeout_seconds.clamp(5, 30)))
-            .build()?;
+        let client = endpoint_client(provider)?;
         let key = provider
             .resolved_api_keys(paths)?
             .into_iter()
             .next()
             .with_context(|| format!("missing API key for provider {}", provider.id))?;
         let endpoint = LlmEndpoint {
+            client: client.clone(),
             provider: provider.clone(),
             api_key: key.value.clone(),
             key_index: key.index,
@@ -479,7 +566,6 @@ impl OpenAiCompatibleClient {
             client,
             provider: provider.clone(),
             api_key: key.value,
-            key_index: key.index,
             endpoints: Arc::new(vec![endpoint]),
             thinking_variants: HashMap::new(),
         })
@@ -524,20 +610,14 @@ impl OpenAiCompatibleClient {
             .collect()
     }
 
-    fn with_endpoint(&self, endpoint: &LlmEndpoint) -> Result<Self> {
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(
-                endpoint.provider.timeout_seconds.clamp(5, 30),
-            ))
-            .build()?;
-        Ok(Self {
-            client,
+    fn with_endpoint(&self, endpoint: &LlmEndpoint) -> Self {
+        Self {
+            client: endpoint.client.clone(),
             provider: endpoint.provider.clone(),
             api_key: endpoint.api_key.clone(),
-            key_index: endpoint.key_index,
             endpoints: self.endpoints.clone(),
             thinking_variants: self.thinking_variants.clone(),
-        })
+        }
     }
 
     pub fn available_thinking_variants(&self) -> Vec<String> {
@@ -743,28 +823,85 @@ impl OpenAiCompatibleClient {
     where
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
+        let request_id = gen_llm_request_id();
         let endpoints = self.endpoints.as_ref();
         let mut errors = Vec::new();
         let mut order = ordered_endpoint_indices(endpoints);
         if order.is_empty() {
             order = (0..endpoints.len()).collect();
         }
-        for index in order {
+        tracing::debug!(
+            request_id,
+            endpoint_count = order.len(),
+            message_count = messages.len(),
+            tool_count = tools.len(),
+            "LLM request started"
+        );
+        for (attempt, index) in order.into_iter().enumerate() {
             let endpoint = &endpoints[index];
-            let client = self.with_endpoint(endpoint)?;
+            let client = self.with_endpoint(endpoint);
+            let started = Instant::now();
+            tracing::debug!(
+                request_id,
+                attempt = attempt + 1,
+                provider = %endpoint.provider.id,
+                model = %endpoint.provider.default_model,
+                key_index = endpoint.key_index + 1,
+                "LLM endpoint attempt started"
+            );
             match client
-                .chat_stream_single(messages.clone(), tools.clone(), &mut on_chunk)
+                .chat_stream_single(messages.clone(), tools.clone(), &request_id, &mut on_chunk)
                 .await
             {
                 Ok(mut result) => {
                     result.provider_id = Some(endpoint.provider.id.clone());
                     result.model = Some(endpoint.provider.default_model.clone());
                     mark_endpoint_success(endpoint);
+                    tracing::debug!(
+                        request_id,
+                        attempt = attempt + 1,
+                        provider = %endpoint.provider.id,
+                        model = %endpoint.provider.default_model,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "LLM endpoint succeeded"
+                    );
                     return Ok(result);
                 }
                 Err(err) => {
-                    let message = err.to_string();
-                    mark_endpoint_failure(endpoint, &message);
+                    mark_endpoint_failure(endpoint, &err);
+                    if let Some(failure) = err.downcast_ref::<TransportFailure>() {
+                        tracing::error!(
+                            request_id,
+                            attempt = attempt + 1,
+                            provider = %endpoint.provider.id,
+                            model = %endpoint.provider.default_model,
+                            stage = failure.stage,
+                            transport_kind = %failure.kind,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            error = %format!("{err:#}"),
+                            "LLM endpoint transport failure"
+                        );
+                    } else if let Some(failure) = err.downcast_ref::<HttpStatusFailure>() {
+                        tracing::error!(
+                            request_id,
+                            attempt = attempt + 1,
+                            provider = %endpoint.provider.id,
+                            model = %endpoint.provider.default_model,
+                            status = failure.status,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "LLM endpoint HTTP failure"
+                        );
+                    } else {
+                        tracing::error!(
+                            request_id,
+                            attempt = attempt + 1,
+                            provider = %endpoint.provider.id,
+                            model = %endpoint.provider.default_model,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "LLM endpoint failed outside the HTTP send stage"
+                        );
+                    }
+                    let message = format!("{err:#}");
                     errors.push(format!(
                         "{} / {} key#{}: {message}",
                         endpoint.provider.id,
@@ -775,7 +912,7 @@ impl OpenAiCompatibleClient {
             }
         }
         bail!(
-            "no LLM provider/model endpoint succeeded:\n- {}",
+            "no LLM provider/model endpoint succeeded (request {request_id}):\n- {}",
             errors.join("\n- ")
         )
     }
@@ -784,6 +921,7 @@ impl OpenAiCompatibleClient {
         &self,
         messages: Vec<ChatMessage>,
         tools: Vec<ToolDefinition>,
+        request_id: &str,
         on_chunk: &mut F,
     ) -> Result<ChatResult>
     where
@@ -793,13 +931,15 @@ impl OpenAiCompatibleClient {
         if protocol == ProviderProtocol::Anthropic
             || (protocol == ProviderProtocol::Auto && self.uses_anthropic_messages())
         {
-            return self.chat_anthropic_stream(messages, tools, on_chunk).await;
+            return self
+                .chat_anthropic_stream(messages, tools, request_id, on_chunk)
+                .await;
         }
         if protocol == ProviderProtocol::OpenAiResponses
             || (protocol == ProviderProtocol::Auto && self.uses_openai_responses())
         {
             if let Some(result) = self
-                .chat_responses_stream(messages.clone(), tools.clone(), on_chunk)
+                .chat_responses_stream(messages.clone(), tools.clone(), request_id, on_chunk)
                 .await?
             {
                 return Ok(result);
@@ -828,13 +968,22 @@ impl OpenAiCompatibleClient {
             "{}/chat/completions",
             self.provider.base_url.trim_end_matches('/')
         );
-        let mut response = self.send_chat_completion_request(&url, &request).await?;
+        let mut response = self
+            .send_chat_completion_request(&url, &request, request_id, "chat.send")
+            .await?;
         let mut status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             if stream_options_unsupported(status.as_u16(), &body) {
                 request.stream_options = None;
-                response = self.send_chat_completion_request(&url, &request).await?;
+                response = self
+                    .send_chat_completion_request(
+                        &url,
+                        &request,
+                        request_id,
+                        "chat.retry_without_stream_options",
+                    )
+                    .await?;
                 status = response.status();
                 if status.is_success() {
                     return self
@@ -848,6 +997,7 @@ impl OpenAiCompatibleClient {
                         &request,
                         status.as_u16(),
                         &body,
+                        request_id,
                         on_chunk,
                     )
                     .await?
@@ -862,6 +1012,7 @@ impl OpenAiCompatibleClient {
                     &request,
                     status.as_u16(),
                     &body,
+                    request_id,
                     on_chunk,
                 )
                 .await?
@@ -879,14 +1030,70 @@ impl OpenAiCompatibleClient {
         &self,
         url: &str,
         request: &ChatRequest,
+        request_id: &str,
+        stage: &'static str,
     ) -> Result<reqwest::Response> {
-        Ok(self
-            .client
-            .post(url)
-            .bearer_auth(&self.api_key)
-            .json(request)
-            .send()
-            .await?)
+        self.send_with_transport_retry(request_id, stage, || {
+            self.client
+                .post(url)
+                .bearer_auth(&self.api_key)
+                .json(request)
+        })
+        .await
+    }
+
+    async fn send_with_transport_retry<F>(
+        &self,
+        request_id: &str,
+        stage: &'static str,
+        mut build_request: F,
+    ) -> Result<reqwest::Response>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        for attempt in 1..=2 {
+            let started = Instant::now();
+            match build_request().send().await {
+                Ok(response) => {
+                    tracing::debug!(
+                        request_id,
+                        stage,
+                        attempt,
+                        status = response.status().as_u16(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "LLM HTTP response headers received"
+                    );
+                    return Ok(response);
+                }
+                Err(error) => {
+                    let kind = if error.is_connect() {
+                        TransportFailureKind::Connect
+                    } else if error.is_timeout() {
+                        TransportFailureKind::Timeout
+                    } else {
+                        TransportFailureKind::Other
+                    };
+                    let will_retry = attempt == 1 && retryable_transport_failure(kind);
+                    let error = error.without_url();
+                    tracing::warn!(
+                        request_id,
+                        stage,
+                        attempt,
+                        transport_kind = %kind,
+                        will_retry,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        error = %format_error_chain(&error),
+                        "LLM HTTP transport attempt failed"
+                    );
+                    if will_retry {
+                        tokio::time::sleep(TRANSPORT_RETRY_DELAY).await;
+                        continue;
+                    }
+                    return Err(anyhow::Error::new(error).context(TransportFailure { stage, kind }));
+                }
+            }
+        }
+        unreachable!("transport retry loop always returns")
     }
 
     async fn try_zen_chat_completion_compat_retry<F>(
@@ -895,6 +1102,7 @@ impl OpenAiCompatibleClient {
         request: &ChatRequest,
         status: u16,
         body: &str,
+        request_id: &str,
         on_chunk: &mut F,
     ) -> Result<Option<ChatResult>>
     where
@@ -917,8 +1125,15 @@ impl OpenAiCompatibleClient {
             retries.push(retry);
         }
 
-        for retry in retries {
-            let response = self.send_chat_completion_request(url, &retry).await?;
+        for (attempt, retry) in retries.into_iter().enumerate() {
+            let response = self
+                .send_chat_completion_request(
+                    url,
+                    &retry,
+                    request_id,
+                    "chat.zen_compatibility_retry",
+                )
+                .await?;
             let status = response.status();
             if status.is_success() {
                 return self
@@ -926,6 +1141,12 @@ impl OpenAiCompatibleClient {
                     .await
                     .map(Some);
             }
+            tracing::debug!(
+                request_id,
+                attempt = attempt + 1,
+                status = status.as_u16(),
+                "Zen compatibility retry returned an HTTP error"
+            );
             let _ = response.text().await;
         }
 
@@ -991,66 +1212,66 @@ impl OpenAiCompatibleClient {
 
     fn bail_chat_completion_failure<T>(&self, status: u16, body: &str) -> Result<T> {
         let hint = claude_protocol_hint(&self.provider);
-        if let Some(duration) = cooldown_for_status(status) {
-            if let Ok(mut scheduler) = LLM_SCHEDULER.lock() {
-                scheduler.mark_failure(
-                    endpoint_id(
-                        &self.provider.id,
-                        &self.provider.default_model,
-                        self.key_index,
-                    ),
-                    duration,
-                );
-            }
-        }
-        bail!(
+        Err(anyhow::anyhow!(
             "{} ({}): {}{}",
             t("chat completions stream request failed", "聊天流式请求失败",),
             status,
             body,
             hint
         )
+        .context(HttpStatusFailure::classify(status, body)))
     }
 
     async fn chat_anthropic_stream<F>(
         &self,
         messages: Vec<ChatMessage>,
         tools: Vec<ToolDefinition>,
+        request_id: &str,
         on_chunk: &mut F,
     ) -> Result<ChatResult>
     where
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
         let mut response = self
-            .send_anthropic_request(&self.anthropic_request(messages.clone(), tools.clone(), true))
+            .send_anthropic_request(
+                &self.anthropic_request(messages.clone(), tools.clone(), true),
+                request_id,
+                "anthropic.send",
+            )
             .await?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             if anthropic_thinking_unsupported(status.as_u16(), &body) {
                 response = self
-                    .send_anthropic_request(&self.anthropic_request(messages, tools, false))
+                    .send_anthropic_request(
+                        &self.anthropic_request(messages, tools, false),
+                        request_id,
+                        "anthropic.retry_without_thinking",
+                    )
                     .await?;
                 let status = response.status();
                 if status.is_success() {
                     return self.consume_anthropic_stream(response, on_chunk).await;
                 }
                 let body = response.text().await.unwrap_or_default();
-                bail!(
+                return Err(anyhow::anyhow!(
                     "{} ({status}): {body}",
                     t(
                         "anthropic messages stream request failed",
                         "Anthropic Messages 流式请求失败"
                     )
-                );
+                )
+                .context(HttpStatusFailure::classify(status.as_u16(), &body)));
             }
-            bail!(
+            return Err(anyhow::anyhow!(
                 "{} ({status}): {body}",
                 t(
                     "anthropic messages stream request failed",
                     "Anthropic Messages 流式请求失败"
                 )
-            );
+            )
+            .context(HttpStatusFailure::classify(status.as_u16(), &body)));
         }
 
         self.consume_anthropic_stream(response, on_chunk).await
@@ -1085,16 +1306,18 @@ impl OpenAiCompatibleClient {
     async fn send_anthropic_request(
         &self,
         request: &AnthropicRequest,
+        request_id: &str,
+        stage: &'static str,
     ) -> Result<reqwest::Response> {
         let url = format!("{}/messages", self.provider.base_url.trim_end_matches('/'));
-        Ok(self
-            .client
-            .post(url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(request)
-            .send()
-            .await?)
+        self.send_with_transport_retry(request_id, stage, || {
+            self.client
+                .post(&url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(request)
+        })
+        .await
     }
 
     async fn consume_anthropic_stream<F>(
@@ -1139,6 +1362,7 @@ impl OpenAiCompatibleClient {
         &self,
         messages: Vec<ChatMessage>,
         tools: Vec<ToolDefinition>,
+        request_id: &str,
         on_chunk: &mut F,
     ) -> Result<Option<ChatResult>>
     where
@@ -1160,11 +1384,12 @@ impl OpenAiCompatibleClient {
         };
         let url = format!("{}/responses", self.provider.base_url.trim_end_matches('/'));
         let response = self
-            .client
-            .post(url)
-            .bearer_auth(&self.api_key)
-            .json(&request)
-            .send()
+            .send_with_transport_retry(request_id, "responses.send", || {
+                self.client
+                    .post(&url)
+                    .bearer_auth(&self.api_key)
+                    .json(&request)
+            })
             .await?;
         let status = response.status();
         if !status.is_success() {
@@ -1172,10 +1397,11 @@ impl OpenAiCompatibleClient {
             if responses_unsupported(status.as_u16(), &body) {
                 return Ok(None);
             }
-            bail!(
+            return Err(anyhow::anyhow!(
                 "{} ({status}): {body}",
                 t("responses stream request failed", "Responses 流式请求失败")
-            );
+            )
+            .context(HttpStatusFailure::classify(status.as_u16(), &body)));
         }
 
         let dsml = dsml_enabled_for(&self.provider);
@@ -3021,6 +3247,8 @@ fn clean_plain_text(mut text: String) -> String {
 mod tests {
     use super::*;
     use crate::llm::{ChatContent, ChatContentPart, ImageUrlContent};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn stream_chunk_accepts_null_tool_calls() {
@@ -3692,17 +3920,159 @@ mod tests {
         assert_eq!(chunks[0].text, "ask_question");
     }
 
+    #[tokio::test]
+    async fn transport_connect_failure_is_retried_once() {
+        let unavailable = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unavailable_addr = unavailable.local_addr().unwrap();
+        drop(unavailable);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let available_url = format!("http://{}/ok", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http_headers(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+
+        let client = test_client(test_provider("test", "http://example.invalid/v1"));
+        let unavailable_url = format!("http://{unavailable_addr}/unavailable");
+        let mut builds = 0;
+        let response = client
+            .send_with_transport_retry("request-test", "chat.send", || {
+                builds += 1;
+                client.client.get(if builds == 1 {
+                    &unavailable_url
+                } else {
+                    &available_url
+                })
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(builds, 2);
+        assert_eq!(response.text().await.unwrap(), "ok");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn endpoint_client_reuses_one_tcp_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/reuse", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            for _ in 0..2 {
+                read_http_headers(&mut stream).await;
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok",
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let client = test_client(test_provider("test", "http://example.invalid/v1"));
+        for request_id in ["request-one", "request-two"] {
+            let endpoint_client = client.with_endpoint(&client.endpoints[0]);
+            let response = tokio::time::timeout(
+                Duration::from_secs(2),
+                endpoint_client.send_with_transport_retry(request_id, "chat.send", || {
+                    endpoint_client.client.get(&url)
+                }),
+            )
+            .await
+            .expect("request timed out instead of reusing the connection")
+            .unwrap();
+            assert_eq!(response.text().await.unwrap(), "ok");
+        }
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server did not observe two requests on one connection")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn transport_error_keeps_source_chain_without_url() {
+        let unavailable = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = unavailable.local_addr().unwrap();
+        drop(unavailable);
+        let url = format!("http://{addr}/secret?api_key=do-not-log");
+        let client = test_client(test_provider("test", "http://example.invalid/v1"));
+
+        let error = client
+            .send_with_transport_retry("request-test", "chat.send", || client.client.get(&url))
+            .await
+            .unwrap_err();
+        let rendered = format!("{error:#}");
+
+        assert!(rendered.contains("chat.send transport failed (connect)"));
+        assert!(rendered.contains("error sending request"));
+        assert!(!rendered.contains("api_key"));
+        assert!(!rendered.contains("do-not-log"));
+    }
+
+    #[test]
+    fn typed_failures_drive_endpoint_cooldowns() {
+        let rate_limit = anyhow::anyhow!("provider body")
+            .context(HttpStatusFailure::classify(429, "provider body"));
+        let quota = anyhow::anyhow!("provider body")
+            .context(HttpStatusFailure::classify(400, "quota exceeded"));
+        let invalid_key = anyhow::anyhow!("provider body")
+            .context(HttpStatusFailure::classify(400, "invalid api key"));
+        let transport = anyhow::anyhow!("socket source").context(TransportFailure {
+            stage: "chat.send",
+            kind: TransportFailureKind::Connect,
+        });
+        let protocol = anyhow::anyhow!("invalid response shape");
+
+        assert_eq!(
+            cooldown_for_error(&rate_limit),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(cooldown_for_error(&quota), Some(Duration::from_secs(600)));
+        assert_eq!(
+            cooldown_for_error(&invalid_key),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            cooldown_for_error(&transport),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(cooldown_for_error(&protocol), None);
+    }
+
+    #[test]
+    fn only_connect_failures_are_retried() {
+        assert!(retryable_transport_failure(TransportFailureKind::Connect));
+        assert!(!retryable_transport_failure(TransportFailureKind::Timeout));
+        assert!(!retryable_transport_failure(TransportFailureKind::Other));
+    }
+
+    async fn read_http_headers(stream: &mut tokio::net::TcpStream) {
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            let read = stream.read(&mut byte).await.unwrap();
+            assert_ne!(read, 0, "connection closed before request headers");
+            request.push(byte[0]);
+        }
+    }
+
     fn test_client(provider: ProviderConfig) -> OpenAiCompatibleClient {
+        let client = reqwest::Client::new();
         let endpoint = LlmEndpoint {
+            client: client.clone(),
             provider: provider.clone(),
             api_key: "test".to_string(),
             key_index: 0,
         };
         OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
+            client,
             provider,
             api_key: "test".to_string(),
-            key_index: 0,
             endpoints: Arc::new(vec![endpoint]),
             thinking_variants: HashMap::new(),
         }
@@ -3804,23 +4174,26 @@ mod tests {
         first.default_model = "deepseek-v4-flash".to_string();
         let mut second = test_provider("opencode", "https://opencode.ai/zen/v1");
         second.default_model = "mimo-v2.5-free".to_string();
+        let first_client = reqwest::Client::new();
+        let second_client = reqwest::Client::new();
         let endpoints = vec![
             LlmEndpoint {
+                client: first_client.clone(),
                 provider: first.clone(),
                 api_key: "first".to_string(),
                 key_index: 0,
             },
             LlmEndpoint {
+                client: second_client,
                 provider: second,
                 api_key: "second".to_string(),
                 key_index: 0,
             },
         ];
         let mut client = OpenAiCompatibleClient {
-            client: reqwest::Client::new(),
+            client: first_client,
             provider: first,
             api_key: "first".to_string(),
-            key_index: 0,
             endpoints: Arc::new(endpoints),
             thinking_variants: HashMap::from([(
                 thinking_variant_key("ririxin", "deepseek-v4-flash"),
@@ -3828,15 +4201,15 @@ mod tests {
             )]),
         };
 
-        let first_endpoint = client.with_endpoint(&client.endpoints[0]).unwrap();
-        let second_endpoint = client.with_endpoint(&client.endpoints[1]).unwrap();
+        let first_endpoint = client.with_endpoint(&client.endpoints[0]);
+        let second_endpoint = client.with_endpoint(&client.endpoints[1]);
         assert_eq!(first_endpoint.selected_thinking_variant_id(), Some("high"));
         assert_eq!(second_endpoint.selected_thinking_variant_id(), None);
         client.thinking_variants.insert(
             thinking_variant_key("opencode", "mimo-v2.5-free"),
             "max".to_string(),
         );
-        let second_endpoint = client.with_endpoint(&client.endpoints[1]).unwrap();
+        let second_endpoint = client.with_endpoint(&client.endpoints[1]);
         assert_eq!(second_endpoint.selected_thinking_variant_id(), Some("max"));
         assert_eq!(first_endpoint.selected_thinking_variant_id(), Some("high"));
     }
