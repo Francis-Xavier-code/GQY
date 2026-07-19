@@ -5352,10 +5352,12 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
             renderer.write_chunk(chunk)?;
             renderer.tick_spinner()
         }
-        AgentEvent::ReasoningStart => renderer.start_reasoning_phase(),
-        AgentEvent::ReasoningReset => renderer.reset_reasoning_phase(),
-        AgentEvent::ReasoningPartStart => renderer.start_reasoning_part(),
-        AgentEvent::ReasoningPartEnd => renderer.finish_reasoning_part(),
+        AgentEvent::ReasoningStart { received_at } => renderer.start_reasoning_phase(received_at),
+        AgentEvent::ReasoningReset { received_at } => renderer.reset_reasoning_phase(received_at),
+        AgentEvent::ReasoningPartStart { received_at } => {
+            renderer.start_reasoning_part(received_at)
+        }
+        AgentEvent::ReasoningPartEnd { received_at } => renderer.finish_reasoning_part(received_at),
         AgentEvent::ReasoningTitle(title) => {
             renderer.write_reasoning_title(&title)?;
             renderer.tick_spinner()

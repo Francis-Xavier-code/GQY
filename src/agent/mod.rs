@@ -14,7 +14,7 @@ use crate::question::{
     answered_tool_output, unavailable_tool_output, QuestionCancelled, QuestionExchange,
     QuestionRequest, QuestionResponse,
 };
-use crate::render::{wait_spinner::SPINNER_INTERVAL, ReasoningDisplayMode};
+use crate::render::wait_spinner::SPINNER_INTERVAL;
 use crate::state::StateStore;
 use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
 use anyhow::{bail, Result};
@@ -23,7 +23,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 const MAX_QUESTION_ROUNDS_PER_TURN: usize = 8;
@@ -115,10 +115,18 @@ impl AgentMode {
 #[derive(Debug)]
 pub enum AgentEvent {
     Chunk(ChatStreamChunk),
-    ReasoningStart,
-    ReasoningReset,
-    ReasoningPartStart,
-    ReasoningPartEnd,
+    ReasoningStart {
+        received_at: Instant,
+    },
+    ReasoningReset {
+        received_at: Instant,
+    },
+    ReasoningPartStart {
+        received_at: Instant,
+    },
+    ReasoningPartEnd {
+        received_at: Instant,
+    },
     ReasoningTitle(String),
     ToolCall {
         name: String,
@@ -209,8 +217,7 @@ impl Agent {
             state.reset_if_prompt_changed(&base_system_prompt)?;
             state.recover_stale_turns()?;
         }
-        let reasoning_mode = ReasoningDisplayMode::from_config(&config.display.reasoning);
-        let system_prompt = with_mode_reminder(base_system_prompt, mode, reasoning_mode);
+        let system_prompt = with_mode_reminder(base_system_prompt, mode);
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
         let memory = MemoryStore::new(&config, paths);
@@ -239,8 +246,7 @@ impl Agent {
             self.state.reset_if_prompt_changed(&base_system_prompt)?;
             self.state.recover_stale_turns()?;
         }
-        let reasoning_mode = ReasoningDisplayMode::from_config(&self.config.display.reasoning);
-        self.system_prompt = with_mode_reminder(base_system_prompt, self.mode, reasoning_mode);
+        self.system_prompt = with_mode_reminder(base_system_prompt, self.mode);
         Ok(())
     }
 
@@ -718,14 +724,16 @@ impl Agent {
                 Vec::new()
             };
 
-            on_event(AgentEvent::ReasoningStart)?;
+            on_event(AgentEvent::ReasoningStart {
+                received_at: Instant::now(),
+            })?;
             let (chunk_tx, mut chunk_rx) =
-                tokio::sync::mpsc::unbounded_channel::<ChatStreamChunk>();
+                tokio::sync::mpsc::unbounded_channel::<(ChatStreamChunk, Instant)>();
             let request_messages = messages.clone();
             let llm_future =
                 self.client
                     .chat_stream(request_messages.clone(), definitions, move |chunk| {
-                        let _ = chunk_tx.send(chunk);
+                        let _ = chunk_tx.send((chunk, Instant::now()));
                         Ok(())
                     });
             tokio::pin!(llm_future);
@@ -733,21 +741,21 @@ impl Agent {
             spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             spinner_interval.tick().await;
             let mut reasoning_filter = ReasoningTitleFilter::default();
-            let mut result = loop {
+            let result = loop {
                 tokio::select! {
                     result = &mut llm_future => {
                         break result?;
                     }
-                    Some(chunk) = chunk_rx.recv() => {
-                        emit_filtered_chunk(chunk, &mut reasoning_filter, on_event)?;
+                    Some((chunk, received_at)) = chunk_rx.recv() => {
+                        emit_filtered_chunk_at(chunk, received_at, &mut reasoning_filter, on_event)?;
                     }
                     _ = spinner_interval.tick() => {
                         on_event(AgentEvent::SpinnerTick)?;
                     }
                 }
             };
-            while let Ok(chunk) = chunk_rx.try_recv() {
-                emit_filtered_chunk(chunk, &mut reasoning_filter, on_event)?;
+            while let Ok((chunk, received_at)) = chunk_rx.try_recv() {
+                emit_filtered_chunk_at(chunk, received_at, &mut reasoning_filter, on_event)?;
             }
             let (title, text) = reasoning_filter.finish();
             if let Some(title) = title {
@@ -758,10 +766,6 @@ impl Agent {
                     kind: ChatStreamKind::Reasoning,
                     text,
                 }))?;
-            }
-            if let Some(reasoning) = result.reasoning.take() {
-                let reasoning = strip_reasoning_title_markers(&reasoning);
-                result.reasoning = (!reasoning.is_empty()).then_some(reasoning);
             }
             usage_accumulator.add_result(&result, &request_messages);
             if result.tool_calls.is_empty() || !self.tools_enabled {
@@ -1706,15 +1710,8 @@ fn vision_analysis_progress(tick: usize) -> String {
     }
 }
 
-fn with_mode_reminder(
-    system_prompt: String,
-    mode: AgentMode,
-    reasoning_mode: ReasoningDisplayMode,
-) -> String {
+fn with_mode_reminder(system_prompt: String, mode: AgentMode) -> String {
     let mut prompt = system_prompt;
-    if reasoning_mode == ReasoningDisplayMode::Summary {
-        prompt.push_str(REASONING_TITLE_PROTOCOL);
-    }
     if let Some(reminder) = mode.reminder() {
         prompt.push_str("\n\n");
         prompt.push_str(reminder);
@@ -1722,65 +1719,44 @@ fn with_mode_reminder(
     prompt
 }
 
-const REASONING_TITLE_OPEN: &str = "<reasoning_title>";
-const REASONING_TITLE_CLOSE: &str = "</reasoning_title>";
-const REASONING_TITLE_PROTOCOL: &str = r#"
-
-<reasoning_title_protocol>
-Whenever you produce a reasoning stream, begin it with exactly one standalone Markdown bold block whose bold text is the action phrase itself:
-**Checking terminal redraw behavior**
-
-Use a specific 4-80 character phrase describing the current reasoning action. Do not emit a field label, put the phrase on a separate line, or add headings such as "Title", "Action-focused purpose", "Reasoning", or "Reasoning process" (including translated equivalents). Do not use first-person narration such as "I need to answer" or generic progress such as "I have more information". Emit the title only in reasoning, never in the final answer. Do not include secrets or raw user content in the title.
-</reasoning_title_protocol>"#;
-
 #[derive(Default)]
 struct ReasoningTitleFilter {
     pending: String,
     decided: bool,
+    trim_body_prefix: bool,
 }
 
 impl ReasoningTitleFilter {
     fn push(&mut self, text: &str) -> (Option<String>, Option<String>) {
         if self.decided {
+            let text = if self.trim_body_prefix {
+                let text = text.trim_start_matches(['\r', '\n']);
+                if text.is_empty() {
+                    return (None, None);
+                }
+                self.trim_body_prefix = false;
+                text
+            } else {
+                text
+            };
             return (None, (!text.is_empty()).then(|| text.to_string()));
         }
         self.pending.push_str(text);
         let trimmed = self.pending.trim_start();
-        if REASONING_TITLE_OPEN.starts_with(trimmed) {
-            return (None, None);
-        }
-        if trimmed.starts_with(REASONING_TITLE_OPEN) {
-            let Some(close) = trimmed.find(REASONING_TITLE_CLOSE) else {
-                if trimmed.chars().count() <= 160 {
-                    return (None, None);
-                }
-                return self.release_incomplete_explicit_title();
-            };
-            let title_start = REASONING_TITLE_OPEN.len();
-            let title = clean_reasoning_title(&trimmed[title_start..close]);
-            let rest_start = close + REASONING_TITLE_CLOSE.len();
-            let suffix = &trimmed[rest_start..];
-            if only_line_breaks(suffix) {
-                return (None, None);
-            }
-            let rest = suffix.trim_start_matches(['\r', '\n']).to_string();
-            return self.finish_decision(title, rest);
-        }
         if "**".starts_with(trimmed) {
             return (None, None);
         }
-        if trimmed.starts_with("**") {
-            let Some(close) = trimmed[2..].find("**").map(|index| index + 2) else {
+        if let Some(body) = trimmed.strip_prefix("**") {
+            let Some(close) = body.find("**") else {
                 if trimmed.chars().count() <= 160 {
                     return (None, None);
                 }
                 return self.release_without_title();
             };
-            let title = clean_reasoning_title(&trimmed[2..close]);
-            let rest_start = close + 2;
-            let suffix = &trimmed[rest_start..];
+            let title = clean_reasoning_title(&body[..close]);
+            let suffix = &body[close + 2..];
             if only_line_breaks(suffix) {
-                return (None, None);
+                return self.finish_decision(title, String::new());
             }
             if !suffix.starts_with("\n\n") && !suffix.starts_with("\r\n\r\n") {
                 return self.release_without_title();
@@ -1812,6 +1788,7 @@ impl ReasoningTitleFilter {
     fn finish_decision(&mut self, title: String, rest: String) -> (Option<String>, Option<String>) {
         self.pending.clear();
         self.decided = true;
+        self.trim_body_prefix = rest.is_empty();
         (
             (!title.is_empty()).then_some(title),
             (!rest.is_empty()).then_some(rest),
@@ -1823,16 +1800,6 @@ impl ReasoningTitleFilter {
         (None, Some(std::mem::take(&mut self.pending)))
     }
 
-    fn release_incomplete_explicit_title(&mut self) -> (Option<String>, Option<String>) {
-        self.decided = true;
-        let mut pending = std::mem::take(&mut self.pending);
-        if let Some(start) = pending.find(REASONING_TITLE_OPEN) {
-            let end = start + REASONING_TITLE_OPEN.len();
-            pending.replace_range(start..end, "");
-        }
-        (None, (!pending.is_empty()).then_some(pending))
-    }
-
     fn finish(&mut self) -> (Option<String>, Option<String>) {
         if self.pending.is_empty() {
             return (None, None);
@@ -1840,30 +1807,14 @@ impl ReasoningTitleFilter {
         self.decided = true;
         let pending = std::mem::take(&mut self.pending);
         let trimmed = pending.trim_start();
-        if REASONING_TITLE_OPEN.starts_with(trimmed) {
-            return (None, None);
-        }
-        if let Some(body) = trimmed.strip_prefix(REASONING_TITLE_OPEN) {
-            if let Some(close) = body.find(REASONING_TITLE_CLOSE) {
-                let title = clean_reasoning_title(&body[..close]);
-                let rest = body[close + REASONING_TITLE_CLOSE.len()..]
-                    .trim_start_matches(['\r', '\n'])
-                    .to_string();
-                return (
-                    (!title.is_empty()).then_some(title),
-                    (!rest.is_empty()).then_some(rest),
-                );
-            }
-            return (None, (!body.is_empty()).then(|| body.to_string()));
-        }
-        if trimmed.starts_with("**") {
-            if let Some(close) = trimmed[2..].find("**").map(|index| index + 2) {
-                let suffix = &trimmed[close + 2..];
+        if let Some(body) = trimmed.strip_prefix("**") {
+            if let Some(close) = body.find("**") {
+                let suffix = &body[close + 2..];
                 if suffix.is_empty()
                     || ((suffix.starts_with("\n\n") || suffix.starts_with("\r\n\r\n"))
                         && only_line_breaks(suffix))
                 {
-                    let title = clean_reasoning_title(&trimmed[2..close]);
+                    let title = clean_reasoning_title(&body[..close]);
                     return ((!title.is_empty()).then_some(title), None);
                 }
             }
@@ -1903,8 +1854,9 @@ fn clean_reasoning_title(value: &str) -> String {
     truncate_chars(value, 80)
 }
 
-fn emit_filtered_chunk<F>(
+fn emit_filtered_chunk_at<F>(
     chunk: ChatStreamChunk,
+    received_at: Instant,
     filter: &mut ReasoningTitleFilter,
     on_event: &mut F,
 ) -> Result<()>
@@ -1913,11 +1865,12 @@ where
 {
     match chunk.kind {
         ChatStreamKind::ReasoningPartStart => {
-            on_event(AgentEvent::ReasoningPartStart)?;
+            *filter = ReasoningTitleFilter::default();
+            on_event(AgentEvent::ReasoningPartStart { received_at })?;
         }
         ChatStreamKind::ReasoningReset => {
             *filter = ReasoningTitleFilter::default();
-            on_event(AgentEvent::ReasoningReset)?;
+            on_event(AgentEvent::ReasoningReset { received_at })?;
         }
         ChatStreamKind::ReasoningPartEnd => {
             let (title, text) = filter.finish();
@@ -1930,7 +1883,7 @@ where
                     text,
                 }))?;
             }
-            on_event(AgentEvent::ReasoningPartEnd)?;
+            on_event(AgentEvent::ReasoningPartEnd { received_at })?;
         }
         ChatStreamKind::Reasoning => {
             let (title, text) = filter.push(&chunk.text);
@@ -1947,6 +1900,18 @@ where
         _ => on_event(AgentEvent::Chunk(chunk))?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn emit_filtered_chunk<F>(
+    chunk: ChatStreamChunk,
+    filter: &mut ReasoningTitleFilter,
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(AgentEvent) -> Result<()>,
+{
+    emit_filtered_chunk_at(chunk, Instant::now(), filter, on_event)
 }
 
 #[cfg(test)]
@@ -1974,20 +1939,6 @@ fn parse_reasoning_title_chunks<'a>(
         output.push_str(&pending);
     }
     (title, output)
-}
-
-fn strip_reasoning_title_markers(reasoning: &str) -> String {
-    let mut output = reasoning.to_string();
-    while let Some(start) = output.find(REASONING_TITLE_OPEN) {
-        let body_start = start + REASONING_TITLE_OPEN.len();
-        let Some(relative_end) = output[body_start..].find(REASONING_TITLE_CLOSE) else {
-            output.replace_range(start..body_start, "");
-            continue;
-        };
-        let end = body_start + relative_end + REASONING_TITLE_CLOSE.len();
-        output.replace_range(start..end, "");
-    }
-    output.trim().to_string()
 }
 
 fn runtime_context(mode: AgentMode) -> String {
@@ -2184,96 +2135,38 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_title_protocol_is_limited_to_summary_prompts() {
-        let prompt = with_mode_reminder(
-            "base".to_string(),
-            AgentMode::Normal,
-            ReasoningDisplayMode::Summary,
-        );
-        assert!(prompt.starts_with("base"));
-        assert!(prompt.contains(REASONING_TITLE_PROTOCOL.trim()));
-        assert!(prompt.contains("**Checking terminal redraw behavior**"));
-        assert!(!prompt.contains("**short action-focused purpose**"));
+    fn mode_reminder_does_not_inject_a_reasoning_title_protocol() {
+        let prompt = with_mode_reminder("base".to_string(), AgentMode::Normal);
+        assert_eq!(prompt, "base");
         assert!(!prompt.contains("<runtime"));
 
-        for reasoning_mode in [ReasoningDisplayMode::Full, ReasoningDisplayMode::Hidden] {
-            let prompt = with_mode_reminder("base".to_string(), AgentMode::Normal, reasoning_mode);
-            assert_eq!(prompt, "base");
-        }
-
-        let prompt = with_mode_reminder(
-            "base".to_string(),
-            AgentMode::Plan,
-            ReasoningDisplayMode::Full,
-        );
+        let prompt = with_mode_reminder("base".to_string(), AgentMode::Plan);
         assert!(prompt.contains("base"));
         assert!(prompt.contains(crate::prompts::PLAN_REMINDER));
-        assert!(!prompt.contains(REASONING_TITLE_PROTOCOL.trim()));
         assert!(!prompt.contains("<runtime"));
     }
 
     #[test]
-    fn reasoning_title_filter_handles_split_marker() {
+    fn reasoning_title_filter_emits_completed_markdown_title_immediately() {
         let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(filter.push("<reasoning_"), (None, None));
+        assert_eq!(filter.push("**Preparing to"), (None, None));
         assert_eq!(
-            filter.push("title>分析摘要协议</reasoning_title>\n正文"),
-            (Some("分析摘要协议".to_string()), Some("正文".to_string()))
+            filter.push(" call tools**"),
+            (Some("Preparing to call tools".to_string()), None)
         );
         assert_eq!(filter.finish(), (None, None));
     }
 
     #[test]
-    fn reasoning_title_filter_waits_for_complete_explicit_title() {
+    fn reasoning_title_filter_strips_delayed_blank_line_before_body() {
         let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(filter.push("<reasoning_title>Preparing"), (None, None));
         assert_eq!(
-            filter.push(" to call tools</reasoning_title>\nDetails"),
-            (
-                Some("Preparing to call tools".to_string()),
-                Some("Details".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn reasoning_title_filter_waits_for_complete_markdown_title() {
-        let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(filter.push("**Preparing to"), (None, None));
-        assert_eq!(filter.push(" call tools**"), (None, None));
-        assert_eq!(
-            filter.finish(),
+            filter.push("**Preparing to call tools**\n"),
             (Some("Preparing to call tools".to_string()), None)
         );
-    }
-
-    #[test]
-    fn reasoning_title_filter_waits_for_split_blank_line_after_bold_title() {
-        let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(filter.push("**Preparing to call tools**\n"), (None, None));
         assert_eq!(
             filter.push("\nInspect the arguments."),
-            (
-                Some("Preparing to call tools".to_string()),
-                Some("Inspect the arguments.".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn reasoning_title_filter_waits_for_body_after_completed_explicit_title() {
-        let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(
-            filter.push("<reasoning_title>Planning</reasoning_title>"),
-            (None, None)
-        );
-        assert_eq!(filter.push("\n\n"), (None, None));
-        assert_eq!(
-            filter.push("Body reasoning."),
-            (
-                Some("Planning".to_string()),
-                Some("Body reasoning.".to_string())
-            )
+            (None, Some("Inspect the arguments.".to_string()))
         );
     }
 
@@ -2329,23 +2222,9 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_title_filter_is_independent_of_bold_chunk_boundaries() {
-        let expected = "**Important**: keep this in the body.";
-        let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(filter.push("**Important**"), (None, None));
-        assert_eq!(
-            filter.push(": keep this in the body."),
-            (None, Some(expected.to_string()))
-        );
-        assert_eq!(filter.finish(), (None, None));
-    }
-
-    #[test]
     fn reasoning_title_filter_matches_unsplit_input_at_every_character_boundary() {
         for text in [
             "**检查参数**\n\n\n继续分析。",
-            "**Important**: keep this in the body.",
-            "<reasoning_title>检查参数</reasoning_title>\n\n\n继续分析。",
             "## 检查参数\n\n\n继续分析。",
             "**Checking arguments**\r\n\r\nContinue analysis.",
             "#include <stdio.h>",
@@ -2385,33 +2264,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_title_filter_accepts_a_new_title_after_endpoint_retry() {
-        let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(
-            filter.push("<reasoning_title>旧端点</reasoning_title>旧内容"),
-            (Some("旧端点".to_string()), Some("旧内容".to_string()))
-        );
-        filter = ReasoningTitleFilter::default();
-        assert_eq!(filter.push("<reasoning_"), (None, None));
-        assert_eq!(
-            filter.push("title>新端点</reasoning_title>新内容"),
-            (Some("新端点".to_string()), Some("新内容".to_string()))
-        );
-    }
-
-    #[test]
-    fn reasoning_title_filter_drops_partial_marker_from_failed_endpoint() {
-        let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(filter.push("<reasoning_"), (None, None));
-        filter = ReasoningTitleFilter::default();
-        assert_eq!(
-            filter.push("<reasoning_title>新端点</reasoning_title>新内容"),
-            (Some("新端点".to_string()), Some("新内容".to_string()))
-        );
-    }
-
-    #[test]
-    fn only_reasoning_reset_reopens_title_detection() {
+    fn reasoning_part_start_reopens_title_detection() {
         let mut filter = ReasoningTitleFilter::default();
         let mut titles = Vec::new();
         let mut reasoning = Vec::new();
@@ -2428,8 +2281,26 @@ mod tests {
 
         emit_filtered_chunk(
             ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartStart,
+                text: String::new(),
+            },
+            &mut filter,
+            &mut on_event,
+        )
+        .unwrap();
+        emit_filtered_chunk(
+            ChatStreamChunk {
                 kind: ChatStreamKind::Reasoning,
-                text: "Plain body.".to_string(),
+                text: "**First title**\n\nFirst body.".to_string(),
+            },
+            &mut filter,
+            &mut on_event,
+        )
+        .unwrap();
+        emit_filtered_chunk(
+            ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
             },
             &mut filter,
             &mut on_event,
@@ -2447,69 +2318,106 @@ mod tests {
         emit_filtered_chunk(
             ChatStreamChunk {
                 kind: ChatStreamKind::Reasoning,
-                text: "**Still body**\n\nMore body.".to_string(),
+                text: "**Second title**".to_string(),
             },
             &mut filter,
             &mut on_event,
         )
         .unwrap();
-        emit_filtered_chunk(
+
+        assert_eq!(titles, vec!["First title", "Second title"]);
+        assert_eq!(reasoning, vec!["First body."]);
+    }
+
+    #[test]
+    fn reasoning_summary_finishes_before_answer_content() {
+        let mut filter = ReasoningTitleFilter::default();
+        let mut events = Vec::new();
+        let mut on_event = |event| {
+            events.push(match event {
+                AgentEvent::ReasoningPartStart { .. } => "part-start".to_string(),
+                AgentEvent::ReasoningTitle(title) => format!("title:{title}"),
+                AgentEvent::Chunk(chunk) => format!("{:?}:{}", chunk.kind, chunk.text),
+                AgentEvent::ReasoningPartEnd { .. } => "part-end".to_string(),
+                _ => "other".to_string(),
+            });
+            Ok(())
+        };
+
+        for chunk in [
             ChatStreamChunk {
-                kind: ChatStreamKind::ReasoningReset,
+                kind: ChatStreamKind::ReasoningPartStart,
                 text: String::new(),
             },
-            &mut filter,
-            &mut on_event,
-        )
-        .unwrap();
-        emit_filtered_chunk(
             ChatStreamChunk {
                 kind: ChatStreamKind::Reasoning,
-                text: "**New endpoint**\n\nFresh body.".to_string(),
+                text: "**Checking event order**\n\nSummary body.".to_string(),
             },
+            ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
+            },
+            ChatStreamChunk {
+                kind: ChatStreamKind::Content,
+                text: "Answer.".to_string(),
+            },
+        ] {
+            emit_filtered_chunk(chunk, &mut filter, &mut on_event).unwrap();
+        }
+
+        assert_eq!(
+            events,
+            [
+                "part-start",
+                "title:Checking event order",
+                "Reasoning:Summary body.",
+                "part-end",
+                "Content:Answer.",
+            ]
+        );
+    }
+
+    #[test]
+    fn reasoning_boundaries_preserve_chunk_receive_timestamps() {
+        let mut filter = ReasoningTitleFilter::default();
+        let started_at = Instant::now();
+        let ended_at = started_at + Duration::from_millis(725);
+        let mut boundaries = Vec::new();
+        let mut on_event = |event| {
+            match event {
+                AgentEvent::ReasoningPartStart { received_at } => {
+                    boundaries.push(("start", received_at));
+                }
+                AgentEvent::ReasoningPartEnd { received_at } => {
+                    boundaries.push(("end", received_at));
+                }
+                _ => {}
+            }
+            Ok(())
+        };
+
+        emit_filtered_chunk_at(
+            ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartStart,
+                text: String::new(),
+            },
+            started_at,
+            &mut filter,
+            &mut on_event,
+        )
+        .unwrap();
+        emit_filtered_chunk_at(
+            ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
+            },
+            ended_at,
             &mut filter,
             &mut on_event,
         )
         .unwrap();
 
-        assert_eq!(titles, vec!["New endpoint"]);
-        assert_eq!(
-            reasoning,
-            vec!["Plain body.", "**Still body**\n\nMore body.", "Fresh body."]
-        );
-    }
-
-    #[test]
-    fn incomplete_reasoning_title_marker_is_not_persisted() {
-        assert_eq!(
-            parse_reasoning_title("<reasoning_title>未完成标题"),
-            (None, "未完成标题".to_string())
-        );
-    }
-
-    #[test]
-    fn long_unclosed_explicit_title_does_not_leak_its_marker() {
-        let body = "x".repeat(161);
-        let mut filter = ReasoningTitleFilter::default();
-        assert_eq!(
-            filter.push(&format!("<reasoning_title>{body}")),
-            (None, Some(body))
-        );
-    }
-
-    #[test]
-    fn all_reasoning_title_markers_are_removed_before_persistence() {
-        assert_eq!(
-            strip_reasoning_title_markers(
-                "<reasoning_title>第一段</reasoning_title>正文一\n\n\
-                 <reasoning_title>第二段</reasoning_title>正文二"
-            ),
-            "正文一\n\n正文二"
-        );
-        assert_eq!(
-            strip_reasoning_title_markers("正文<reasoning_title>未完成"),
-            "正文未完成"
-        );
+        assert_eq!(boundaries, [("start", started_at), ("end", ended_at)]);
     }
 
     #[test]

@@ -811,7 +811,7 @@ impl OpenAiCompatibleClient {
         if self.detailed_reasoning_summary {
             "detailed"
         } else {
-            "concise"
+            "auto"
         }
     }
 
@@ -1486,6 +1486,24 @@ impl OpenAiCompatibleClient {
             temperature: Some(self.provider.temperature),
             extra_body,
         };
+        let reasoning_effort = request
+            .reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.effort.as_deref())
+            .unwrap_or("disabled");
+        let reasoning_summary = request
+            .reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.summary.as_deref())
+            .unwrap_or("disabled");
+        tracing::debug!(
+            request_id,
+            provider = %self.provider.id,
+            model = %self.provider.default_model,
+            reasoning_effort,
+            reasoning_summary,
+            "Responses request configured"
+        );
         let url = format!("{}/responses", self.provider.base_url.trim_end_matches('/'));
         let response = self
             .send_with_transport_retry(request_id, "responses.send", || {
@@ -2266,6 +2284,14 @@ struct ResponsesUsage {
     output_tokens: u64,
     #[serde(default)]
     total_tokens: u64,
+    #[serde(default)]
+    output_tokens_details: Option<ResponsesOutputTokenDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesOutputTokenDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2839,6 +2865,28 @@ where
             clean_plain_text(data.to_string())
         )
     })?;
+    if event.kind.starts_with("response.reasoning")
+        || matches!(
+            event.kind.as_str(),
+            "response.output_item.added" | "response.completed" | "response.incomplete"
+        )
+    {
+        let item_kind = event.item.as_ref().map(|item| item.kind.as_str());
+        let delta_chars = event.delta.as_deref().map(|delta| delta.chars().count());
+        let reasoning_tokens = event
+            .response
+            .as_ref()
+            .and_then(|response| response.usage.as_ref())
+            .and_then(|usage| usage.output_tokens_details.as_ref())
+            .and_then(|details| details.reasoning_tokens);
+        tracing::debug!(
+            event_type = %event.kind,
+            item_kind = ?item_kind,
+            delta_chars = ?delta_chars,
+            reasoning_tokens = ?reasoning_tokens,
+            "Responses stream milestone"
+        );
+    }
     match event.kind.as_str() {
         "response.output_text.delta" => {
             let text = event.delta.unwrap_or_default();
@@ -4718,7 +4766,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_full_requests_detailed_reasoning_summary() {
+    fn responses_summary_uses_auto_and_full_uses_detailed() {
         let mut config = AppConfig::default();
         assert!(!reasoning_summary_is_detailed(&config));
 
@@ -4727,6 +4775,9 @@ mod tests {
 
         let provider = test_provider("openai", "https://api.openai.com/v1");
         let mut client = test_client(provider);
+        let reasoning = client.responses_reasoning().unwrap();
+        assert_eq!(reasoning.summary.as_deref(), Some("auto"));
+
         client.detailed_reasoning_summary = true;
         let reasoning = client.responses_reasoning().unwrap();
         assert_eq!(reasoning.summary.as_deref(), Some("detailed"));
