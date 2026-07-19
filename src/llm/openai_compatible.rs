@@ -13,6 +13,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashMap};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -316,6 +318,24 @@ fn thinking_variant_key(provider_id: &str, model: &str) -> String {
     format!("{provider_id}\t{model}")
 }
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ThinkingVariantPreferences {
+    #[serde(default)]
+    selected: HashMap<String, String>,
+}
+
+fn thinking_variant_preferences_file(paths: &MiyuPaths) -> PathBuf {
+    paths.state_dir.join("thinking-variants.json")
+}
+
+fn load_thinking_variant_preferences(paths: &MiyuPaths) -> ThinkingVariantPreferences {
+    let path = thinking_variant_preferences_file(paths);
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
 fn chat_variant_body(
     provider: &ProviderConfig,
     info: &ModelReasoningInfo,
@@ -539,7 +559,7 @@ impl OpenAiCompatibleClient {
         let first = endpoints
             .first()
             .with_context(|| "no active provider/model endpoint is configured")?;
-        Ok(Self {
+        let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
             api_key: first.api_key.clone(),
@@ -547,7 +567,9 @@ impl OpenAiCompatibleClient {
             thinking_variants: HashMap::new(),
             reasoning_visibility: reasoning_visibility(config),
             detailed_reasoning_summary: reasoning_summary_is_detailed(config),
-        })
+        };
+        client.restore_saved_thinking_variants(paths);
+        Ok(client)
     }
 
     pub fn new(provider: &ProviderConfig, config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
@@ -573,7 +595,7 @@ impl OpenAiCompatibleClient {
             api_key: key.value.clone(),
             key_index: key.index,
         };
-        Ok(Self {
+        let mut client = Self {
             client,
             provider: provider.clone(),
             api_key: key.value,
@@ -581,7 +603,9 @@ impl OpenAiCompatibleClient {
             thinking_variants: HashMap::new(),
             reasoning_visibility: reasoning_visibility(config),
             detailed_reasoning_summary: reasoning_summary_is_detailed(config),
-        })
+        };
+        client.restore_saved_thinking_variants(paths);
+        Ok(client)
     }
 
     pub fn context_window(&self, config: &AppConfig) -> Result<Option<usize>> {
@@ -700,6 +724,42 @@ impl OpenAiCompatibleClient {
                     .insert(thinking_variant_key(provider_id, model), selected.clone());
             }
         }
+    }
+
+    fn restore_saved_thinking_variants(&mut self, paths: &MiyuPaths) {
+        let preferences = load_thinking_variant_preferences(paths);
+        let selections = self
+            .endpoint_model_preferences()
+            .into_iter()
+            .filter_map(|(provider_id, model)| {
+                let selected = preferences
+                    .selected
+                    .get(&thinking_variant_key(&provider_id, &model))?;
+                Some((provider_id, model, selected.clone()))
+            })
+            .collect::<Vec<_>>();
+        self.restore_thinking_variants(&selections);
+    }
+
+    pub fn save_thinking_variants(&self, paths: &MiyuPaths) -> Result<()> {
+        let path = thinking_variant_preferences_file(paths);
+        let mut preferences = load_thinking_variant_preferences(paths);
+        for (provider_id, model) in self.endpoint_model_preferences() {
+            let key = thinking_variant_key(&provider_id, &model);
+            if let Some(variant) = self.thinking_variants.get(&key) {
+                preferences.selected.insert(key, variant.clone());
+            } else {
+                preferences.selected.remove(&key);
+            }
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("thinking variant state path has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        temp.write_all(serde_json::to_string_pretty(&preferences)?.as_bytes())?;
+        temp.persist(path).map_err(|error| error.error)?;
+        Ok(())
     }
 
     pub fn thinking_variant_options(&self) -> Vec<ThinkingVariantOptions> {
@@ -4833,6 +4893,23 @@ mod tests {
         }
     }
 
+    fn test_paths(root: &std::path::Path) -> MiyuPaths {
+        MiyuPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/miyu.fish"),
+            bash_hook_file: root.join("shell/bash-hook.sh"),
+            zsh_hook_file: root.join("shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: root.join("system/scripts"),
+        }
+    }
+
     fn test_provider(id: &str, base_url: &str) -> ProviderConfig {
         ProviderConfig {
             id: id.to_string(),
@@ -4849,6 +4926,86 @@ mod tests {
             anthropic_max_tokens: 4096,
             extra_body: None,
         }
+    }
+
+    #[test]
+    fn client_constructors_restore_saved_thinking_variants() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+
+        let mut provider = test_provider("custom", "https://example.com/v1");
+        provider.default_model = "reasoning-model".to_string();
+        provider.models = vec![provider.default_model.clone()];
+        provider.api_key = Some("test-key".to_string());
+        let preferences = ThinkingVariantPreferences {
+            selected: HashMap::from([(
+                thinking_variant_key(&provider.id, &provider.default_model),
+                "high".to_string(),
+            )]),
+        };
+        std::fs::write(
+            thinking_variant_preferences_file(&paths),
+            serde_json::to_string(&preferences).unwrap(),
+        )
+        .unwrap();
+
+        let config = AppConfig {
+            active_provider: provider.id.clone(),
+            active_provider_models: None,
+            providers: vec![provider.clone()],
+            ..AppConfig::default()
+        };
+
+        let configured = OpenAiCompatibleClient::from_config(&config, &paths).unwrap();
+        assert_eq!(configured.selected_thinking_variant_id(), Some("high"));
+
+        let direct = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        assert_eq!(direct.selected_thinking_variant_id(), Some("high"));
+    }
+
+    #[test]
+    fn saving_thinking_variants_preserves_inactive_models_and_clears_unset_active_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        let inactive_key = thinking_variant_key("inactive", "old-model");
+        let active_key = thinking_variant_key("custom", "reasoning-model");
+        let preferences = ThinkingVariantPreferences {
+            selected: HashMap::from([(inactive_key.clone(), "max".to_string())]),
+        };
+        std::fs::write(
+            thinking_variant_preferences_file(&paths),
+            serde_json::to_string(&preferences).unwrap(),
+        )
+        .unwrap();
+
+        let mut provider = test_provider("custom", "https://example.com/v1");
+        provider.default_model = "reasoning-model".to_string();
+        let mut client = test_client(provider);
+        client
+            .thinking_variants
+            .insert(active_key.clone(), "high".to_string());
+        client.save_thinking_variants(&paths).unwrap();
+
+        let saved = load_thinking_variant_preferences(&paths);
+        assert_eq!(
+            saved.selected.get(&inactive_key).map(String::as_str),
+            Some("max")
+        );
+        assert_eq!(
+            saved.selected.get(&active_key).map(String::as_str),
+            Some("high")
+        );
+
+        client.thinking_variants.remove(&active_key);
+        client.save_thinking_variants(&paths).unwrap();
+        let saved = load_thinking_variant_preferences(&paths);
+        assert_eq!(
+            saved.selected.get(&inactive_key).map(String::as_str),
+            Some("max")
+        );
+        assert!(!saved.selected.contains_key(&active_key));
     }
 
     #[test]

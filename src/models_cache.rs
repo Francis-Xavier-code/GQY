@@ -459,7 +459,6 @@ fn lookup_context_window(
     (matches.len() == 1).then(|| matches[0])
 }
 
-#[allow(dead_code)]
 pub fn refresh_blocking(paths: &crate::paths::MiyuPaths) -> Result<()> {
     let _refresh = refresh_lock().lock().unwrap();
     if is_loaded() {

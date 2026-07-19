@@ -20,8 +20,6 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Cursor;
 use std::io::{self, IsTerminal, Read, Write};
@@ -42,12 +40,6 @@ struct ReplFooterStatus {
     model: String,
     thinking: Option<String>,
     token_usage: ReplTokenUsage,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct ThinkingVariantPreferences {
-    #[serde(default)]
-    selected: HashMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -452,6 +444,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         ("config", "Open or manage configuration", "打开或管理配置"),
         ("models", "List or switch models", "列出或切换模型"),
         (
+            "variant",
+            "View or switch thinking level",
+            "查看或切换思考档位",
+        ),
+        (
             "fish-init",
             "Integrate with fish so you can chat in natural language directly in the terminal",
             "集成到 fish，集成后可在终端直接使用自然语言交流。",
@@ -501,6 +498,7 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
     command = command
         .mut_subcommand("ask", localize_ask_command)
         .mut_subcommand("models", localize_models_command)
+        .mut_subcommand("variant", localize_variant_command)
         .mut_subcommand("history", localize_history_command)
         .mut_subcommand("pop", localize_pop_command)
         .mut_subcommand("kb", localize_kb_command)
@@ -520,6 +518,15 @@ fn localize_ask_command(command: clap::Command) -> clap::Command {
 fn localize_models_command(command: clap::Command) -> clap::Command {
     command.mut_arg("index", |arg| {
         arg.help(t("Model list index to activate", "要激活的模型列表序号"))
+    })
+}
+
+fn localize_variant_command(command: clap::Command) -> clap::Command {
+    command.mut_arg("name", |arg| {
+        arg.help(t(
+            "Thinking level to select; omit to choose interactively",
+            "要选择的思考档位；省略则进入交互选择",
+        ))
     })
 }
 
@@ -687,6 +694,7 @@ pub enum Command {
     Paths,
     Config(ConfigArgs),
     Models(ModelsArgs),
+    Variant(VariantArgs),
     FishInit,
     BashInit,
     ZshInit,
@@ -760,6 +768,11 @@ pub struct PopArgs {
 #[derive(Debug, Args)]
 pub struct ModelsArgs {
     pub index: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct VariantArgs {
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -969,6 +982,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Config(args)) => run_config(&paths, args).await,
         Some(Command::Models(args)) => run_models(&paths, args),
+        Some(Command::Variant(args)) => run_variant(&paths, args),
         Some(Command::FishInit) => shell::fish::install(&paths),
         Some(Command::BashInit) => shell::bash::install(&paths),
         Some(Command::ZshInit) => shell::zsh::install(&paths),
@@ -2572,13 +2586,114 @@ async fn handle_post_turn_overflow(
     Ok(None)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VariantOutcome {
+    Updated,
+    Cancelled,
+    Rejected(String),
+}
+
+fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Result<()> {
+    let selected = args
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if selected.is_none() && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
+        bail!(
+            "{}",
+            t(
+                "interactive variant selection requires a terminal; use `miyu variant <name>`",
+                "交互 variant 选择需要终端；请使用 `miyu variant <名称>`",
+            )
+        );
+    }
+    if !crate::models_cache::is_loaded() {
+        crate::models_cache::refresh_blocking(paths).map_err(|error| {
+            anyhow::anyhow!(
+                "{}: {error:#}",
+                t("failed to load model metadata", "无法加载模型元数据")
+            )
+        })?;
+    }
+
+    let config = AppConfig::load_or_default(paths)?;
+    let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    match execute_variant(paths, &mut client, selected, "miyu variant")? {
+        VariantOutcome::Updated => print_variant_updated(),
+        VariantOutcome::Cancelled => {}
+        VariantOutcome::Rejected(message) => bail!("{message}"),
+    }
+    Ok(())
+}
+
+fn execute_variant(
+    paths: &MiyuPaths,
+    client: &mut OpenAiCompatibleClient,
+    selected: Option<&str>,
+    selector_command: &str,
+) -> Result<VariantOutcome> {
+    if let Some(selected) = selected {
+        if client.thinking_variant_options().len() != 1 {
+            let message = if is_zh() {
+                format!("当前激活了多个模型；请使用 {selector_command} 在 TUI 中分别设置")
+            } else {
+                format!(
+                    "multiple models are active; use {selector_command} and configure them in the TUI"
+                )
+            };
+            return Ok(VariantOutcome::Rejected(message));
+        }
+        let available = client.available_thinking_variants();
+        let variant = match resolve_variant_name(selected, &available) {
+            Ok(variant) => variant,
+            Err(message) => return Ok(VariantOutcome::Rejected(message)),
+        };
+        client.set_thinking_variant(variant)?;
+    } else {
+        let options = client.thinking_variant_options();
+        let Some(selections) = inline_variant_select(&options)? else {
+            return Ok(VariantOutcome::Cancelled);
+        };
+        client.set_thinking_variants(&selections)?;
+    }
+
+    client.save_thinking_variants(paths)?;
+    Ok(VariantOutcome::Updated)
+}
+
+fn resolve_variant_name(
+    selected: &str,
+    available: &[String],
+) -> std::result::Result<Option<String>, String> {
+    let explicit_variant = selected.strip_prefix("variant:");
+    if explicit_variant.is_none() && selected.eq_ignore_ascii_case("default") {
+        return Ok(None);
+    }
+    let selected = explicit_variant.unwrap_or(selected);
+    available
+        .iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(selected))
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "{}: {selected}",
+                t("unknown thinking variant", "未知思考档位")
+            )
+        })
+}
+
+fn print_variant_updated() {
+    println!("{}\n", t("thinking variants updated", "已更新思考档位"));
+}
+
 async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     AppConfig::init_files(paths)?;
     let mut config = AppConfig::load_or_default(paths)?;
     let state = StateStore::new(paths)?;
     state.init_files()?;
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
-    restore_thinking_variant(paths, &mut client);
     let mut mode = initial_mode;
     let mut input_history = load_repl_input_history(&state)?;
     let mut prefill = None::<String>;
@@ -2638,7 +2753,6 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if command.eq_ignore_ascii_case("/models") && command_args_empty {
             run_models(paths, ModelsArgs { index: None })?;
             reload_repl_config(paths, &mut config, &mut client)?;
-            restore_thinking_variant(paths, &mut client);
             footer = ReplFooterStatus::from_config(
                 &config,
                 agent.effective_context_tokens()?,
@@ -2658,7 +2772,6 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if command.eq_ignore_ascii_case("/config") && command_args_empty {
             crate::config_tui::run(paths)?;
             reload_repl_config(paths, &mut config, &mut client)?;
-            restore_thinking_variant(paths, &mut client);
             footer = ReplFooterStatus::from_config(
                 &config,
                 agent.effective_context_tokens()?,
@@ -2687,51 +2800,23 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 continue;
             }
             let selected = command_args.trim();
-            if selected.is_empty() {
-                let options = client.thinking_variant_options();
-                let Some(selections) = inline_variant_select(&options)? else {
-                    continue;
-                };
-                client.set_thinking_variants(&selections)?;
-            } else {
-                if client.thinking_variant_options().len() != 1 {
-                    eprintln!(
-                        "\x1b[31m{}\x1b[0m",
-                        t(
-                            "multiple models are active; use /variant and configure them in the TUI",
-                            "当前激活了多个模型；请使用 /variant 在 TUI 中分别设置"
-                        )
-                    );
-                    continue;
+            match execute_variant(
+                paths,
+                &mut client,
+                (!selected.is_empty()).then_some(selected),
+                "/variant",
+            )? {
+                VariantOutcome::Updated => {
+                    let thinking_summary = client.thinking_variant_summary();
+                    footer.update_thinking_variant(thinking_summary.as_deref());
+                    agent.replace_client(client.clone());
+                    print_variant_updated();
                 }
-                let explicit_variant = selected.strip_prefix("variant:");
-                let variant =
-                    if explicit_variant.is_none() && selected.eq_ignore_ascii_case("default") {
-                        None
-                    } else {
-                        let selected = explicit_variant.unwrap_or(selected);
-                        let available = client.available_thinking_variants();
-                        match available
-                            .iter()
-                            .find(|candidate| candidate.eq_ignore_ascii_case(selected))
-                        {
-                            Some(candidate) => Some(candidate.clone()),
-                            None => {
-                                eprintln!(
-                                    "\x1b[31m{}: {selected}\x1b[0m",
-                                    t("unknown thinking variant", "未知思考档位")
-                                );
-                                continue;
-                            }
-                        }
-                    };
-                client.set_thinking_variant(variant)?;
+                VariantOutcome::Cancelled => {}
+                VariantOutcome::Rejected(message) => {
+                    eprintln!("\x1b[31m{message}\x1b[0m");
+                }
             }
-            save_thinking_variant(paths, &client)?;
-            let thinking_summary = client.thinking_variant_summary();
-            footer.update_thinking_variant(thinking_summary.as_deref());
-            agent.replace_client(client.clone());
-            println!("{}\n", t("thinking variants updated", "已更新思考档位"));
             continue;
         }
         if command.eq_ignore_ascii_case("/undo") && command_args_empty {
@@ -3415,59 +3500,6 @@ fn split_repl_command(input: &str) -> (&str, &str) {
         return (input, "");
     };
     (command, args)
-}
-
-fn thinking_variant_preferences_file(paths: &MiyuPaths) -> PathBuf {
-    paths.state_dir.join("thinking-variants.json")
-}
-
-fn thinking_variant_key(provider_id: &str, model: &str) -> String {
-    format!("{provider_id}\t{model}")
-}
-
-fn load_thinking_variant_preferences(paths: &MiyuPaths) -> ThinkingVariantPreferences {
-    let path = thinking_variant_preferences_file(paths);
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
-fn restore_thinking_variant(paths: &MiyuPaths, client: &mut OpenAiCompatibleClient) {
-    let preferences = load_thinking_variant_preferences(paths);
-    let selections = client
-        .endpoint_model_preferences()
-        .into_iter()
-        .filter_map(|options| {
-            let (provider_id, model) = options;
-            let selected = preferences
-                .selected
-                .get(&thinking_variant_key(&provider_id, &model))?;
-            Some((provider_id, model, selected.clone()))
-        })
-        .collect::<Vec<_>>();
-    client.restore_thinking_variants(&selections);
-}
-
-fn save_thinking_variant(paths: &MiyuPaths, client: &OpenAiCompatibleClient) -> Result<()> {
-    let path = thinking_variant_preferences_file(paths);
-    let mut preferences = load_thinking_variant_preferences(paths);
-    for options in client.thinking_variant_options() {
-        let key = thinking_variant_key(&options.provider_id, &options.model);
-        if let Some(variant) = options.selected {
-            preferences.selected.insert(key, variant.to_string());
-        } else {
-            preferences.selected.remove(&key);
-        }
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("thinking variant state path has no parent"))?;
-    std::fs::create_dir_all(parent)?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(serde_json::to_string_pretty(&preferences)?.as_bytes())?;
-    temp.persist(path).map_err(|error| error.error)?;
-    Ok(())
 }
 
 fn load_repl_input_history(state: &StateStore) -> Result<Vec<String>> {
@@ -5035,6 +5067,28 @@ mod repl_input_tests {
     }
 
     #[test]
+    fn variant_is_a_cli_subcommand_with_an_optional_name() {
+        let cli = parse_args(["miyu", "variant"].map(OsString::from).to_vec()).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Variant(VariantArgs { name: None }))
+        ));
+
+        let cli = parse_args(["miyu", "variant", "high"].map(OsString::from).to_vec()).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Variant(VariantArgs { name })) if name.as_deref() == Some("high")
+        ));
+
+        assert!(parse_args(
+            ["miyu", "variant", "high", "extra"]
+                .map(OsString::from)
+                .to_vec()
+        )
+        .is_err());
+    }
+
+    #[test]
     fn pop_is_a_cli_subcommand_with_an_optional_count() {
         let cli = parse_args(["miyu", "pop"].map(OsString::from).to_vec()).unwrap();
         assert!(matches!(
@@ -5424,6 +5478,23 @@ mod repl_input_tests {
         let argument = "variant:default";
         assert_eq!(argument.strip_prefix("variant:"), Some("default"));
         assert_ne!(argument, "default");
+    }
+
+    #[test]
+    fn variant_name_resolution_handles_default_and_case_insensitive_names() {
+        let available = vec!["low".to_string(), "high".to_string(), "default".to_string()];
+
+        assert_eq!(
+            resolve_variant_name("HIGH", &available).unwrap(),
+            Some("high".into())
+        );
+        assert_eq!(resolve_variant_name("default", &available).unwrap(), None);
+        assert_eq!(
+            resolve_variant_name("variant:default", &available).unwrap(),
+            Some("default".into())
+        );
+        assert!(resolve_variant_name("unknown", &available).is_err());
+        assert!(resolve_variant_name("Variant:default", &available).is_err());
     }
 
     #[test]
