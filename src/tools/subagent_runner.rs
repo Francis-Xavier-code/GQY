@@ -72,7 +72,10 @@ impl SubagentProgress {
             self.progress.report(if is_zh() {
                 format!("工具 #{step}：{}{subject} 运行中", readable_tool_name(name))
             } else {
-                format!("tool #{step}: {name}{subject} running")
+                format!(
+                    "tool #{step}: {}{subject} running",
+                    readable_tool_name(name)
+                )
             });
         }
     }
@@ -101,7 +104,10 @@ impl SubagentProgress {
                     readable_tool_name(name)
                 )
             } else {
-                format!("tool #{step}: {name}{subject} {status}")
+                format!(
+                    "tool #{step}: {}{subject} {status}",
+                    readable_tool_name(name)
+                )
             });
         }
         if self.tool_mode == ProgressMode::Full {

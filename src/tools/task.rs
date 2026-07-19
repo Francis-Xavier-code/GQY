@@ -1,7 +1,7 @@
 use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner, SubagentStats};
 use super::{ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
-use crate::i18n::text as t;
+use crate::i18n::agent_text as t;
 use crate::llm::OpenAiCompatibleClient;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};

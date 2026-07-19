@@ -32,7 +32,6 @@ pub struct ToolDescription {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolGroupDescription {
-    pub display_name: String,
     pub summary: String,
 }
 
@@ -143,12 +142,13 @@ pub fn group_summary(group: &str) -> String {
         .unwrap_or_else(|| group.to_string())
 }
 
-pub fn group_display_name(group: &str) -> Option<String> {
-    groups().get(group).map(|desc| desc.display_name.clone())
-}
-
 fn groups() -> &'static HashMap<String, ToolGroupDescription> {
     TOOL_GROUPS.get_or_init(|| {
         serde_json::from_str(TOOL_GROUPS_RAW).expect("tool group description JSON must be valid")
     })
+}
+
+#[cfg(test)]
+pub fn group_names() -> Vec<&'static str> {
+    groups().keys().map(String::as_str).collect()
 }

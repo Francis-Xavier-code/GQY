@@ -1,5 +1,5 @@
 use super::{CommandOutputStream, ToolProgress, ToolRegistry, ToolSpec};
-use crate::i18n::text as t;
+use crate::i18n::agent_text as t;
 use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};

@@ -1,6 +1,6 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::clipboard::ClipboardContent;
-use crate::i18n::text as t;
+use crate::i18n::agent_text as t;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};

@@ -49,6 +49,8 @@ pub struct ActiveProviderModelConfig {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplayConfig {
+    #[serde(default = "default_display_language")]
+    pub language: String,
     #[serde(default = "default_reasoning_display")]
     pub reasoning: String,
     #[serde(default = "default_tool_call_display")]
@@ -65,6 +67,8 @@ pub struct DisplayConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 struct RawDisplayConfig {
+    #[serde(default)]
+    language: Option<String>,
     #[serde(default)]
     reasoning: Option<String>,
     #[serde(default)]
@@ -108,6 +112,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             }
         });
         Ok(Self {
+            language: raw.language.unwrap_or_else(default_display_language),
             reasoning,
             tool_calls,
             readable_tool_names: raw.readable_tool_names.unwrap_or_else(default_true),
@@ -610,6 +615,7 @@ impl Default for PromptConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
+            language: default_display_language(),
             reasoning: default_reasoning_display(),
             tool_calls: default_tool_call_display(),
             readable_tool_names: default_true(),
@@ -1107,6 +1113,17 @@ fn active_model_exists(providers: &[ProviderConfig], active: &ActiveProviderMode
 }
 
 impl AppConfig {
+    pub fn display_language_hint(paths: &MiyuPaths) -> Option<String> {
+        let raw = std::fs::read_to_string(&paths.config_file).ok()?;
+        let stripped = json_comments::StripComments::new(raw.as_bytes());
+        let value: serde_json::Value = serde_json::from_reader(stripped).ok()?;
+        value
+            .get("display")?
+            .get("language")?
+            .as_str()
+            .map(str::to_string)
+    }
+
     pub fn memory_config(&self) -> &MemoryConfig {
         if self.memory != MemoryConfig::default() {
             &self.memory
@@ -1237,6 +1254,15 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if crate::i18n::UiLanguage::parse(&self.display.language).is_none() {
+            bail!(
+                "{}",
+                crate::i18n::text(
+                    "display.language must be 'auto', 'en', or 'zh'",
+                    "display.language 必须是 'auto'、'en' 或 'zh'"
+                )
+            );
+        }
         if self.active_provider.trim().is_empty() {
             bail!("active_provider cannot be empty");
         }
@@ -1979,6 +2005,10 @@ fn default_tools_loading_mode() -> String {
     "hybrid".to_string()
 }
 
+fn default_display_language() -> String {
+    "auto".to_string()
+}
+
 fn default_reasoning_display() -> String {
     "summary".to_string()
 }
@@ -2526,6 +2556,7 @@ mod tests {
     #[test]
     fn display_readable_tool_names_defaults_enabled() {
         let display: DisplayConfig = serde_json::from_str(r#"{"tool_calls":"summary"}"#).unwrap();
+        assert_eq!(display.language, "auto");
         assert!(display.readable_tool_names);
         assert!(!display.show_token_usage);
         assert_eq!(display.mixed_model_endpoint_display, "interactive");
@@ -2551,6 +2582,51 @@ mod tests {
         let display: DisplayConfig =
             serde_json::from_str(r#"{"show_mixed_model_endpoint":true}"#).unwrap();
         assert_eq!(display.mixed_model_endpoint_display, "all");
+    }
+
+    #[test]
+    fn display_language_roundtrips_and_rejects_unknown_values() {
+        let display: DisplayConfig = serde_json::from_str(r#"{"language":"zh"}"#).unwrap();
+        assert_eq!(display.language, "zh");
+        assert!(serde_json::to_string(&display)
+            .unwrap()
+            .contains(r#""language":"zh""#));
+
+        let mut config = AppConfig::default();
+        config.display.language = "fr".to_string();
+        assert!(config.validate().is_err());
+        config.display.language.clear();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn display_language_hint_reads_jsonc_without_loading_full_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_file = temp.path().join("config.jsonc");
+        std::fs::write(
+            &config_file,
+            "{\n  // UI preference\n  \"display\": { \"language\": \"en\" }\n}\n",
+        )
+        .unwrap();
+        let paths = MiyuPaths {
+            config_dir: temp.path().to_path_buf(),
+            config_file,
+            skills_dir: temp.path().join("skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("miyu.fish"),
+            bash_hook_file: temp.path().join("miyu.bash"),
+            zsh_hook_file: temp.path().join("miyu.zsh"),
+            scripts_dir: temp.path().join("scripts"),
+            system_scripts_dir: temp.path().join("system-scripts"),
+        };
+
+        assert_eq!(
+            AppConfig::display_language_hint(&paths).as_deref(),
+            Some("en")
+        );
     }
 
     #[test]

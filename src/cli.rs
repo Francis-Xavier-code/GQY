@@ -58,17 +58,16 @@ impl ReplFooterStatus {
     ) -> Self {
         let active = config.active_provider_model_choices();
         let (provider_id, model) = match active.as_slice() {
-            [] => ("-".to_string(), "None".to_string()),
-            [choice] => (choice.provider_id.clone(), choice.model.clone()),
-            _ => (String::new(), "Mixed".to_string()),
+            [] => ("-".to_string(), t("None", "无").to_string()),
+            [choice] => (
+                choice.provider_id.clone(),
+                short_model_name(&choice.model, &choice.provider_id),
+            ),
+            _ => (String::new(), t("Mixed", "混合").to_string()),
         };
 
         Self {
-            model: if model == "Mixed" || model == "None" {
-                model
-            } else {
-                short_model_name(&model, &provider_id)
-            },
+            model,
             provider: provider_id,
             thinking: None,
             token_usage: ReplTokenUsage {
@@ -243,10 +242,11 @@ fn show_mixed_model_endpoint(config: &AppConfig, interactive: bool) -> bool {
 }
 
 fn colored_footer_mode_label(mode: AgentMode) -> String {
+    let label = mode.label();
     match mode {
-        AgentMode::Normal => primary_footer_text("Normal"),
-        AgentMode::Plan => "\x1b[1m\x1b[35mPlan\x1b[0m".to_string(),
-        AgentMode::Chat => "\x1b[1m\x1b[32mChat\x1b[0m".to_string(),
+        AgentMode::Normal => primary_footer_text(label),
+        AgentMode::Plan => format!("\x1b[1m\x1b[35m{label}\x1b[0m"),
+        AgentMode::Chat => format!("\x1b[1m\x1b[32m{label}\x1b[0m"),
     }
 }
 
@@ -331,12 +331,12 @@ fn localized_command() -> clap::Command {
             .arg_required_else_help(false)
             .next_help_heading("选项")
             .help_template("{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n参数:\n{positionals}\n选项:\n{options}\n{after-help}")
-            .after_help("提示：不带参数进入 REPL；直接输入消息会发送一次对话。使用 MIYU_LANG=en_US 可切换英文。")
+            .after_help("提示：不带参数进入 REPL；直接输入消息会发送一次对话。可在配置界面设置语言，MIYU_LANG 可临时覆盖。")
             .disable_help_subcommand(true);
     } else {
         command = command
             .after_help(
-                "Tip: run without arguments to enter the REPL; pass MESSAGE to send one chat turn. Set MIYU_LANG=zh_CN for Chinese.",
+                "Tip: run without arguments to enter the REPL; pass MESSAGE to send one chat turn. Set the language in the configuration UI; MIYU_LANG is a temporary override.",
             )
             .disable_help_subcommand(true);
     }
@@ -916,14 +916,13 @@ pub enum ConfigCommand {
     PromptSource,
 }
 
-pub async fn run(cli: Cli) -> Result<()> {
+pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     if cli.shell_classify {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
         let message = shell_message_from_input(cli.stdin, cli.message)?;
         return run_shell_classify(shell_name, &message);
     }
 
-    let paths = MiyuPaths::new()?;
     if cli.clipboard_paste {
         return run_clipboard_paste(&paths);
     }
@@ -5526,7 +5525,7 @@ mod repl_input_tests {
     #[test]
     fn inline_fuzzy_lines_are_bar_aligned_and_truncated() {
         let header = inline_fuzzy_header("big", 12);
-        assert!(strip_terminal_control_sequences(&header).contains("选择模型"));
+        assert!(strip_terminal_control_sequences(&header).contains(t("Select", "选择模型")));
         assert!(visible_width(&header) <= 12);
 
         let item = inline_fuzzy_item_line("opencode Zen / big-pickle", true, false, 16);
@@ -6092,7 +6091,7 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         }
         AgentEvent::SpinnerTick => renderer.tick_spinner(),
         AgentEvent::CompactStart => {
-            renderer.write_system_message("正在压缩上下文...")?;
+            renderer.write_system_message(t("Compacting context...", "正在压缩上下文..."))?;
             renderer.tick_spinner()
         }
         AgentEvent::CompactChunk(chunk) => {

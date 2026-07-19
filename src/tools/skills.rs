@@ -1,6 +1,6 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
-use crate::i18n::text as t;
+use crate::i18n::{agent_text as t, text as ui_text};
 use crate::paths::MiyuPaths;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -181,25 +181,35 @@ fn skill_entry(raw: &str, dir_name: &str, skill_file: &std::path::Path) -> Optio
     let description = frontmatter_value(raw, "description").unwrap_or_default();
     if !valid_skill_name(&name) {
         eprintln!(
-            "warning: skipping skill {}: invalid name `{}`",
+            "{} {}: {} `{}`",
+            ui_text("warning: skipping skill", "警告：跳过 skill"),
             skill_file.display(),
+            ui_text("invalid name", "无效名称"),
             name
         );
         return None;
     }
     if name != dir_name {
         eprintln!(
-            "warning: skipping skill {}: name `{}` does not match directory `{}`",
+            "{} {}: {} `{}` {} `{}`",
+            ui_text("warning: skipping skill", "警告：跳过 skill"),
             skill_file.display(),
+            ui_text("name", "名称"),
             name,
+            ui_text("does not match directory", "与目录不匹配"),
             dir_name
         );
         return None;
     }
     if !valid_skill_description(&description) {
         eprintln!(
-            "warning: skipping skill {}: description must be 1-1024 characters",
-            skill_file.display()
+            "{} {}: {}",
+            ui_text("warning: skipping skill", "警告：跳过 skill"),
+            skill_file.display(),
+            ui_text(
+                "description must be 1-1024 characters",
+                "描述长度必须为 1-1024 个字符"
+            )
         );
         return None;
     }

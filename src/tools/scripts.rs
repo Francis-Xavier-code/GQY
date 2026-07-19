@@ -1,6 +1,6 @@
 use super::registry::UnregisteredScript;
 use super::{ToolRegistry, ToolSpec};
-use crate::i18n::{is_zh, text as t};
+use crate::i18n::{agent_is_zh, agent_text as t, is_zh};
 use crate::paths::MiyuPaths;
 use crate::tools::tool_descriptions::LoadPolicy;
 use anyhow::{bail, Context, Result};
@@ -349,7 +349,7 @@ fn description_from_script(path: &Path) -> Option<String> {
 }
 
 fn select_script_description(descriptions: &ScriptDescriptions) -> Option<String> {
-    let preferred = if is_zh() {
+    let preferred = if agent_is_zh() {
         descriptions.zh.as_ref().or(descriptions.en.as_ref())
     } else {
         descriptions.en.as_ref().or(descriptions.zh.as_ref())

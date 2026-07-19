@@ -77,63 +77,67 @@ impl MiyuPaths {
     pub fn print(&self) {
         println!(
             "{}: {}",
-            t("config_dir", "配置目录"),
+            t("config directory", "配置目录"),
             self.config_dir.display()
         );
         println!(
             "{}: {}",
-            t("config_file", "配置文件"),
+            t("config file", "配置文件"),
             self.config_file.display()
         );
         println!(
             "{}: {}",
-            t("skills_dir", "skills 目录"),
+            t("skills directory", "skills 目录"),
             self.skills_dir.display()
         );
-        println!("{}: {}", t("data_dir", "数据目录"), self.data_dir.display());
         println!(
             "{}: {}",
-            t("cache_dir", "缓存目录"),
+            t("data directory", "数据目录"),
+            self.data_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("cache directory", "缓存目录"),
             self.cache_dir.display()
         );
         println!(
             "{}: {}",
-            t("state_dir", "状态目录"),
+            t("state directory", "状态目录"),
             self.state_dir.display()
         );
         println!(
             "{}: {}",
-            t("logs_dir", "日志目录"),
+            t("log directory", "日志目录"),
             self.logs_dir().display()
         );
         println!(
             "{}: {}",
-            t("pictures_dir", "图片目录"),
+            t("pictures directory", "图片目录"),
             self.pictures_dir.display()
         );
         println!(
             "{}: {}",
-            t("fish_hook_file", "fish hook 文件"),
+            t("fish hook file", "fish hook 文件"),
             self.fish_hook_file.display()
         );
         println!(
             "{}: {}",
-            t("bash_hook_file", "bash hook 文件"),
+            t("bash hook file", "bash hook 文件"),
             self.bash_hook_file.display()
         );
         println!(
             "{}: {}",
-            t("zsh_hook_file", "zsh hook 文件"),
+            t("zsh hook file", "zsh hook 文件"),
             self.zsh_hook_file.display()
         );
         println!(
             "{}: {}",
-            t("scripts_dir", "scripts 目录"),
+            t("scripts directory", "scripts 目录"),
             self.scripts_dir.display()
         );
         println!(
             "{}: {}",
-            t("system_scripts_dir", "系统 scripts 目录"),
+            t("system scripts directory", "系统 scripts 目录"),
             self.system_scripts_dir.display()
         );
     }

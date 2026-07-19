@@ -1,7 +1,7 @@
 use super::subagent_runner::format_token_count;
 use super::{readable_tool_name, ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
-use crate::i18n::is_zh;
+use crate::i18n::{is_zh, text as t};
 use crate::llm::{
     ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage,
 };
@@ -212,8 +212,15 @@ async fn deep_research_linux_game_compatibility(
         .to_string();
     let mut stats = GameStats::default();
     let progress = GameProgress::new(&context.config, progress);
-    progress.report(format!("{}: {}", "Linux 游戏兼容性", game));
-    progress.report("收集游戏兼容性信号");
+    progress.report(format!(
+        "{}: {}",
+        t("Linux game compatibility", "Linux 游戏兼容性"),
+        game
+    ));
+    progress.report(t(
+        "Collecting game compatibility signals",
+        "收集游戏兼容性信号",
+    ));
     stats.tool_calls += 1;
     let signals = match gather_linux_game_compatibility_signals(json!({
         "game": game,
@@ -342,7 +349,10 @@ async fn chat_with_tools(
                         readable_tool_name(&call.function.name)
                     )
                 } else {
-                    format!("tool #{steps}: {}{subject} running", call.function.name)
+                    format!(
+                        "tool #{steps}: {}{subject} running",
+                        readable_tool_name(&call.function.name)
+                    )
                 });
             } else if progress.mode == ProgressMode::Full && call.function.name != "run_command" {
                 progress.subtool(format!(
@@ -377,7 +387,10 @@ async fn chat_with_tools(
                         readable_tool_name(&call.function.name)
                     )
                 } else {
-                    format!("tool #{steps}: {}{subject} {status}", call.function.name)
+                    format!(
+                        "tool #{steps}: {}{subject} {status}",
+                        readable_tool_name(&call.function.name)
+                    )
                 });
             } else if progress.mode == ProgressMode::Full {
                 progress.subtool(format!(

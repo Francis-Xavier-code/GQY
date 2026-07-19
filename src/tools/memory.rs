@@ -1,6 +1,6 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
-use crate::i18n::text as t;
+use crate::i18n::agent_text as t;
 use crate::memory::MemoryStore;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};

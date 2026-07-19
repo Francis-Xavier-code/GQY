@@ -571,10 +571,20 @@ impl Agent {
         let Some(context_window) = context_window else {
             let missing = self.client.models_without_context_window(&self.config);
             if missing.is_empty() {
-                bail!("当前模型的上下文窗口尚未加载或未配置，无法压缩上下文");
+                bail!(
+                    "{}",
+                    crate::i18n::text(
+                        "The current model's context window is not loaded or configured, so the context cannot be compacted",
+                        "当前模型的上下文窗口尚未加载或未配置，无法压缩上下文"
+                    )
+                );
             }
             bail!(
-                "以下活动模型的上下文窗口尚未加载或未配置，无法压缩上下文：{}",
+                "{}{}",
+                crate::i18n::text(
+                    "The context windows for these active models are not loaded or configured, so the context cannot be compacted: ",
+                    "以下活动模型的上下文窗口尚未加载或未配置，无法压缩上下文："
+                ),
                 missing.join(", ")
             );
         };
@@ -2029,12 +2039,12 @@ fn terminal_runtime_context() -> String {
     let stdout_tty = std::io::stdout().is_terminal();
     let stderr_tty = std::io::stderr().is_terminal();
     let environment = if stdin_tty || stdout_tty || stderr_tty {
-        if crate::i18n::is_zh() {
+        if crate::i18n::agent_is_zh() {
             "终端会话"
         } else {
             "terminal session"
         }
-    } else if crate::i18n::is_zh() {
+    } else if crate::i18n::agent_is_zh() {
         "非交互或管道环境"
     } else {
         "non-interactive or piped environment"

@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::i18n::text as t;
 use crate::paths::MiyuPaths;
 use crate::tools::knowledge_base::KnowledgeBase;
 use anyhow::{bail, Result};
@@ -61,7 +62,11 @@ pub fn notice_if_update_available(paths: &MiyuPaths) -> Result<Option<String>> {
     if state.last_notice_commit == state.remote_commit {
         return Ok(None);
     }
-    let message = "默认知识库需要更新，运行 miyu update-default-kb".to_string();
+    let message = t(
+        "The default knowledge base needs an update; run miyu update-default-kb",
+        "默认知识库需要更新，运行 miyu update-default-kb",
+    )
+    .to_string();
     state.last_notice_commit = state.remote_commit.clone();
     save_state(paths, &state)?;
     Ok(Some(message))
@@ -236,7 +241,13 @@ fn git_command() -> Result<String> {
         .status();
     match status {
         Ok(status) if status.success() => Ok("git".to_string()),
-        _ => bail!("更新默认知识库需要 git；当前继续使用已安装的默认知识库"),
+        _ => bail!(
+            "{}",
+            t(
+                "Updating the default knowledge base requires git; the installed version remains available",
+                "更新默认知识库需要 git；当前继续使用已安装的默认知识库"
+            )
+        ),
     }
 }
 

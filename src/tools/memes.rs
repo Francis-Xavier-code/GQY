@@ -1,6 +1,6 @@
 use super::{vision, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, MemesPluginConfig};
-use crate::i18n::text as t;
+use crate::i18n::agent_text as t;
 use crate::paths::MiyuPaths;
 use crate::prompts::MEME_DESCRIPTION_PROMPT;
 use anyhow::{bail, Context, Result};

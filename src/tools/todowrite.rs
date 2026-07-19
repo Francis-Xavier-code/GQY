@@ -1,5 +1,5 @@
 use super::{ToolRegistry, ToolSpec};
-use crate::i18n::text as t;
+use crate::i18n::agent_text as t;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

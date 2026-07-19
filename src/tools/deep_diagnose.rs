@@ -326,7 +326,10 @@ async fn chat_with_tools(
                         readable_tool_name(&call.function.name)
                     )
                 } else {
-                    format!("tool #{steps}: {}{subject} running", call.function.name)
+                    format!(
+                        "tool #{steps}: {}{subject} running",
+                        readable_tool_name(&call.function.name)
+                    )
                 });
             } else if progress.mode == ProgressMode::Full && call.function.name != "run_command" {
                 progress.subtool(format!(
@@ -370,7 +373,10 @@ async fn chat_with_tools(
                         readable_tool_name(&call.function.name)
                     )
                 } else {
-                    format!("tool #{steps}: {}{subject} {status}", call.function.name)
+                    format!(
+                        "tool #{steps}: {}{subject} {status}",
+                        readable_tool_name(&call.function.name)
+                    )
                 });
             } else if progress.mode == ProgressMode::Full {
                 progress.subtool(format!(

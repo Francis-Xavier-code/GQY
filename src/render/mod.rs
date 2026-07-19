@@ -986,7 +986,12 @@ impl StreamRenderer {
         }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
             let mut stdout = io::stdout();
-            writeln!(stdout, "tool {}", self.display_tool_name(name))?;
+            writeln!(
+                stdout,
+                "{} {}",
+                t("tool", "工具"),
+                self.display_tool_name(name)
+            )?;
             write_tool_payload(&mut stdout, t("args", "参数"), arguments)?;
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
@@ -1048,7 +1053,8 @@ impl StreamRenderer {
             let mut stdout = io::stdout();
             writeln!(
                 stdout,
-                "result {} {}",
+                "{} {} {}",
+                t("result", "结果"),
                 self.display_tool_name(name),
                 tool_result_status(status, elapsed)
             )?;
@@ -1116,7 +1122,12 @@ impl StreamRenderer {
             if self.tool_call_mode == ToolCallDisplayMode::Full {
                 self.release_transient_output()?;
                 let mut stdout = io::stdout();
-                writeln!(stdout, "progress {}: {text}", self.display_tool_name(name))?;
+                writeln!(
+                    stdout,
+                    "{} {}: {text}",
+                    t("progress", "进度"),
+                    self.display_tool_name(name)
+                )?;
                 stdout.flush()?;
             } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
                 self.tool_stats
@@ -1159,7 +1170,12 @@ impl StreamRenderer {
                     if tool_name == "run_command" {
                         write_command_block(&mut stdout, args)?;
                     } else {
-                        writeln!(stdout, "tool {}", self.display_tool_name(tool_name))?;
+                        writeln!(
+                            stdout,
+                            "{} {}",
+                            t("tool", "工具"),
+                            self.display_tool_name(tool_name)
+                        )?;
                         write_tool_payload(&mut stdout, t("args", "参数"), args)?;
                     }
                     stdout.flush()?;
@@ -1195,7 +1211,8 @@ impl StreamRenderer {
                     } else {
                         writeln!(
                             stdout,
-                            "result {} {status}",
+                            "{} {} {status}",
+                            t("result", "结果"),
                             self.display_tool_name(tool_name)
                         )?;
                         write_tool_payload(&mut stdout, t("output", "输出"), output)?;
@@ -1213,7 +1230,8 @@ impl StreamRenderer {
             let mut stdout = io::stdout();
             writeln!(
                 stdout,
-                "progress {}: {message}",
+                "{} {}: {message}",
+                t("progress", "进度"),
                 self.display_tool_name(name)
             )?;
             stdout.flush()?;
@@ -1465,7 +1483,10 @@ impl StreamRenderer {
     fn reasoning_live_text(&self) -> String {
         if self.reasoning_started_at.is_none() {
             return match &self.reasoning_title {
-                Some(title) => format!("{}：{title}", t("thinking", "思考")),
+                Some(title) if crate::i18n::is_zh() => {
+                    format!("{}：{title}", t("thinking", "思考"))
+                }
+                Some(title) => format!("{}: {title}", t("thinking", "思考")),
                 None => t("thinking", "思考").to_string(),
             };
         }
@@ -1488,7 +1509,10 @@ impl StreamRenderer {
 
     fn reasoning_live_metrics_text(&self) -> String {
         let phase = match &self.reasoning_title {
-            Some(title) => format!("{}：{title}", t("thinking", "思考")),
+            Some(title) if crate::i18n::is_zh() => {
+                format!("{}：{title}", t("thinking", "思考"))
+            }
+            Some(title) => format!("{}: {title}", t("thinking", "思考")),
             None => t("thinking", "思考").to_string(),
         };
         if self.reasoning_tokens == 0 {
@@ -2004,11 +2028,12 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
                     let display = readable_tool_name(&format!("load_tools:{name}"));
                     display
                         .split_once('：')
+                        .or_else(|| display.split_once(": "))
                         .map(|(_, target)| target.to_string())
                         .unwrap_or(display)
                 })
                 .collect::<Vec<_>>()
-                .join("、")
+                .join(t(", ", "、"))
         }),
         "deep_research" => string_arg(&args, &["topic"]),
         "deep_research_linux_game_compatibility" => string_arg(&args, &["game"]),
@@ -3654,16 +3679,20 @@ mod tests {
     fn command_heading_is_part_of_live_block_and_updates_status() {
         let mut display = CommandLiveDisplay::new(r#"{"command":"printf ok"}"#, 2, true);
         let running = visible_command_lines(display.rendered_lines(80, true));
-        assert_eq!(running[0], "$ 运行命令×1 运行中");
+        let command = t("run command", "运行命令");
+        assert_eq!(
+            running[0],
+            format!("$ {command}×1 {}", t("running", "运行中"))
+        );
         assert!(running[1].contains("printf ok"));
 
         display.set_result(true);
         let completed = visible_command_lines(display.rendered_lines(80, false));
-        assert_eq!(completed[0], "$ 运行命令×1 ok");
+        assert_eq!(completed[0], format!("$ {command}×1 ok"));
         assert_eq!(
             completed
                 .iter()
-                .filter(|line| line.starts_with("$ 运行命令"))
+                .filter(|line| line.starts_with(&format!("$ {command}")))
                 .count(),
             1
         );
@@ -3719,7 +3748,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             renderer.tool_summary_text(),
-            "~ 网页搜索×1 运行中\n↳ first subject"
+            format!(
+                "~ {}×1 {}\n↳ first subject",
+                t("Web search", "网页搜索"),
+                t("running", "运行中")
+            )
         );
         renderer
             .write_tool_result("web_search", true, "{}")
@@ -3731,7 +3764,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             renderer.tool_summary_text(),
-            "~ 网页搜索×1 运行中\n↳ second subject"
+            format!(
+                "~ {}×1 {}\n↳ second subject",
+                t("Web search", "网页搜索"),
+                t("running", "运行中")
+            )
         );
     }
 
@@ -3757,14 +3794,22 @@ mod tests {
         assert!(!renderer.summary_line_active);
         assert_eq!(
             renderer.tool_summary_text(),
-            "~ 子代理×1 运行中 · 0s\n↳ 确认工作区环境"
+            format!(
+                "~ {}×1 {} · 0s\n↳ 确认工作区环境",
+                t("Subagent", "子代理"),
+                t("running", "运行中")
+            )
         );
         renderer.tool_stats.get_mut("task").unwrap().started_at =
             Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
         renderer.tick_spinner().unwrap();
         assert_eq!(
             renderer.tool_summary_text(),
-            "~ 子代理×1 运行中 · 2s\n↳ 确认工作区环境"
+            format!(
+                "~ {}×1 {} · 2s\n↳ 确认工作区环境",
+                t("Subagent", "子代理"),
+                t("running", "运行中")
+            )
         );
     }
 
@@ -4204,7 +4249,10 @@ mod tests {
             final_progress: None,
             ..ToolStats::default()
         };
-        assert_eq!(tool_status_text("grep", &stats, false), "grep×1 运行中");
+        assert_eq!(
+            tool_status_text("grep", &stats, false),
+            format!("grep×1 {}", t("running", "运行中"))
+        );
     }
 
     #[test]
@@ -4234,7 +4282,7 @@ mod tests {
         };
         assert_eq!(
             tool_status_text("linux_input_method_diagnose", &stats, true),
-            "linux_input_method_diagnose×1 运行中"
+            format!("linux_input_method_diagnose×1 {}", t("running", "运行中"))
         );
         let stats = ToolStats {
             calls: 1,
@@ -4260,9 +4308,12 @@ mod tests {
         };
         assert_eq!(
             tool_status_text("task", &running, true),
-            "task×1 运行中 · 1m 08s"
+            format!("task×1 {} · 1m 08s", t("running", "运行中"))
         );
-        assert_eq!(tool_status_text("task", &running, false), "task×1 运行中");
+        assert_eq!(
+            tool_status_text("task", &running, false),
+            format!("task×1 {}", t("running", "运行中"))
+        );
 
         let completed = ToolStats {
             calls: 1,
@@ -4359,7 +4410,10 @@ mod tests {
 
         assert_eq!(
             renderer.tool_summary_text(),
-            "~ Linux 游戏兼容性调查×1 ok\n✓ 工具调用 1 次　消耗词元 2.3K"
+            format!(
+                "~ {}×1 ok\n✓ 工具调用 1 次　消耗词元 2.3K",
+                t("Linux game compatibility research", "Linux 游戏兼容性调查")
+            )
         );
     }
 
@@ -4385,23 +4439,21 @@ mod tests {
             },
         );
 
-        assert_eq!(renderer.tool_summary_header(), "~ 子代理×1 运行中");
+        let header = format!("~ {}×1 {}", t("Subagent", "子代理"), t("running", "运行中"));
+        assert_eq!(renderer.tool_summary_header(), header);
         assert_eq!(
             renderer.tool_summary_text(),
-            "~ 子代理×1 运行中\n↳ 定位活动摘要渲染链路"
+            format!("{header}\n↳ 定位活动摘要渲染链路")
         );
     }
 
     #[test]
     fn all_subagent_summaries_use_activity_prefix() {
-        for (name, display) in [
-            ("task", "子代理"),
-            ("deep_research", "深度研究"),
-            (
-                "deep_research_linux_game_compatibility",
-                "Linux 游戏兼容性调查",
-            ),
-            ("linux_input_method_diagnose", "输入法诊断"),
+        for name in [
+            "task",
+            "deep_research",
+            "deep_research_linux_game_compatibility",
+            "linux_input_method_diagnose",
         ] {
             let mut renderer = StreamRenderer::new(
                 ReasoningDisplayMode::Summary,
@@ -4425,7 +4477,11 @@ mod tests {
 
             assert_eq!(
                 renderer.tool_summary_header(),
-                format!("~ {display}×1 运行中")
+                format!(
+                    "~ {}×1 {}",
+                    readable_tool_name(name),
+                    t("running", "运行中")
+                )
             );
         }
     }
@@ -4451,7 +4507,7 @@ mod tests {
 
         assert_eq!(
             renderer.tool_summary_text(),
-            "~ 加载×1 ok · 网页搜索、天气查询"
+            format!("~ {}×1 ok · 网页搜索、天气查询", t("Load", "加载"))
         );
         assert!(!renderer.tool_summary_text().contains("\n↳"));
     }
@@ -4469,7 +4525,7 @@ mod tests {
         };
         assert_eq!(
             tool_status_text("grep", &stats, false),
-            "grep×3 运行中:1 ok:1 err:1"
+            format!("grep×3 {}:1 ok:1 err:1", t("running", "运行中"))
         );
     }
 
@@ -4495,13 +4551,19 @@ mod tests {
             tool_subject("run_command", r#"{"command":"du -sh /home/shorin/*"}"#).as_deref(),
             Some("du -sh /home/shorin/*")
         );
+        let expected_load_tools_subject = format!(
+            "{}{}{}",
+            t("Web search", "网页搜索"),
+            t(", ", "、"),
+            t("Weather", "天气查询")
+        );
         assert_eq!(
             tool_subject(
                 "load_tools:web_search,get_weather",
                 r#"{"names":["web_search","get_weather"]}"#
             )
             .as_deref(),
-            Some("网页搜索、天气查询")
+            Some(expected_load_tools_subject.as_str())
         );
     }
 
@@ -4579,43 +4641,55 @@ mod tests {
 
     #[test]
     fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
-        assert_eq!(readable_tool_name("deep_research"), "深度研究");
-        assert_eq!(readable_tool_name("read_file"), "读取文件");
-        assert_eq!(readable_tool_name("check_issue"), "检查问题");
-        assert_eq!(
-            readable_tool_name("linux_input_method_diagnose"),
-            "输入法诊断"
-        );
-        assert_eq!(readable_tool_name("check_os_info"), "查看系统信息");
-        assert_eq!(readable_tool_name("get_weather"), "天气查询");
-        assert_eq!(readable_tool_name("get_exchange_rate"), "汇率查询");
-        assert_eq!(readable_tool_name("draw_zhouyi_hexagram"), "周易起卦");
-        assert_eq!(readable_tool_name("draw_tarot_card"), "抽塔罗牌");
-        assert_eq!(readable_tool_name("draw_fortune_lot"), "吉凶占");
-        assert_eq!(readable_tool_name("vision_analyze"), "分析图片");
-        assert_eq!(readable_tool_name("search_meme"), "搜索表情包");
-        assert_eq!(readable_tool_name("show_meme"), "发送表情");
-        assert_eq!(readable_tool_name("add_meme"), "添加表情包");
-        assert_eq!(readable_tool_name("task"), "子代理");
-        assert_eq!(
-            readable_tool_name("upload_text_to_knowledge_base"),
-            "导入知识库"
-        );
-        assert_eq!(readable_tool_name("search_evicted_context"), "搜索旧上下文");
-        assert_eq!(readable_tool_name("recall_past_events"), "回忆往事");
-        assert_eq!(readable_tool_name("aur_check_status"), "查询 AUR 状态");
-        assert_eq!(readable_tool_name("online_man_search"), "搜索在线手册");
-        assert_eq!(readable_tool_name("online_man_get_page"), "读取在线手册");
-        assert_eq!(
-            readable_tool_name("fcitx5_input_method_wiki_qurey"),
-            "查询 Fcitx5 Wiki"
-        );
-        assert_eq!(readable_tool_name("install_aur_package"), "安装 AUR 包");
-        assert_eq!(
-            readable_tool_name("search_knowledge_base_by_name"),
-            "按名称搜索知识库"
-        );
-        assert_eq!(readable_tool_name("recall_memories"), "召回记忆");
+        for (name, english, chinese) in [
+            ("deep_research", "Deep research", "深度研究"),
+            ("read_file", "Read file", "读取文件"),
+            ("check_issue", "Check issue", "检查问题"),
+            (
+                "linux_input_method_diagnose",
+                "Input method diagnosis",
+                "输入法诊断",
+            ),
+            ("check_os_info", "System information", "查看系统信息"),
+            ("get_weather", "Weather", "天气查询"),
+            ("get_exchange_rate", "Exchange rates", "汇率查询"),
+            ("draw_zhouyi_hexagram", "Draw I Ching hexagram", "周易起卦"),
+            ("draw_tarot_card", "Draw tarot card", "抽塔罗牌"),
+            ("draw_fortune_lot", "Draw fortune", "吉凶占"),
+            ("vision_analyze", "Analyze image", "分析图片"),
+            ("search_meme", "Search memes", "搜索表情包"),
+            ("show_meme", "Send meme", "发送表情"),
+            ("add_meme", "Add meme", "添加表情包"),
+            ("task", "Subagent", "子代理"),
+            (
+                "upload_text_to_knowledge_base",
+                "Import knowledge base",
+                "导入知识库",
+            ),
+            (
+                "search_evicted_context",
+                "Search old context",
+                "搜索旧上下文",
+            ),
+            ("recall_past_events", "Recall past events", "回忆往事"),
+            ("aur_check_status", "Check AUR status", "查询 AUR 状态"),
+            ("online_man_search", "Search online manuals", "搜索在线手册"),
+            ("online_man_get_page", "Read online manual", "读取在线手册"),
+            (
+                "fcitx5_input_method_wiki_qurey",
+                "Query Fcitx5 Wiki",
+                "查询 Fcitx5 Wiki",
+            ),
+            ("install_aur_package", "Install AUR package", "安装 AUR 包"),
+            (
+                "search_knowledge_base_by_name",
+                "Search knowledge base by name",
+                "按名称搜索知识库",
+            ),
+            ("recall_memories", "Recall memories", "召回记忆"),
+        ] {
+            assert_eq!(readable_tool_name(name), t(english, chinese), "{name}");
+        }
         assert_eq!(readable_tool_name("custom_skill"), "custom_skill");
     }
 
@@ -4691,8 +4765,12 @@ mod tests {
         renderer.reasoning_title = Some("分析摘要协议".to_string());
         let expected = crate::token_estimate::estimate_tokens("one\ntwo\nthree");
         let summary = renderer.reasoning_summary_text();
-        assert!(summary.starts_with("思考：分析摘要协议 · "));
-        assert!(summary.contains(&format!("{expected} 词元")));
+        let title_separator = t(": ", "：");
+        assert!(summary.starts_with(&format!(
+            "{}{title_separator}分析摘要协议 · ",
+            t("thinking", "思考")
+        )));
+        assert!(summary.contains(&format!("{expected} {}", t("tokens", "词元"))));
         assert!(!summary.contains("字符"));
         assert!(!summary.contains(" 行"));
     }
@@ -4713,8 +4791,8 @@ mod tests {
 
         let expected = crate::token_estimate::estimate_tokens(&renderer.reasoning_text);
         let live = renderer.waiting_phase_text();
-        assert!(live.starts_with("思考 · "));
-        assert!(live.contains(&format!("{expected} 词元")));
+        assert!(live.starts_with(&format!("{} · ", t("thinking", "思考"))));
+        assert!(live.contains(&format!("{expected} {}", t("tokens", "词元"))));
     }
 
     #[test]
@@ -4801,9 +4879,14 @@ mod tests {
             Some(std::time::Instant::now() - std::time::Duration::from_millis(11_700));
 
         let expected = crate::token_estimate::estimate_tokens(&renderer.reasoning_text);
+        let title_separator = t(": ", "：");
         assert_eq!(
             renderer.reasoning_live_text(),
-            format!("思考：The user is asking \"你确定\" · {expected} 词元 · 11.7s")
+            format!(
+                "{}{title_separator}The user is asking \"你确定\" · {expected} {} · 11.7s",
+                t("thinking", "思考"),
+                t("tokens", "词元")
+            )
         );
     }
 

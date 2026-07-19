@@ -1,6 +1,7 @@
 use crate::config::{AppConfig, ProviderConfig, MAX_COMMAND_OUTPUT_LINES};
 use crate::default_kb;
 use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
+use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -62,20 +63,39 @@ fn run_main_menu(
         let active = active_label(config);
         let multimodal = active_multimodal_label(config);
         let options = [
-            format!("配置文本模型 (当前: {active})"),
-            format!("配置多模态模型 (当前: {multimodal})"),
-            "供应商和模型".to_string(),
-            "插件配置".to_string(),
-            "自定义提示词".to_string(),
-            "全局参数设置".to_string(),
-            "保存并退出".to_string(),
+            format!(
+                "{} ({}: {active})",
+                t("Configure text model", "配置文本模型"),
+                t("Current", "当前")
+            ),
+            format!(
+                "{} ({}: {multimodal})",
+                t("Configure multimodal model", "配置多模态模型"),
+                t("Current", "当前")
+            ),
+            t("Providers and models", "供应商和模型").to_string(),
+            t("Plugins", "插件配置").to_string(),
+            t("Custom prompts", "自定义提示词").to_string(),
+            t("Global settings", "全局参数设置").to_string(),
+            t("Save and exit", "保存并退出").to_string(),
         ];
         let status = default_kb::status(paths)
             .ok()
             .filter(|status| status.has_update_notice)
-            .map(|_| "默认知识库需要更新，运行 miyu update-default-kb")
+            .map(|_| {
+                t(
+                    "The default knowledge base needs an update; run miyu update-default-kb",
+                    "默认知识库需要更新，运行 miyu update-default-kb",
+                )
+            })
             .unwrap_or("");
-        draw_menu(stdout, " MIYU CONFIG ", &options, selected, status)?;
+        draw_menu(
+            stdout,
+            t(" MIYU CONFIG ", " MIYU 配置 "),
+            &options,
+            selected,
+            status,
+        )?;
 
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
@@ -122,18 +142,26 @@ fn draw_plugin_menu(stdout: &mut io::Stdout, config: &AppConfig, selected: usize
     let x = 2;
     let y = 1;
     queue!(stdout, Clear(ClearType::All))?;
-    draw_box(stdout, x, y, width, height, " PLUGINS ")?;
+    draw_box(stdout, x, y, width, height, t(" PLUGINS ", " 插件 "))?;
     queue!(
         stdout,
         MoveTo(x + 2, y + 1),
-        Print("[Space]启用/禁用 [Enter]配置 [j/k]移动 [q]返回")
+        Print(t(
+            "[Space]enable/disable [Enter]configure [j/k]move [q]back",
+            "[Space]启用/禁用 [Enter]配置 [j/k]移动 [q]返回",
+        ))
     )?;
     queue!(
         stdout,
         MoveTo(x + 2, y + 3),
         SetAttribute(Attribute::Bold),
         Print(pad(
-            &plugin_row("状态", "插件", "说明", width.saturating_sub(4) as usize),
+            &plugin_row(
+                t("Status", "状态"),
+                t("Plugin", "插件"),
+                t("Description", "说明"),
+                width.saturating_sub(4) as usize,
+            ),
             width.saturating_sub(4) as usize,
         )),
         SetAttribute(Attribute::Reset)
@@ -148,9 +176,9 @@ fn draw_plugin_menu(stdout: &mut io::Stdout, config: &AppConfig, selected: usize
         }
         let (_, name, description) = plugins[index];
         let state = if plugin_enabled(config, index) {
-            "[ON]"
+            t("[ON]", "[开]")
         } else {
-            "[OFF]"
+            t("[OFF]", "[关]")
         };
         let line = plugin_row(state, name, description, width.saturating_sub(4) as usize);
         queue!(stdout, MoveTo(x + 2, y + row as u16 + 4))?;
@@ -177,22 +205,91 @@ fn plugin_row(state: &str, name: &str, description: &str, width: usize) -> Strin
 
 fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
     [
-        ("web", "网络搜索", "搜索 API 与脚本 fallback"),
-        ("deep_research", "深度研究", "长任务研究并输出 Markdown"),
-        ("vision", "识图", "图片理解和终端预览"),
-        ("image_generation", "生图", "文本生成图片"),
-        ("web_images", "搜图", "网络图片搜索、下载与审核"),
-        ("print_image", "打印图片", "终端图片打印尺寸"),
-        ("memes", "表情包", "人格表情库与发送尺寸"),
-        ("knowledge_base", "知识库", "本地文件检索与语义索引"),
-        ("archlinux", "Arch Linux", "AUR 状态与 ArchWiki 查询"),
-        ("man", "在线手册", "在线 man 手册搜索与读取"),
-        ("memory", "记忆", "长期记忆与联想"),
-        ("package_advisor", "AUR 审查", "PKGBUILD/AUR 安全审查"),
+        (
+            "web",
+            t("Web search", "网络搜索"),
+            t(
+                "Search APIs with script fallback",
+                "搜索 API 与脚本 fallback",
+            ),
+        ),
+        (
+            "deep_research",
+            t("Deep research", "深度研究"),
+            t(
+                "Run long research tasks and output Markdown",
+                "长任务研究并输出 Markdown",
+            ),
+        ),
+        (
+            "vision",
+            t("Vision", "识图"),
+            t(
+                "Image understanding and terminal preview",
+                "图片理解和终端预览",
+            ),
+        ),
+        (
+            "image_generation",
+            t("Image generation", "生图"),
+            t("Generate images from text", "文本生成图片"),
+        ),
+        (
+            "web_images",
+            t("Image search", "搜图"),
+            t(
+                "Search, download, and review web images",
+                "网络图片搜索、下载与审核",
+            ),
+        ),
+        (
+            "print_image",
+            t("Print image", "打印图片"),
+            t("Terminal image print size", "终端图片打印尺寸"),
+        ),
+        (
+            "memes",
+            t("Memes", "表情包"),
+            t("Persona meme library and send size", "人格表情库与发送尺寸"),
+        ),
+        (
+            "knowledge_base",
+            t("Knowledge base", "知识库"),
+            t(
+                "Local file search and semantic index",
+                "本地文件检索与语义索引",
+            ),
+        ),
+        (
+            "archlinux",
+            "Arch Linux",
+            t("AUR status and ArchWiki lookup", "AUR 状态与 ArchWiki 查询"),
+        ),
+        (
+            "man",
+            t("Online manuals", "在线手册"),
+            t(
+                "Search and read online man pages",
+                "在线 man 手册搜索与读取",
+            ),
+        ),
+        (
+            "memory",
+            t("Memory", "记忆"),
+            t("Long-term memory and association", "长期记忆与联想"),
+        ),
+        (
+            "package_advisor",
+            t("AUR review", "AUR 审查"),
+            t("PKGBUILD/AUR security review", "PKGBUILD/AUR 安全审查"),
+        ),
         (
             "deep_research_linux_game_compatibility",
-            "Linux 游戏兼容",
-            "Proton/反作弊/兼容性查询",
+            t("Linux game compatibility", "Linux 游戏兼容"),
+            t(
+                "Proton/anti-cheat/compatibility lookup",
+                "Proton/反作弊/兼容性查询",
+            ),
         ),
     ]
 }
@@ -247,7 +344,7 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
 }
 
 fn edit_plugin_detail(stdout: &mut io::Stdout, config: &mut AppConfig, index: usize) -> Result<()> {
-    let title = format!(" PLUGIN: {} ", plugin_names()[index].1);
+    let title = format!(" {}: {} ", t("PLUGIN", "插件"), plugin_names()[index].1);
     let mut fields = plugin_fields(config, index);
     if !run_form(stdout, &title, &mut fields)? {
         return Ok(());
@@ -258,8 +355,11 @@ fn edit_plugin_detail(stdout: &mut io::Stdout, config: &mut AppConfig, index: us
 fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
     match index {
         0 => vec![
-            Field::boolean("启用", config.plugins.web.enabled),
-            Field::new("每次返回数量", config.plugins.web.max_results.to_string()),
+            Field::boolean(t("Enabled", "启用"), config.plugins.web.enabled),
+            Field::new(
+                t("Results per request", "每次返回数量"),
+                config.plugins.web.max_results.to_string(),
+            ),
             Field::textarea(
                 "Tavily API Keys",
                 config.plugins.web.tavily_api_keys.join("\n"),
@@ -278,15 +378,18 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             Field::new("SearXNG URL", config.plugins.web.searxng_base_url.clone()),
         ],
         1 => vec![
-            Field::boolean("启用", config.plugins.deep_research.enabled),
-            Field::new("输出目录", config.plugins.deep_research.output_dir.clone()),
+            Field::boolean(t("Enabled", "启用"), config.plugins.deep_research.enabled),
             Field::new(
-                "思考深度",
+                t("Output directory", "输出目录"),
+                config.plugins.deep_research.output_dir.clone(),
+            ),
+            Field::new(
+                t("Thinking depth", "思考深度"),
                 config.plugins.deep_research.thinking_depth.clone(),
             )
             .choices(&["minimal", "low", "medium", "high", "xhigh"]),
             Field::new(
-                "最大审视修正次数",
+                t("Maximum review revisions", "最大审视修正次数"),
                 config
                     .plugins
                     .deep_research
@@ -294,7 +397,7 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "每轮工具步数",
+                t("Tool steps per round", "每轮工具步数"),
                 config
                     .plugins
                     .deep_research
@@ -302,7 +405,7 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "最终字数上限",
+                t("Final answer character limit", "最终字数上限"),
                 config
                     .plugins
                     .deep_research
@@ -310,28 +413,37 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "工具超时秒数",
+                t("Tool timeout (seconds)", "工具超时秒数"),
                 config
                     .plugins
                     .deep_research
                     .tool_call_timeout_seconds
                     .to_string(),
             ),
-            Field::boolean("显示过程进度", config.plugins.deep_research.show_progress),
+            Field::boolean(
+                t("Show progress", "显示过程进度"),
+                config.plugins.deep_research.show_progress,
+            ),
         ],
         2 => vec![
-            Field::boolean("启用", config.plugins.vision.enabled),
+            Field::boolean(t("Enabled", "启用"), config.plugins.vision.enabled),
             Field::boolean(
-                "优先当前多模态模型",
+                t("Prefer current multimodal model", "优先当前多模态模型"),
                 config.plugins.vision.prefer_current_multimodal_model,
             ),
-            Field::new("识图 Provider/模型", vision_provider_value(config))
-                .choices_owned(provider_model_choice_values(config, true)),
+            Field::new(
+                t("Vision provider/model", "识图 Provider/模型"),
+                vision_provider_value(config),
+            )
+            .choices_owned(provider_model_choice_values(config, true)),
         ],
         3 => vec![
-            Field::boolean("启用", config.plugins.image_generation.enabled),
+            Field::boolean(
+                t("Enabled", "启用"),
+                config.plugins.image_generation.enabled,
+            ),
             Field::new(
-                "生图 API 类型",
+                t("Image API type", "生图 API 类型"),
                 config.plugins.image_generation.provider_type.clone(),
             )
             .choices(&["openai", "rightcode"]),
@@ -341,101 +453,128 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                 config.plugins.image_generation.api_keys.join("\n"),
             )
             .sensitive(),
-            Field::new("模型", config.plugins.image_generation.model.clone()),
             Field::new(
-                "默认宽高比",
+                t("Model", "模型"),
+                config.plugins.image_generation.model.clone(),
+            ),
+            Field::new(
+                t("Default aspect ratio", "默认宽高比"),
                 config.plugins.image_generation.default_aspect_ratio.clone(),
             )
             .choices(&[
                 "自动", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
             ]),
             Field::new(
-                "默认分辨率",
+                t("Default resolution", "默认分辨率"),
                 config.plugins.image_generation.default_resolution.clone(),
             )
             .choices(&["1K", "2K", "4K"]),
             Field::new(
-                "输出目录",
+                t("Output directory", "输出目录"),
                 config.plugins.image_generation.output_dir.clone(),
             ),
-            Field::boolean("完成后打印", config.plugins.image_generation.auto_print),
+            Field::boolean(
+                t("Print when complete", "完成后打印"),
+                config.plugins.image_generation.auto_print,
+            ),
             Field::new(
-                "超时秒数",
+                t("Timeout (seconds)", "超时秒数"),
                 config.plugins.image_generation.timeout_seconds.to_string(),
             ),
         ],
         4 => vec![
-            Field::boolean("启用", config.plugins.web_images.enabled),
+            Field::boolean(t("Enabled", "启用"), config.plugins.web_images.enabled),
             Field::new(
-                "搜索来源模式",
+                t("Search source mode", "搜索来源模式"),
                 config.plugins.web_images.source_mode.clone(),
             )
             .choices(&["auto", "global", "mainland"]),
             Field::boolean(
-                "视觉模型审核",
+                t("Vision model review", "视觉模型审核"),
                 config.plugins.web_images.vision_screening_enabled,
             ),
             Field::new(
-                "数量上限",
+                t("Maximum results", "数量上限"),
                 config.plugins.web_images.max_results.to_string(),
             ),
-            Field::boolean("安全搜索", config.plugins.web_images.safe_search),
-            Field::boolean("自动预览", config.plugins.web_images.auto_preview),
+            Field::boolean(
+                t("Safe search", "安全搜索"),
+                config.plugins.web_images.safe_search,
+            ),
+            Field::boolean(
+                t("Automatic preview", "自动预览"),
+                config.plugins.web_images.auto_preview,
+            ),
             Field::new(
-                "默认预览数量",
+                t("Default preview count", "默认预览数量"),
                 config.plugins.web_images.preview_count.to_string(),
             ),
             Field::new(
-                "最大下载 MB",
+                t("Maximum download (MB)", "最大下载 MB"),
                 config.plugins.web_images.max_download_mb.to_string(),
             ),
             Field::new(
-                "超时秒数",
+                t("Timeout (seconds)", "超时秒数"),
                 config.plugins.web_images.timeout_seconds.to_string(),
             ),
         ],
         5 => vec![
-            Field::boolean("启用", config.plugins.print_image.enabled),
+            Field::boolean(t("Enabled", "启用"), config.plugins.print_image.enabled),
             Field::new(
-                "打印宽度百分比",
+                t("Print width percent", "打印宽度百分比"),
                 config.plugins.print_image.width_percent.to_string(),
             ),
             Field::new(
-                "打印高度百分比",
+                t("Print height percent", "打印高度百分比"),
                 config.plugins.print_image.height_percent.to_string(),
             ),
         ],
         6 => vec![
-            Field::boolean("启用", config.plugins.memes.enabled),
+            Field::boolean(t("Enabled", "启用"), config.plugins.memes.enabled),
             Field::new(
-                "发送宽度百分比",
+                t("Send width percent", "发送宽度百分比"),
                 config.plugins.memes.width_percent.to_string(),
             ),
             Field::new(
-                "发送高度百分比",
+                t("Send height percent", "发送高度百分比"),
                 config.plugins.memes.height_percent.to_string(),
             ),
-            Field::new("最大图片 MB", config.plugins.memes.max_image_mb.to_string()),
             Field::new(
-                "搜索最大结果数",
+                t("Maximum image size (MB)", "最大图片 MB"),
+                config.plugins.memes.max_image_mb.to_string(),
+            ),
+            Field::new(
+                t("Maximum search results", "搜索最大结果数"),
                 config.plugins.memes.search_max_results.to_string(),
             ),
-            Field::boolean("允许 GIF 动画", config.plugins.memes.allow_gif_animation),
-            Field::boolean("自动提示发送表情", config.plugins.memes.auto_send_enabled),
+            Field::boolean(
+                t("Allow animated GIFs", "允许 GIF 动画"),
+                config.plugins.memes.allow_gif_animation,
+            ),
+            Field::boolean(
+                t("Suggest memes automatically", "自动提示发送表情"),
+                config.plugins.memes.auto_send_enabled,
+            ),
             Field::new(
-                "自动提示发送表情概率",
+                t(
+                    "Automatic meme suggestion probability",
+                    "自动提示发送表情概率",
+                ),
                 config.plugins.memes.auto_send_probability.to_string(),
             ),
         ],
         7 => vec![
-            Field::boolean("启用", config.plugins.knowledge_base.enabled),
-            Field::new("知识库目录", config.plugins.knowledge_base.data_dir.clone()),
+            Field::boolean(t("Enabled", "启用"), config.plugins.knowledge_base.enabled),
             Field::new(
-                "搜索最大结果数",
+                t("Knowledge base directory", "知识库目录"),
+                config.plugins.knowledge_base.data_dir.clone(),
+            ),
+            Field::new(
+                t("Maximum search results", "搜索最大结果数"),
                 config.plugins.knowledge_base.max_search_results.to_string(),
             ),
             Field::new(
-                "片段上下文字数",
+                t("Snippet context characters", "片段上下文字数"),
                 config
                     .plugins
                     .knowledge_base
@@ -443,7 +582,7 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "同窗匹配范围",
+                t("Proximity window characters", "同窗匹配范围"),
                 config
                     .plugins
                     .knowledge_base
@@ -451,29 +590,29 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "读取最大行数",
+                t("Maximum lines to read", "读取最大行数"),
                 config.plugins.knowledge_base.max_read_lines.to_string(),
             ),
             Field::new(
-                "最大文件 KB",
+                t("Maximum file size (KB)", "最大文件 KB"),
                 config.plugins.knowledge_base.max_file_size_kb.to_string(),
             ),
             Field::boolean(
-                "允许 AI 上传",
+                t("Allow AI uploads", "允许 AI 上传"),
                 config.plugins.knowledge_base.upload_tool_enabled,
             ),
             Field::boolean(
-                "启用 Embedding",
+                t("Enable embedding", "启用 Embedding"),
                 config.plugins.knowledge_base.embedding_enabled,
             ),
             Field::new(
-                "Embedding Provider/模型",
+                t("Embedding provider/model", "Embedding Provider/模型"),
                 kb_embedding_provider_value(config),
             )
             .choices_owned(provider_model_choice_values(config, false))
-            .empty_choice_label("未配置 Embedding"),
+            .empty_choice_label(t("Embedding not configured", "未配置 Embedding")),
             Field::new(
-                "语义块大小",
+                t("Semantic chunk size", "语义块大小"),
                 config
                     .plugins
                     .knowledge_base
@@ -481,7 +620,7 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "语义块重叠",
+                t("Semantic chunk overlap", "语义块重叠"),
                 config
                     .plugins
                     .knowledge_base
@@ -489,15 +628,15 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "语义候选数",
+                t("Semantic candidates", "语义候选数"),
                 config.plugins.knowledge_base.semantic_top_k.to_string(),
             ),
             Field::new(
-                "语义最低分",
+                t("Minimum semantic score", "语义最低分"),
                 config.plugins.knowledge_base.semantic_min_score.to_string(),
             ),
             Field::new(
-                "关键词强命中阈值",
+                t("Strong keyword match threshold", "关键词强命中阈值"),
                 config
                     .plugins
                     .knowledge_base
@@ -505,7 +644,7 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
             Field::new(
-                "Embedding 超时秒数",
+                t("Embedding timeout (seconds)", "Embedding 超时秒数"),
                 config
                     .plugins
                     .knowledge_base
@@ -513,57 +652,75 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
         ],
-        8 => vec![Field::boolean("启用", config.plugins.archlinux.enabled)],
-        9 => vec![Field::boolean("启用", config.plugins.man.enabled)],
+        8 => vec![Field::boolean(
+            t("Enabled", "启用"),
+            config.plugins.archlinux.enabled,
+        )],
+        9 => vec![Field::boolean(
+            t("Enabled", "启用"),
+            config.plugins.man.enabled,
+        )],
         10 => vec![
-            Field::boolean("启用", config.plugins.memory.enabled),
+            Field::boolean(t("Enabled", "启用"), config.plugins.memory.enabled),
             Field::boolean(
-                "上下文弹出缓存",
+                t("Evicted context cache", "上下文弹出缓存"),
                 config.plugins.memory.evicted_context_enabled,
             ),
-            Field::boolean("联想启用", config.plugins.memory.association_enabled),
-            Field::boolean("自动日记", config.plugins.memory.auto_diary_enabled),
-            Field::boolean("自动知识记忆", config.plugins.memory.auto_fact_enabled),
+            Field::boolean(
+                t("Enable association", "联想启用"),
+                config.plugins.memory.association_enabled,
+            ),
+            Field::boolean(
+                t("Automatic diary", "自动日记"),
+                config.plugins.memory.auto_diary_enabled,
+            ),
+            Field::boolean(
+                t("Automatic fact memory", "自动知识记忆"),
+                config.plugins.memory.auto_fact_enabled,
+            ),
             Field::new(
-                "联想知识条数",
+                t("Associated facts", "联想知识条数"),
                 config.plugins.memory.association_facts.to_string(),
             ),
             Field::new(
-                "联想事件条数",
+                t("Associated events", "联想事件条数"),
                 config.plugins.memory.association_episodes.to_string(),
             ),
             Field::new(
-                "联想字符上限",
+                t("Association character limit", "联想字符上限"),
                 config.plugins.memory.association_max_chars.to_string(),
             ),
-            Field::boolean("遗忘启用", config.plugins.memory.forgetting_enabled),
+            Field::boolean(
+                t("Enable forgetting", "遗忘启用"),
+                config.plugins.memory.forgetting_enabled,
+            ),
             Field::new(
-                "遗忘半衰期天",
+                t("Forgetting half-life (days)", "遗忘半衰期天"),
                 config.plugins.memory.forgetting_half_life_days.to_string(),
             ),
             Field::new(
-                "遗忘最低强度",
+                t("Minimum forgetting strength", "遗忘最低强度"),
                 config.plugins.memory.forgetting_min_strength.to_string(),
             ),
             Field::new(
-                "回忆增强强度",
+                t("Recall boost strength", "回忆增强强度"),
                 config.plugins.memory.forgetting_review_boost.to_string(),
             ),
         ],
         11 => vec![Field::boolean(
-            "启用",
+            t("Enabled", "启用"),
             config.plugins.package_advisor.enabled,
         )],
         12 => vec![
             Field::boolean(
-                "启用",
+                t("Enabled", "启用"),
                 config
                     .plugins
                     .deep_research_linux_game_compatibility
                     .enabled,
             ),
             Field::new(
-                "子代理最大工具次数",
+                t("Maximum subagent tool steps", "子代理最大工具次数"),
                 config
                     .plugins
                     .deep_research_linux_game_compatibility
@@ -571,7 +728,10 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .to_string(),
             ),
         ],
-        _ => vec![Field::boolean("启用", plugin_enabled(config, index))],
+        _ => vec![Field::boolean(
+            t("Enabled", "启用"),
+            plugin_enabled(config, index),
+        )],
     }
 }
 
@@ -624,7 +784,13 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
             config.plugins.web_images.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.web_images.source_mode = match fields[1].value.trim() {
                 "auto" | "global" | "mainland" => fields[1].value.trim().to_string(),
-                other => anyhow::bail!("未知搜图来源模式: {other}"),
+                other => {
+                    if is_zh() {
+                        anyhow::bail!("未知搜图来源模式: {other}")
+                    } else {
+                        anyhow::bail!("Unknown image search source mode: {other}")
+                    }
+                }
             };
             config.plugins.web_images.vision_screening_enabled =
                 parse_bool_field(&fields[2].value)?;
@@ -743,13 +909,20 @@ fn edit_custom_prompts(
         } else {
             persona_display_name(&config.prompt.active_persona).to_string()
         };
-        let options = [format!("AI 人格 (当前: {persona})"), "用户身份".to_string()];
+        let options = [
+            format!(
+                "{} ({}: {persona})",
+                t("AI persona", "AI 人格"),
+                t("Current", "当前")
+            ),
+            t("User identity", "用户身份").to_string(),
+        ];
         draw_menu(
             stdout,
-            " CUSTOM PROMPTS ",
+            t(" CUSTOM PROMPTS ", " 自定义提示词 "),
             &options,
             selected,
-            "[Enter]选择 [q]返回",
+            t("[Enter]select [q]back", "[Enter]选择 [q]返回"),
         )?;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
@@ -785,10 +958,13 @@ fn edit_personas(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppCon
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
             stdout,
-            " AI 人格 ",
+            t(" AI PERSONA ", " AI 人格 "),
             &options,
             selected,
-            "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
+            t(
+                "[Tab]activate [Enter]edit [a]add [d]delete [j/k]move [q]back",
+                "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
+            ),
         )?;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
@@ -841,7 +1017,7 @@ fn new_persona(
 ) -> Result<Option<String>> {
     edit_prompt_file_form(
         stdout,
-        " NEW PERSONA ",
+        t(" NEW PERSONA ", " 新建人格 "),
         None,
         String::new(),
         |name, content| write_persona(paths, config, name, content),
@@ -857,7 +1033,7 @@ fn edit_persona(
     let content = read_persona(paths, config, current_name)?;
     edit_prompt_file_form(
         stdout,
-        " EDIT PERSONA ",
+        t(" EDIT PERSONA ", " 编辑人格 "),
         Some(current_name),
         content,
         |name, content| {
@@ -939,7 +1115,10 @@ fn edit_identities(
         } else {
             "  "
         };
-        options.push(format!("{default_marker}不使用用户身份"));
+        options.push(format!(
+            "{default_marker}{}",
+            t("Do not use a user identity", "不使用用户身份")
+        ));
         options.extend(identities.iter().map(|name| {
             let display = persona_display_name(name);
             if *name == config.prompt.active_identity {
@@ -951,10 +1130,13 @@ fn edit_identities(
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
             stdout,
-            " 用户身份 ",
+            t(" USER IDENTITY ", " 用户身份 "),
             &options,
             selected,
-            "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
+            t(
+                "[Tab]activate [Enter]edit [a]add [d]delete [j/k]move [q]back",
+                "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
+            ),
         )?;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
@@ -1005,7 +1187,7 @@ fn new_identity(
 ) -> Result<Option<String>> {
     edit_prompt_file_form(
         stdout,
-        " NEW IDENTITY ",
+        t(" NEW IDENTITY ", " 新建用户身份 "),
         None,
         String::new(),
         |name, content| write_identity(paths, config, name, content),
@@ -1021,7 +1203,7 @@ fn edit_identity(
     let content = read_identity(paths, config, current_name)?;
     edit_prompt_file_form(
         stdout,
-        " EDIT IDENTITY ",
+        t(" EDIT IDENTITY ", " 编辑用户身份 "),
         Some(current_name),
         content,
         |name, content| {
@@ -1070,13 +1252,13 @@ where
 {
     let mut fields = vec![
         Field::new(
-            "名称",
+            t("Name", "名称"),
             current_name
                 .map(persona_display_name)
                 .unwrap_or("")
                 .to_string(),
         ),
-        Field::textarea("内容", content),
+        Field::textarea(t("Content", "内容"), content),
     ];
     if !run_form(stdout, title, &mut fields)? {
         return Ok(None);
@@ -1132,7 +1314,7 @@ fn sanitize_persona_name(value: &str) -> Result<String> {
         .trim_end_matches(".md")
         .replace(['/', '\\'], "-");
     if name.is_empty() {
-        bail!("persona name cannot be empty");
+        bail!("{}", t("Persona name cannot be empty", "人格名称不能为空"));
     }
     name.push_str(".md");
     Ok(name)
@@ -1329,7 +1511,7 @@ impl<'a> ProviderBrowser<'a> {
             let (tx, rx) = mpsc::channel();
             self.fetch_rx = Some(rx);
             self.loading = true;
-            self.status = "正在获取模型列表...".to_string();
+            self.status = t("Fetching model list...", "正在获取模型列表...").to_string();
             std::thread::spawn(move || {
                 let result = fetch_models(&provider).map_err(|err| err.to_string());
                 let _ = tx.send((seq, result));
@@ -1359,11 +1541,20 @@ impl<'a> ProviderBrowser<'a> {
         self.fetch_rx = None;
         match result {
             Ok(models) => {
-                self.status = format!("已获取 {} 个模型", models.len());
+                self.status = if is_zh() {
+                    format!("已获取 {} 个模型", models.len())
+                } else {
+                    format!("Fetched {} models", models.len())
+                };
                 self.raw_models = models;
             }
             Err(err) => {
-                self.status = format_status_line(&format!("获取模型失败: {err}"));
+                let status = if is_zh() {
+                    format!("获取模型失败: {err}")
+                } else {
+                    format!("Failed to fetch models: {err}")
+                };
+                self.status = format_status_line(&status);
                 self.raw_models.clear();
             }
         }
@@ -1459,7 +1650,11 @@ impl<'a> ProviderBrowser<'a> {
                     if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
                         if edit_model_form(stdout, provider, &model.full)? {
                             self.config.active_provider = provider.id.clone();
-                            self.status = format!("已更新模型设置: {}", model.full);
+                            self.status = if is_zh() {
+                                format!("已更新模型设置: {}", model.full)
+                            } else {
+                                format!("Updated model settings: {}", model.full)
+                            };
                         }
                     }
                 }
@@ -1485,7 +1680,11 @@ impl<'a> ProviderBrowser<'a> {
                 if provider.default_model == model {
                     provider.default_model = provider.models.first().cloned().unwrap_or_default();
                 }
-                self.status = format!("已取消激活模型: {model}");
+                self.status = if is_zh() {
+                    format!("已取消激活模型: {model}")
+                } else {
+                    format!("Deactivated model: {model}")
+                };
                 removed = Some((provider_id, model));
             } else {
                 provider.models.push(model.full.clone());
@@ -1493,7 +1692,11 @@ impl<'a> ProviderBrowser<'a> {
                 if provider.default_model.trim().is_empty() {
                     provider.default_model = model.full.clone();
                 }
-                self.status = format!("已激活模型: {}", model.full);
+                self.status = if is_zh() {
+                    format!("已激活模型: {}", model.full)
+                } else {
+                    format!("Activated model: {}", model.full)
+                };
             }
         }
         if let Some((provider_id, model)) = removed {
@@ -1541,6 +1744,17 @@ impl<'a> ProviderBrowser<'a> {
                 format!("{} {}", if active { "[*]" } else { "[ ]" }, model.name)
             })
             .collect::<Vec<_>>();
+        let orgs = self
+            .orgs
+            .iter()
+            .map(|org| {
+                if org == "All" {
+                    t("All", "全部").to_string()
+                } else {
+                    org.clone()
+                }
+            })
+            .collect::<Vec<_>>();
 
         queue!(stdout, Clear(ClearType::All))?;
         draw_column(
@@ -1549,7 +1763,7 @@ impl<'a> ProviderBrowser<'a> {
             inner_y,
             left_w,
             inner_h,
-            " PROVIDERS ",
+            t(" PROVIDERS ", " 供应商 "),
             &providers,
             self.provider_idx,
             self.provider_scroll,
@@ -1561,14 +1775,16 @@ impl<'a> ProviderBrowser<'a> {
             inner_y,
             mid_w,
             inner_h,
-            " ORG ",
-            &self.orgs,
+            t(" ORGANIZATION ", " 组织 "),
+            &orgs,
             self.org_idx,
             self.org_scroll,
             self.active_col == 1,
         )?;
         let title = if self.filter.is_empty() {
-            " MODELS ".to_string()
+            t(" MODELS ", " 模型 ").to_string()
+        } else if is_zh() {
+            format!(" 模型 /{} ", self.filter)
         } else {
             format!(" MODELS /{} ", self.filter)
         };
@@ -1585,10 +1801,17 @@ impl<'a> ProviderBrowser<'a> {
             self.active_col == 2,
         )?;
         let help = if self.filter_mode {
-            format!("搜索: {}_  [Enter]确认 [Esc]取消", self.filter)
+            if is_zh() {
+                format!("搜索: {}_  [Enter]确认 [Esc]取消", self.filter)
+            } else {
+                format!("Search: {}_  [Enter]confirm [Esc]cancel", self.filter)
+            }
         } else {
-            "[h/l]切栏 [j/k]移动 [Tab]激活模型 [Enter]模型设置 [/]搜索 [r]刷新 [a]添加 [d]删除 [q]返回"
-                .to_string()
+            t(
+                "[h/l]column [j/k]move [Tab]activate model [Enter]model settings [/]search [r]refresh [a]add [d]delete [q]back",
+                "[h/l]切栏 [j/k]移动 [Tab]激活模型 [Enter]模型设置 [/]搜索 [r]刷新 [a]添加 [d]删除 [q]返回",
+            )
+            .to_string()
         };
         let status = if self.loading {
             format!("{}", self.status)
@@ -1709,7 +1932,10 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
     if choices.is_empty() {
         message(
             stdout,
-            "没有已勾选的文本模型，请先在供应商和模型里用 Tab 激活模型。",
+            t(
+                "No text models are selected. Activate one with Tab under Providers and models first.",
+                "没有已勾选的文本模型，请先在供应商和模型里用 Tab 激活模型。",
+            ),
         )?;
         return Ok(());
     }
@@ -1732,10 +1958,13 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
             .collect::<Vec<_>>();
         draw_menu(
             stdout,
-            " SELECT TEXT MODEL ",
+            t(" SELECT TEXT MODEL ", " 选择文本模型 "),
             &options,
             selected,
-            "[Tab]激活/取消 [Enter/q]确认 [d]移除",
+            t(
+                "[Tab]activate/deactivate [Enter/q]confirm [d]remove",
+                "[Tab]激活/取消 [Enter/q]确认 [d]移除",
+            ),
         )?;
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
@@ -1751,7 +1980,13 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
                 config.remove_active_provider_model(&choice.provider_id, &choice.model)?;
                 choices = config.text_provider_model_choices();
                 if choices.is_empty() {
-                    message(stdout, "已移除激活模型，当前没有可用模型。")?;
+                    message(
+                        stdout,
+                        t(
+                            "The active model was removed; no models are currently available.",
+                            "已移除激活模型，当前没有可用模型。",
+                        ),
+                    )?;
                     return Ok(());
                 }
                 selected = selected.min(choices.len().saturating_sub(1));
@@ -1779,33 +2014,45 @@ fn edit_provider_form(
         .unwrap_or_default();
 
     let mut fields = vec![
-        Field::new("配置 ID", provider.id.clone()),
-        Field::new("显示名称", provider.display_name.clone()),
+        Field::new(t("Configuration ID", "配置 ID"), provider.id.clone()),
+        Field::new(t("Display name", "显示名称"), provider.display_name.clone()),
         Field::new("Base URL", provider.base_url.clone()),
-        Field::new("协议", provider.protocol.clone()).choices(&[
+        Field::new(t("Protocol", "协议"), provider.protocol.clone()).choices(&[
             "auto",
             "openai-chat",
             "openai-responses",
             "anthropic",
         ]),
         Field::new(
-            "API Key 或 $env:NAME",
+            t("API Key or $env:NAME", "API Key 或 $env:NAME"),
             provider.api_key.clone().unwrap_or_default(),
         )
         .sensitive(),
-        Field::new("当前模型", provider.default_model.clone()),
         Field::new(
-            "模型上下文窗口 (tokens, 0=自动)",
+            t("Current model", "当前模型"),
+            provider.default_model.clone(),
+        ),
+        Field::new(
+            t(
+                "Model context window (tokens, 0=auto)",
+                "模型上下文窗口 (tokens, 0=自动)",
+            ),
             current_context_window.to_string(),
         ),
-        Field::new("超时秒数", provider.timeout_seconds.to_string()),
+        Field::new(
+            t("Timeout (seconds)", "超时秒数"),
+            provider.timeout_seconds.to_string(),
+        ),
         Field::new("Temperature", provider.temperature.to_string()),
-        Field::textarea("额外请求体 (JSON)", extra_body_string),
+        Field::textarea(
+            t("Extra request body (JSON)", "额外请求体 (JSON)"),
+            extra_body_string,
+        ),
     ];
 
     // 循环直到用户取消或输入合法 JSON 对象
     loop {
-        if !run_form(stdout, " EDIT PROVIDER ", &mut fields)? {
+        if !run_form(stdout, t(" EDIT PROVIDER ", " 编辑供应商 "), &mut fields)? {
             return Ok(None);
         }
 
@@ -1867,8 +2114,16 @@ fn parse_extra_body(
     }
     match serde_json::from_str::<serde_json::Value>(value) {
         Ok(serde_json::Value::Object(object)) => Ok(Some(object)),
-        Ok(_) => Err("额外请求体必须是 JSON 对象 (如 {\"key\": \"value\"})".to_string()),
-        Err(error) => Err(format!("无效 JSON: {error}")),
+        Ok(_) => Err(t(
+            "The extra request body must be a JSON object (for example {\"key\": \"value\"})",
+            "额外请求体必须是 JSON 对象 (如 {\"key\": \"value\"})",
+        )
+        .to_string()),
+        Err(error) => Err(if is_zh() {
+            format!("无效 JSON: {error}")
+        } else {
+            format!("Invalid JSON: {error}")
+        }),
     }
 }
 
@@ -1883,14 +2138,20 @@ fn edit_model_form(
         .copied()
         .unwrap_or_default();
     let mut fields = vec![
-        Field::modalities("支持输入", modality_field_value(provider, model)),
+        Field::modalities(
+            t("Supported input", "支持输入"),
+            modality_field_value(provider, model),
+        ),
         Field::new(
-            "模型上下文窗口 (tokens, 0=自动)",
+            t(
+                "Model context window (tokens, 0=auto)",
+                "模型上下文窗口 (tokens, 0=自动)",
+            ),
             context_window.to_string(),
         ),
         Field::new("Temperature", provider.temperature.to_string()),
     ];
-    if !run_form(stdout, " EDIT MODEL ", &mut fields)? {
+    if !run_form(stdout, t(" EDIT MODEL ", " 编辑模型 "), &mut fields)? {
         return Ok(false);
     }
     provider
@@ -1911,67 +2172,117 @@ fn edit_model_form(
 }
 
 fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+    let language = language_choice_value(&config.display.language).unwrap_or("auto");
     let mut fields = vec![
-        Field::boolean("工具启用", config.tools.enabled),
-        Field::new("工具最大轮数", config.tools.max_rounds.to_string()),
-        Field::new("工具加载模式", config.tools.loading_mode.clone()).choices(&["full", "hybrid"]),
-        Field::boolean("记住已加载工具", config.tools.persist_loaded_tools),
-        Field::boolean("Skills 启用", config.skills.enabled),
-        Field::boolean("允许执行命令", config.skills.allow_command_execution),
-        Field::new("显示思考过程", config.display.reasoning.clone())
-            .choices(&["summary", "full", "hidden"]),
-        Field::new("显示工具调用信息", config.display.tool_calls.clone())
-            .choices(&["summary", "full", "hidden"]),
+        Field::boolean(t("Enable tools", "工具启用"), config.tools.enabled),
         Field::new(
-            "命令输出显示行数",
+            t("Maximum tool rounds", "工具最大轮数"),
+            config.tools.max_rounds.to_string(),
+        ),
+        Field::new(
+            t("Tool loading mode", "工具加载模式"),
+            config.tools.loading_mode.clone(),
+        )
+        .choices(&["full", "hybrid"]),
+        Field::boolean(
+            t("Remember loaded tools", "记住已加载工具"),
+            config.tools.persist_loaded_tools,
+        ),
+        Field::boolean(t("Enable skills", "Skills 启用"), config.skills.enabled),
+        Field::boolean(
+            t("Allow command execution", "允许执行命令"),
+            config.skills.allow_command_execution,
+        ),
+        Field::new(t("Interface language", "界面语言"), language.to_string())
+            .choices(&["auto", "en", "zh"]),
+        Field::new(
+            t("Show reasoning", "显示思考过程"),
+            config.display.reasoning.clone(),
+        )
+        .choices(&["summary", "full", "hidden"]),
+        Field::new(
+            t("Show tool call details", "显示工具调用信息"),
+            config.display.tool_calls.clone(),
+        )
+        .choices(&["summary", "full", "hidden"]),
+        Field::new(
+            t("Command output lines", "命令输出显示行数"),
             config.display.command_output_lines.to_string(),
         ),
-        Field::boolean("工具名可读显示", config.display.readable_tool_names),
         Field::boolean(
-            "Shell 无缝对话显示 Token 计数",
+            t("Readable tool names", "工具名可读显示"),
+            config.display.readable_tool_names,
+        ),
+        Field::boolean(
+            t(
+                "Show token usage in shell conversations",
+                "Shell 无缝对话显示 Token 计数",
+            ),
             config.display.show_token_usage,
         ),
         Field::new(
-            "Mixed 时显示本次供应商/模型",
-            mixed_endpoint_display_label(&config.display.mixed_model_endpoint_display),
+            t(
+                "Show current provider/model in Mixed mode",
+                "Mixed 时显示本次供应商/模型",
+            ),
+            parse_mixed_endpoint_display(&config.display.mixed_model_endpoint_display),
         )
-        .choices(&["关", "仅交互模式", "全部模式"]),
-        Field::new("上下文到达上限后", config.context.on_overflow.clone())
-            .choices(&["pop", "compact"]),
+        .choices(&["off", "interactive", "all"]),
+        Field::new(
+            t("When context reaches its limit", "上下文到达上限后"),
+            config.context.on_overflow.clone(),
+        )
+        .choices(&["pop", "compact"]),
     ];
-    run_form_without_buttons(stdout, " GLOBAL SETTINGS ", &mut fields)?;
+    run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
     config.tools.enabled = parse_bool_field(&fields[0].value)?;
     config.tools.max_rounds = fields[1].value.trim().parse::<usize>()?;
     config.tools.loading_mode = normalize_tools_loading_mode(&fields[2].value);
     config.tools.persist_loaded_tools = parse_bool_field(&fields[3].value)?;
     config.skills.enabled = parse_bool_field(&fields[4].value)?;
     config.skills.allow_command_execution = parse_bool_field(&fields[5].value)?;
-    config.display.reasoning = fields[6].value.trim().to_string();
-    config.display.tool_calls = fields[7].value.trim().to_string();
-    config.display.command_output_lines = fields[8]
+    config.display.language = language_choice_value(&fields[6].value)
+        .unwrap_or("auto")
+        .to_string();
+    config.display.reasoning = fields[7].value.trim().to_string();
+    config.display.tool_calls = fields[8].value.trim().to_string();
+    config.display.command_output_lines = fields[9]
         .value
         .trim()
         .parse::<usize>()?
         .min(MAX_COMMAND_OUTPUT_LINES);
-    config.display.readable_tool_names = parse_bool_field(&fields[9].value)?;
-    config.display.show_token_usage = parse_bool_field(&fields[10].value)?;
-    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[11].value);
-    config.context.on_overflow = fields[12].value.trim().to_string();
+    config.display.readable_tool_names = parse_bool_field(&fields[10].value)?;
+    config.display.show_token_usage = parse_bool_field(&fields[11].value)?;
+    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[12].value);
+    config.context.on_overflow = fields[13].value.trim().to_string();
     Ok(())
 }
 
-fn mixed_endpoint_display_label(value: &str) -> String {
+fn language_choice_label(value: &str, zh: bool) -> Option<&'static str> {
+    match (value.trim(), zh) {
+        ("auto", false) => Some("Auto"),
+        ("auto", true) => Some("自动"),
+        ("en", false) => Some("English"),
+        ("en", true) => Some("英语"),
+        ("zh", false) => Some("Simplified Chinese"),
+        ("zh", true) => Some("简体中文"),
+        _ => None,
+    }
+}
+
+fn language_choice_value(value: &str) -> Option<&'static str> {
     match value.trim() {
-        "off" => "关".to_string(),
-        "all" => "全部模式".to_string(),
-        _ => "仅交互模式".to_string(),
+        "auto" | "Auto" | "自动" => Some("auto"),
+        "en" | "English" | "英语" => Some("en"),
+        "zh" | "Simplified Chinese" | "简体中文" => Some("zh"),
+        _ => None,
     }
 }
 
 fn parse_mixed_endpoint_display(value: &str) -> String {
     match value.trim() {
-        "关" | "off" => "off".to_string(),
-        "全部模式" | "all" => "all".to_string(),
+        "关" | "Off" | "off" => "off".to_string(),
+        "全部模式" | "All modes" | "all" => "all".to_string(),
         _ => "interactive".to_string(),
     }
 }
@@ -1987,7 +2298,13 @@ fn parse_bool_field(value: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "yes" | "y" | "1" | "on" | "启用" | "是" => Ok(true),
         "false" | "no" | "n" | "0" | "off" | "禁用" | "否" => Ok(false),
-        value => bail!("invalid boolean value: {value}"),
+        value => {
+            if is_zh() {
+                bail!("无效的布尔值: {value}")
+            } else {
+                bail!("Invalid boolean value: {value}")
+            }
+        }
     }
 }
 
@@ -2221,7 +2538,10 @@ fn run_form_without_buttons(
 
 fn select_bool(stdout: &mut io::Stdout, label: &str, current: bool) -> Result<bool> {
     let mut selected = if current { 0 } else { 1 };
-    let options = ["true".to_string(), "false".to_string()];
+    let options = [
+        boolean_label(true).to_string(),
+        boolean_label(false).to_string(),
+    ];
     loop {
         draw_menu(stdout, label, &options, selected, "")?;
         match read_key()? {
@@ -2273,14 +2593,23 @@ fn select_multi_choice(
         let options = choices
             .iter()
             .zip(&active)
-            .map(|(choice, active)| format!("{} {}", if *active { "[*]" } else { "[ ]" }, choice))
+            .map(|(choice, active)| {
+                format!(
+                    "{} {}",
+                    if *active { "[*]" } else { "[ ]" },
+                    choice_label(choice, "")
+                )
+            })
             .collect::<Vec<_>>();
         draw_menu(
             stdout,
             label,
             &options,
             selected,
-            "[Tab]选择/取消 [Enter/q]确认",
+            t(
+                "[Tab]select/deselect [Enter/q]confirm",
+                "[Tab]选择/取消 [Enter/q]确认",
+            ),
         )?;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
@@ -2304,8 +2633,71 @@ fn choice_label(choice: &str, empty_label: &str) -> String {
         empty_label.to_string()
     } else if let Some((provider, model)) = choice.split_once('\t') {
         format!("{provider} / {model}")
+    } else if let Some(label) = localized_choice_label(choice, is_zh()) {
+        label.to_string()
     } else {
         choice.to_string()
+    }
+}
+
+fn boolean_label(value: bool) -> &'static str {
+    if value {
+        t("Enabled", "启用")
+    } else {
+        t("Disabled", "禁用")
+    }
+}
+
+fn localized_choice_label(value: &str, zh: bool) -> Option<&'static str> {
+    if let Some(label) = language_choice_label(value, zh) {
+        return Some(label);
+    }
+    match (value.trim(), zh) {
+        ("minimal", false) => Some("Minimal"),
+        ("minimal", true) => Some("最低"),
+        ("low", false) => Some("Low"),
+        ("low", true) => Some("低"),
+        ("medium", false) => Some("Medium"),
+        ("medium", true) => Some("中"),
+        ("high", false) => Some("High"),
+        ("high", true) => Some("高"),
+        ("xhigh", false) => Some("Extra high"),
+        ("xhigh", true) => Some("极高"),
+        ("global", false) => Some("Global"),
+        ("global", true) => Some("全球"),
+        ("mainland", false) => Some("Mainland China"),
+        ("mainland", true) => Some("中国大陆"),
+        ("summary", false) => Some("Summary"),
+        ("summary", true) => Some("摘要"),
+        ("full", false) => Some("Full"),
+        ("full", true) => Some("完整"),
+        ("hidden", false) => Some("Hidden"),
+        ("hidden", true) => Some("隐藏"),
+        ("hybrid", false) => Some("Hybrid"),
+        ("hybrid", true) => Some("混合"),
+        ("off", false) => Some("Off"),
+        ("off", true) => Some("关"),
+        ("interactive", false) => Some("Interactive only"),
+        ("interactive", true) => Some("仅交互模式"),
+        ("all", false) => Some("All modes"),
+        ("all", true) => Some("全部模式"),
+        ("pop", false) => Some("Remove oldest"),
+        ("pop", true) => Some("弹出旧消息"),
+        ("compact", false) => Some("Compact context"),
+        ("compact", true) => Some("压缩上下文"),
+        ("text", false) => Some("Text"),
+        ("text", true) => Some("文本"),
+        ("image", false) => Some("Image"),
+        ("image", true) => Some("图片"),
+        ("audio", false) => Some("Audio"),
+        ("audio", true) => Some("音频"),
+        ("video", false) => Some("Video"),
+        ("video", true) => Some("视频"),
+        ("pdf", false) => Some("PDF"),
+        ("pdf", true) => Some("PDF"),
+        ("自动", false) => Some("Auto"),
+        ("自动", true) => Some("自动"),
+        _ => None,
     }
 }
 
@@ -2335,7 +2727,7 @@ fn active_multimodal_label(config: &AppConfig) -> String {
     } else if choices.len() == 1 {
         choices[0].label()
     } else {
-        "Mixed".to_string()
+        t("Mixed", "混合").to_string()
     }
 }
 
@@ -2367,7 +2759,10 @@ fn select_active_multimodal_provider(
     if choices.is_empty() {
         message(
             stdout,
-            "没有已标记为多模态的模型，请先在 EDIT MODEL 里配置支持输入。",
+            t(
+                "No models are marked as multimodal. Configure Supported input under Edit model first.",
+                "没有已标记为多模态的模型，请先在编辑模型里配置支持输入。",
+            ),
         )?;
         return Ok(());
     }
@@ -2393,10 +2788,13 @@ fn select_active_multimodal_provider(
             .collect::<Vec<_>>();
         draw_menu(
             stdout,
-            " SELECT MULTIMODAL MODEL ",
+            t(" SELECT MULTIMODAL MODEL ", " 选择多模态模型 "),
             &options,
             selected,
-            "[Tab]激活/取消 [Enter/q]确认",
+            t(
+                "[Tab]activate/deactivate [Enter/q]confirm",
+                "[Tab]激活/取消 [Enter/q]确认",
+            ),
         )?;
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
@@ -2470,7 +2868,11 @@ fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
         .status()
         .or_else(|_| Command::new("nano").arg(&path).status());
     if let Err(err) = status {
-        eprintln!("failed to open editor: {err}");
+        if is_zh() {
+            eprintln!("无法打开编辑器: {err}");
+        } else {
+            eprintln!("Failed to open editor: {err}");
+        }
     }
     *value = std::fs::read_to_string(&path)?.trim().to_string();
     terminal::enable_raw_mode()?;
@@ -2532,7 +2934,10 @@ fn draw_menu(
 
 fn menu_help(status: &str) -> &str {
     if status.is_empty() {
-        "[j/k]移动 [Enter]选择 [q]返回"
+        t(
+            "[j/k]move [Enter]select [q]back",
+            "[j/k]移动 [Enter]选择 [q]返回",
+        )
     } else {
         status
     }
@@ -2670,9 +3075,15 @@ fn draw_form(
         stdout,
         MoveTo(x + 2, y + 1),
         Print(if show_buttons {
-            "[j/k]移动 [Enter]编辑/打开编辑器 [s]确认 [q]返回"
+            t(
+                "[j/k]move [Enter]edit/open editor [s]confirm [q]back",
+                "[j/k]移动 [Enter]编辑/打开编辑器 [s]确认 [q]返回",
+            )
         } else {
-            "[j/k]移动 [Enter]编辑/打开编辑器 [q]返回"
+            t(
+                "[j/k]move [Enter]edit/open editor [q]back",
+                "[j/k]移动 [Enter]编辑/打开编辑器 [q]返回",
+            )
         })
     )?;
     let mut cursor = None;
@@ -2711,24 +3122,33 @@ fn draw_form(
             stdout,
             x + 2,
             button_y,
-            " 保存 ",
+            t(" Save ", " 保存 "),
             selected == fields.len() && !editing,
         )?;
         draw_form_button(
             stdout,
             x + 14,
             button_y,
-            " 返回 ",
+            t(" Back ", " 返回 "),
             selected == fields.len() + 1 && !editing,
         )?;
     }
 
     let mode = if editing {
-        "编辑中，Enter/Esc 结束编辑"
+        t(
+            "Editing; Enter/Esc finishes editing",
+            "编辑中，Enter/Esc 结束编辑",
+        )
     } else if show_buttons {
-        "导航中，Enter 选择当前项"
+        t(
+            "Navigating; Enter selects the current item",
+            "导航中，Enter 选择当前项",
+        )
     } else {
-        "导航中，Enter 选择当前项，[q]返回"
+        t(
+            "Navigating; Enter selects the current item; [q]back",
+            "导航中，Enter 选择当前项，[q]返回",
+        )
     };
     queue!(
         stdout,
@@ -2746,10 +3166,14 @@ fn draw_form(
 
 fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
     if field.textarea && field.value.is_empty() {
-        "(Enter 打开 $EDITOR)".to_string()
+        t("(Enter opens $EDITOR)", "(Enter 打开 $EDITOR)").to_string()
     } else if field.sensitive && !field.value.is_empty() && !reveal_sensitive {
         if field.textarea {
-            format!("[已配置 {} 项]", parse_key_list(&field.value).len())
+            if is_zh() {
+                format!("[已配置 {} 项]", parse_key_list(&field.value).len())
+            } else {
+                format!("[{} configured]", parse_key_list(&field.value).len())
+            }
         } else {
             "********".to_string()
         }
@@ -2757,6 +3181,17 @@ fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
         field.empty_choice_label.to_string()
     } else if !field.choices.is_empty() {
         choice_label(&field.value, field.empty_choice_label)
+    } else if field.boolean {
+        match parse_bool_field(&field.value) {
+            Ok(value) => boolean_label(value).to_string(),
+            Err(_) => field.value.clone(),
+        }
+    } else if field.modalities {
+        parse_modalities(&field.value)
+            .iter()
+            .map(|value| choice_label(value, ""))
+            .collect::<Vec<_>>()
+            .join(", ")
     } else {
         truncate(&field.value.replace('\n', " "), 70)
     }
@@ -2824,7 +3259,7 @@ fn message(stdout: &mut io::Stdout, text: &str) -> Result<()> {
         MoveTo(0, 0),
         Print(text),
         MoveTo(0, 2),
-        Print("按任意键继续")
+        Print(t("Press any key to continue", "按任意键继续"))
     )?;
     stdout.flush()?;
     let _ = read_key()?;
@@ -2850,9 +3285,9 @@ fn read_key_with_timeout(timeout: Option<Duration>) -> Result<Option<KeyCode>> {
 
 fn active_label(config: &AppConfig) -> String {
     match config.active_provider_model_choices().as_slice() {
-        [] => "未配置".to_string(),
+        [] => t("Not configured", "未配置").to_string(),
         [choice] => format!("{} / {}", choice.provider_name, choice.model),
-        _ => "Mixed".to_string(),
+        _ => t("Mixed", "混合").to_string(),
     }
 }
 
@@ -2932,7 +3367,7 @@ impl Field {
             boolean: false,
             modalities: false,
             choices: Vec::new(),
-            empty_choice_label: "使用当前 Provider",
+            empty_choice_label: t("Use current provider", "使用当前 Provider"),
         }
     }
 
@@ -2945,7 +3380,7 @@ impl Field {
             boolean: true,
             modalities: false,
             choices: Vec::new(),
-            empty_choice_label: "使用当前 Provider",
+            empty_choice_label: t("Use current provider", "使用当前 Provider"),
         }
     }
 
@@ -2958,7 +3393,7 @@ impl Field {
             boolean: false,
             modalities: false,
             choices: Vec::new(),
-            empty_choice_label: "使用当前 Provider",
+            empty_choice_label: t("Use current provider", "使用当前 Provider"),
         }
     }
 
@@ -2981,7 +3416,7 @@ impl Field {
             boolean: false,
             modalities: true,
             choices: Vec::new(),
-            empty_choice_label: "使用当前 Provider",
+            empty_choice_label: t("Use current provider", "使用当前 Provider"),
         }
     }
 
@@ -2998,7 +3433,10 @@ impl Field {
 
 #[cfg(test)]
 mod tests {
-    use super::{field_display_value, parse_extra_body, Field};
+    use super::{
+        field_display_value, language_choice_label, language_choice_value, parse_extra_body, t,
+        Field,
+    };
 
     #[test]
     fn sensitive_field_is_masked_until_actively_edited() {
@@ -3019,14 +3457,47 @@ mod tests {
     fn sensitive_textarea_displays_configured_item_count() {
         let field = Field::textarea("API Keys", "first\n\nsecond, third".to_string()).sensitive();
 
-        assert_eq!(field_display_value(&field, false), "[已配置 3 项]");
+        assert_eq!(
+            field_display_value(&field, false),
+            t("[3 configured]", "[已配置 3 项]")
+        );
     }
 
     #[test]
     fn empty_sensitive_textarea_keeps_editor_placeholder() {
         let field = Field::textarea("API Keys", String::new()).sensitive();
 
-        assert_eq!(field_display_value(&field, false), "(Enter 打开 $EDITOR)");
+        assert_eq!(
+            field_display_value(&field, false),
+            t("(Enter opens $EDITOR)", "(Enter 打开 $EDITOR)")
+        );
+    }
+
+    #[test]
+    fn language_choices_have_locale_specific_labels() {
+        assert_eq!(language_choice_label("auto", false), Some("Auto"));
+        assert_eq!(language_choice_label("en", false), Some("English"));
+        assert_eq!(
+            language_choice_label("zh", false),
+            Some("Simplified Chinese")
+        );
+        assert_eq!(language_choice_label("auto", true), Some("自动"));
+        assert_eq!(language_choice_label("en", true), Some("英语"));
+        assert_eq!(language_choice_label("zh", true), Some("简体中文"));
+    }
+
+    #[test]
+    fn language_choice_labels_map_to_stable_values() {
+        for value in ["auto", "Auto", "自动"] {
+            assert_eq!(language_choice_value(value), Some("auto"));
+        }
+        for value in ["en", "English", "英语"] {
+            assert_eq!(language_choice_value(value), Some("en"));
+        }
+        for value in ["zh", "Simplified Chinese", "简体中文"] {
+            assert_eq!(language_choice_value(value), Some("zh"));
+        }
+        assert_eq!(language_choice_value("unsupported"), None);
     }
 
     #[test]

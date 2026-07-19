@@ -1,6 +1,6 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, PrintImagePluginConfig, ProviderConfig, VisionPluginConfig};
-use crate::i18n::text as t;
+use crate::i18n::agent_text as t;
 use crate::llm::{ChatMessage, OpenAiCompatibleClient};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};

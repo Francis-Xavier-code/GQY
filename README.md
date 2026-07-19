@@ -62,6 +62,16 @@ miyu config
   . "$HOME/.cargo/env"
   ```
 
+### 界面语言
+
+Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在 `miyu config` 的“全局设置 / Global Settings”中可将“界面语言 / Interface language”设为：
+
+- `auto`：默认值，跟随系统 locale
+- `en`：英文
+- `zh`：简体中文
+
+`MIYU_LANG=en` 或 `MIYU_LANG=zh` 可以临时覆盖配置。语言选择优先级为 `MIYU_LANG`、`display.language`、系统 locale；在配置 TUI 中保存后，下次启动 Miyu 时生效。
+
 ### 内置插件
 
 <details><summary>[展开/收起] 具体介绍</summary>

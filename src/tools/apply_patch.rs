@@ -1,5 +1,5 @@
 use super::{ToolProgress, ToolRegistry, ToolSpec};
-use crate::i18n::text as t;
+use crate::i18n::{agent_text, text as t};
 use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new_with_progress(
         "apply_patch",
-        t(
+        agent_text(
             "Apply a batch patch to files. Prefer this for complex edits and multiple changes in the same file.",
             "批量应用文件补丁。复杂编辑和同一文件多处修改优先使用。",
         ),
