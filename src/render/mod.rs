@@ -2604,6 +2604,8 @@ const CODE_FUNCTION_STYLE: &str = "\x1b[38;2;156;207;216m";
 const CODE_STRING_STYLE: &str = "\x1b[38;2;166;214;160m";
 const CODE_NUMBER_STYLE: &str = "\x1b[38;2;246;193;119m";
 const CODE_COMMENT_STYLE: &str = "\x1b[32m";
+const PATCH_DELETE_STYLE: &str = "\x1b[48;2;60;41;53m\x1b[38;5;210m";
+const PATCH_INSERT_STYLE: &str = "\x1b[48;2;32;52;67m\x1b[38;5;157m";
 
 fn render_url(url: &str) -> String {
     format!("{URL_STYLE}{url}{RESET}")
@@ -3205,11 +3207,11 @@ fn render_patch_diff(path: &str, diff: &str) -> String {
         let (line_no, sign, body, style) = if let Some(body) = raw_line.strip_prefix('-') {
             let line_no = old_line;
             old_line += 1;
-            (line_no, '-', body, "\x1b[48;5;52m\x1b[38;5;210m")
+            (line_no, '-', body, PATCH_DELETE_STYLE)
         } else if let Some(body) = raw_line.strip_prefix('+') {
             let line_no = new_line;
             new_line += 1;
-            (line_no, '+', body, "\x1b[48;5;22m\x1b[38;5;157m")
+            (line_no, '+', body, PATCH_INSERT_STYLE)
         } else if let Some(body) = raw_line.strip_prefix(' ') {
             let line_no = new_line;
             old_line += 1;
@@ -3968,6 +3970,17 @@ mod tests {
         assert!(visible.contains("[✔]"));
         assert!(visible.contains("[·]"));
         assert_eq!(visible.lines().filter(|line| line.contains('│')).count(), 3);
+    }
+
+    #[test]
+    fn patch_diff_uses_muted_change_backgrounds() {
+        let diff = "--- a/demo.txt\n+++ b/demo.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let output = render_patch_diff("demo.txt", diff);
+
+        assert!(output.contains("\x1b[48;2;60;41;53m"));
+        assert!(output.contains("\x1b[48;2;32;52;67m"));
+        assert!(!output.contains("\x1b[48;5;52m"));
+        assert!(!output.contains("\x1b[48;5;22m"));
     }
 
     #[test]
