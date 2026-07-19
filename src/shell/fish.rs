@@ -3,7 +3,23 @@ use crate::paths::MiyuPaths;
 use anyhow::Result;
 
 pub fn hook() -> &'static str {
-    r#"function __miyu_paste
+    r#"complete -c miyu -n __fish_use_subcommand -f -a ask -d '向助手发送一条消息'
+complete -c miyu -n __fish_use_subcommand -f -a init -d '创建默认配置和状态文件'
+complete -c miyu -n __fish_use_subcommand -f -a paths -d '显示应用配置、数据和缓存路径'
+complete -c miyu -n __fish_use_subcommand -f -a config -d '打开或管理配置'
+complete -c miyu -n __fish_use_subcommand -f -a models -d '列出或切换模型'
+complete -c miyu -n __fish_use_subcommand -f -a fish-init -d '集成到 fish，集成后可在终端直接使用自然语言交流。'
+complete -c miyu -n __fish_use_subcommand -f -a bash-init -d '集成到 bash，集成后可在终端直接使用自然语言交流。'
+complete -c miyu -n __fish_use_subcommand -f -a zsh-init -d '集成到 zsh，集成后可在终端直接使用自然语言交流。'
+complete -c miyu -n __fish_use_subcommand -f -a remove-shell-hook -d '安全删除已安装的 Miyu shell hook'
+complete -c miyu -n __fish_use_subcommand -f -a history -d '显示会话历史'
+complete -c miyu -n __fish_use_subcommand -f -a kb -d '管理本地知识库'
+complete -c miyu -n __fish_use_subcommand -f -a update-default-kb -d '更新 Miyu 默认知识库'
+complete -c miyu -n __fish_use_subcommand -f -a memory -d '查看或编辑助手记忆'
+complete -c miyu -n __fish_use_subcommand -f -a skills -d '管理助手 skills'
+complete -c miyu -n __fish_use_subcommand -f -a reset -d '清空当前会话历史'
+
+function __miyu_paste
     set -l output (miyu --clipboard-paste 2>/dev/null)
     if test $status -eq 0; and test -n "$output"
         if not set -q __miyu_image_counter
@@ -220,6 +236,49 @@ mod tests {
         assert!(hook.contains("fish_command_not_found"));
         assert!(hook.contains("--shell fish"));
         assert!(hook.contains("return 127"));
+    }
+
+    #[test]
+    fn fish_hook_defines_curated_top_level_completions() {
+        let hook = hook();
+        let expected = [
+            ("ask", "向助手发送一条消息"),
+            ("init", "创建默认配置和状态文件"),
+            ("paths", "显示应用配置、数据和缓存路径"),
+            ("config", "打开或管理配置"),
+            ("models", "列出或切换模型"),
+            (
+                "fish-init",
+                "集成到 fish，集成后可在终端直接使用自然语言交流。",
+            ),
+            (
+                "bash-init",
+                "集成到 bash，集成后可在终端直接使用自然语言交流。",
+            ),
+            (
+                "zsh-init",
+                "集成到 zsh，集成后可在终端直接使用自然语言交流。",
+            ),
+            ("remove-shell-hook", "安全删除已安装的 Miyu shell hook"),
+            ("history", "显示会话历史"),
+            ("kb", "管理本地知识库"),
+            ("update-default-kb", "更新 Miyu 默认知识库"),
+            ("memory", "查看或编辑助手记忆"),
+            ("skills", "管理助手 skills"),
+            ("reset", "清空当前会话历史"),
+        ];
+        let completion_lines = hook
+            .lines()
+            .filter(|line| line.starts_with("complete -c miyu "))
+            .collect::<Vec<_>>();
+
+        assert_eq!(completion_lines.len(), expected.len());
+        for (command, description) in expected {
+            let completion = format!(
+                "complete -c miyu -n __fish_use_subcommand -f -a {command} -d '{description}'"
+            );
+            assert!(completion_lines.contains(&completion.as_str()));
+        }
     }
 
     #[test]
