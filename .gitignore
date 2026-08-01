@@ -15,3 +15,7 @@
 
 # ZCode session artifacts
 /.zcode/
+
+# NapCat QQ 机器人（放 ~/napcat，不放进项目）
+/napcat/
+/qq-napcat/
