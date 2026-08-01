@@ -8362,12 +8362,20 @@ fn print_backup_outcome(outcome: &BackupOutcome) {
 fn run_tools(paths: &GqyPaths, args: ToolsArgs) -> Result<()> {
     match args.command.unwrap_or(ToolsCommand::List) {
         ToolsCommand::Import { source, name } => {
-            let installed = crate::tools::import::import_tools(paths, &source, name.as_deref())?;
-            println!("已导入 {} 个工具：{}", installed.len(), installed.join(", "));
+            let result = crate::tools::import::import_tools(paths, &source, name.as_deref())?;
+            println!("已导入 {} 个工具：{}", result.tools.len(), result.tools.join(", "));
             println!(
                 "工具已安装到 {}，下轮对话即可使用，长期有效。",
                 paths.config_dir.join("scripts").display()
             );
+            if !result.skills.is_empty() {
+                println!(
+                    "同时导入 {} 个技能（skills/）：{}（已装入 {}，对话里说「加载技能」即可使用）",
+                    result.skills.len(),
+                    result.skills.join(", "),
+                    paths.skills_dir.display()
+                );
+            }
             Ok(())
         }
         ToolsCommand::List => {
@@ -8537,6 +8545,10 @@ pub(crate) fn build_tool_registry(
     }
     if config.tools.enabled && interactive_questions {
         tools::register_ask_question(&mut registry);
+    }
+    // 注册用户/系统脚本工具（导入的工具包即时可用；对话循环内也会每轮重扫）
+    if config.tools.enabled && mode == AgentMode::Normal {
+        tools::rescan_scripts(&mut registry, paths);
     }
     tools::register_script_display_names(&registry);
     Ok(registry)
