@@ -1,26 +1,27 @@
 <p align="center">
-  <img src="pics/miyu-logo.png" alt="Miyu" width="180">
+  <img src="pics/GQY-icon.png" alt="Miyu" width="180">
 </p>
 
-# Miyu
+# GQY —— 顾清影
 
-一个活在终端里的二次元少女。
+一个活在 `MAC终端/菜单栏` 里的二次元少女。
 
->暂时
+macOS 独立主目录、菜单栏壳与私有 Git 记忆备份的当前用法见 [macOS、独立主目录与记忆备份](docs/macos-portable-home-and-backup.md)。
 
-## 谁是 Miyu？
 
-Miyu 是从我曾经很喜欢的动画中的角色[久遠寺未有](http://www.minatosoft.com/kimiaru/chara-miyu.html)身上汲取灵感制作的人物。
+## 谁是 GQY？
 
-![](./pics/miyuwallpaper.png)
+GQY 是从我的想法中诞生出来的人格，通过[shorin-miyu](https://github.com/SHORiN-KiWATA/Miyu)`FORK`过来的一个终端助理
+
+![](./pics/GQY-image.png)
 
 ## 有什么功能？
 
-`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。她并非专业的 Coding Agent，而是更偏向聊天日常、游戏娱乐、系统排障等日用场景。并且 `miyu` 还可以无缝与 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
+`GQY` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。她并非专业的 Coding Agent，而是更偏向聊天日常、游戏娱乐、系统排障等日用场景。并且 `GQY` 无缝与 `zsh`（mac） 集成，终端打字直接无缝对话！
 
 ![](./pics/shell-init.png)
 
-`miyu` 还自带了 TUI 方便修改配置。
+`GQY` 还自带了 TUI 方便修改配置。
 
 ```
 miyu config

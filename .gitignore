@@ -1,4 +1,6 @@
 /target/
+/.toolchain/
+/macos/GQYMenuBar/.build/
 /.idea/
 /.vscode/
 .DS_Store

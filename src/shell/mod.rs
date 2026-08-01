@@ -48,13 +48,35 @@ pub fn current_parent_shell() -> Option<String> {
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_name = stat.rsplit_once(") ")?.1;
-    after_name.split_whitespace().nth(1)?.parse().ok()
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        let after_name = stat.rsplit_once(") ")?.1;
+        return after_name.split_whitespace().nth(1)?.parse().ok();
+    }
+
+    ps_field(pid, "ppid")?.parse().ok()
 }
 
 fn process_name(pid: u32) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+    let name = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| ps_field(pid, "comm"))?;
+    std::path::Path::new(&name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+}
+
+fn ps_field(pid: u32, field: &str) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", &format!("{field}="), "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())

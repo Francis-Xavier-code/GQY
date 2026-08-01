@@ -1,7 +1,10 @@
 use crate::i18n::text as t;
 use anyhow::{Context, Result};
 use directories::{BaseDirs, UserDirs};
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+pub const GQY_HOME_ENV: &str = "GQY_HOME";
 
 #[derive(Debug, Clone)]
 pub struct MiyuPaths {
@@ -21,6 +24,10 @@ pub struct MiyuPaths {
 
 impl MiyuPaths {
     pub fn new() -> Result<Self> {
+        if let Some(home) = isolated_home_from_env()? {
+            return Ok(Self::from_isolated_home(home));
+        }
+
         let base = BaseDirs::new().context(t(
             "could not determine XDG base directories",
             "无法确定 XDG 基础目录",
@@ -59,6 +66,32 @@ impl MiyuPaths {
         })
     }
 
+    fn from_isolated_home(home: PathBuf) -> Self {
+        let config_dir = home.join("config");
+        let data_dir = home.join("data");
+        let cache_dir = home.join("cache");
+        let state_dir = home.join("state");
+
+        Self {
+            config_file: config_dir.join("config.jsonc"),
+            skills_dir: config_dir.join("skills"),
+            fish_hook_file: config_dir.join("shell/miyu.fish"),
+            bash_hook_file: config_dir.join("shell/bash-hook.sh"),
+            zsh_hook_file: config_dir.join("shell/zsh-hook.zsh"),
+            scripts_dir: config_dir.join("scripts"),
+            system_scripts_dir: PathBuf::from("/usr/share/miyu/scripts"),
+            pictures_dir: home.join("pictures"),
+            config_dir,
+            data_dir,
+            cache_dir,
+            state_dir,
+        }
+    }
+
+    pub fn isolated_home(&self) -> Result<Option<PathBuf>> {
+        isolated_home_from_env()
+    }
+
     pub fn create_dirs(&self) -> Result<()> {
         std::fs::create_dir_all(&self.config_dir)?;
         std::fs::create_dir_all(&self.skills_dir)?;
@@ -75,6 +108,9 @@ impl MiyuPaths {
     }
 
     pub fn print(&self) {
+        if let Ok(Some(home)) = self.isolated_home() {
+            println!("{}: {}", t("isolated home", "独立主目录"), home.display());
+        }
         println!(
             "{}: {}",
             t("config directory", "配置目录"),
@@ -140,5 +176,55 @@ impl MiyuPaths {
             t("system scripts directory", "系统 scripts 目录"),
             self.system_scripts_dir.display()
         );
+    }
+}
+
+fn isolated_home_from_env() -> Result<Option<PathBuf>> {
+    let Some(raw) = std::env::var_os(GQY_HOME_ENV) else {
+        return Ok(None);
+    };
+    validate_isolated_home(raw).map(Some)
+}
+
+fn validate_isolated_home(raw: OsString) -> Result<PathBuf> {
+    let home = PathBuf::from(raw);
+    if home.as_os_str().is_empty() {
+        anyhow::bail!("{GQY_HOME_ENV} must not be empty");
+    }
+    if !home.is_absolute() {
+        anyhow::bail!("{GQY_HOME_ENV} must be an absolute path");
+    }
+    Ok(home)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isolated_layout_stays_under_one_home() {
+        let home = PathBuf::from("/tmp/gqy-test-home");
+        let paths = MiyuPaths::from_isolated_home(home.clone());
+
+        for path in [
+            &paths.config_dir,
+            &paths.data_dir,
+            &paths.cache_dir,
+            &paths.state_dir,
+            &paths.pictures_dir,
+            &paths.zsh_hook_file,
+        ] {
+            assert!(
+                path.starts_with(&home),
+                "{} escaped the home",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_home_must_be_absolute() {
+        let error = validate_isolated_home(OsString::from("relative/home")).unwrap_err();
+        assert!(error.to_string().contains("absolute"));
     }
 }
