@@ -1056,11 +1056,18 @@ pub struct ToolsArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ToolsCommand {
+    /// 先理解再导入：列出仓库候选脚本与头部摘要，不导入
+    Inspect {
+        source: String,
+    },
     /// 导入工具包：本地目录或 Git 仓库 URL（自动扫描或按清单）
     Import {
         source: String,
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// 只导入指定候选（逗号分隔，配合 inspect 使用；如 --only download.sh,install.sh）
+        #[arg(long, value_name = "IDS")]
+        only: Option<String>,
     },
     /// 列出已导入的用户工具包
     List,
@@ -8361,8 +8368,30 @@ fn print_backup_outcome(outcome: &BackupOutcome) {
 
 fn run_tools(paths: &GqyPaths, args: ToolsArgs) -> Result<()> {
     match args.command.unwrap_or(ToolsCommand::List) {
-        ToolsCommand::Import { source, name } => {
-            let result = crate::tools::import::import_tools(paths, &source, name.as_deref())?;
+        ToolsCommand::Inspect { source } => {
+            let candidates = crate::tools::import::inspect_source(&source)?;
+            if candidates.is_empty() {
+                println!("{} 里没有找到可执行脚本（可能有清单，直接 import 即可）", source);
+                return Ok(());
+            }
+            println!("{} 的候选脚本（{} 个）：", source, candidates.len());
+            println!();
+            for (path, header) in &candidates {
+                println!("  {path}");
+                if !header.is_empty() {
+                    println!("      {header}");
+                }
+            }
+            println!();
+            println!("判断核心功能后导入：gqy tools import {} --only <候选名,…>", source);
+            Ok(())
+        }
+        ToolsCommand::Import { source, name, only } => {
+            let only_list = only
+                .as_deref()
+                .map(|value| value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>());
+            let result =
+                crate::tools::import::import_tools(paths, &source, name.as_deref(), only_list.as_deref())?;
             println!("已导入 {} 个工具：{}", result.tools.len(), result.tools.join(", "));
             println!(
                 "工具已安装到 {}，下轮对话即可使用，长期有效。",
