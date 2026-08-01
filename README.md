@@ -238,6 +238,12 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 - **Q：卸载 GQY 会删掉我的记忆吗？**
   A：不会。`brew uninstall --cask gqy` / `brew uninstall gqy` 只移除程序和自启项；GQY_HOME（对话、记忆、知识库、备份仓库）是用户数据，卸载不会触碰。想彻底清除请手动删除 `~/Library/Application Support/gqy`。
 
+- **Q：同时装了 CLI 和菜单栏 App，终端里 `gqy` 命令找不到？**
+  A：Homebrew 检测到同名 cask 已安装时会跳过公式的 bin 链接。手动补一条链接即可（升级重装后如失效再执行一次）：
+  ```
+  brew link gqy --overwrite
+  ```
+
 - **Q：GQY 和 Miyu 是什么关系？**
   A：GQY 是从 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) fork 出来的，Miyu 的代码是 MIT 授权，本项目新增部分按 GPL-3.0 授权。
 
