@@ -126,6 +126,10 @@ pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
     let mut command = Command::new("chafa");
     if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
         command.args(["--probe", "off", "--relative", "off"]);
+    } else {
+        // 非交互模式（zsh hook / 管道）：stdout 不是 tty，chafa 自动探测
+        // 会降级成黑白；显式强制 256 色，让 ANSI 转义码原样透传。
+        command.args(["--colors", "256", "--probe", "off"]);
     }
     if let Some(size) = size {
         command.arg("--size").arg(size);
