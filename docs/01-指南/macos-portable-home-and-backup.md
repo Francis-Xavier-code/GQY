@@ -18,7 +18,7 @@ GQY_HOME/
 建议在 macOS 上固定使用：
 
 ```zsh
-export GQY_HOME="$HOME/Library/Application Support/GQY"
+export GQY_HOME="$HOME/Library/Application Support/gqy"
 ```
 
 `GQY_HOME` 必须是绝对路径。未设置时程序仍兼容上游原有的系统目录布局，但 Git 备份会拒绝启动，因为分散布局无法保证备份边界。
@@ -28,13 +28,13 @@ export GQY_HOME="$HOME/Library/Application Support/GQY"
 构建后可直接进入 REPL：
 
 ```zsh
-GQY_HOME="$HOME/Library/Application Support/GQY" ./target/release/gqy
+GQY_HOME="$HOME/Library/Application Support/gqy" ./target/release/gqy
 ```
 
 安装 zsh 自然语言 hook：
 
 ```zsh
-GQY_HOME="$HOME/Library/Application Support/GQY" ./target/release/gqy zsh-init
+GQY_HOME="$HOME/Library/Application Support/gqy" ./target/release/gqy zsh-init
 ```
 
 hook 本体位于 `GQY_HOME/config/shell/`。安装动作只会在宿主机 `~/.zshrc` 中加入一个带边界标记的 `source` 块，`gqy remove-shell-hook` 可以移除它。
@@ -94,7 +94,7 @@ gqy backup now
 在另一台机器上从远程恢复（还原人格、记忆、对话状态和图片）：
 
 ```zsh
-export GQY_HOME="$HOME/Library/Application Support/GQY"
+export GQY_HOME="$HOME/Library/Application Support/gqy"
 gqy backup restore \
   --remote git@github.com:YOUR_NAME/gqy-memory.git \
   --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519"

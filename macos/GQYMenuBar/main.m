@@ -67,7 +67,7 @@
     }
     return [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                  inDomains:NSUserDomainMask].firstObject
-        URLByAppendingPathComponent:@"GQY"
+        URLByAppendingPathComponent:@"gqy"
                         isDirectory:YES];
 }
 

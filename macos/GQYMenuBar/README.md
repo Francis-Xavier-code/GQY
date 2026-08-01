@@ -11,7 +11,7 @@ zsh macos/GQYMenuBar/build.sh
 开发运行：
 
 ```zsh
-export GQY_HOME="$HOME/Library/Application Support/GQY"
+export GQY_HOME="$HOME/Library/Application Support/gqy"
 open "macos/GQYMenuBar/.build/顾清影.app"
 ```
 
