@@ -4419,7 +4419,6 @@
     const params = new URLSearchParams(location.search);
     if (params.get("mini") === "1") {
       document.body.dataset.mini = "1";
-      // 迷你模式下优先显示最近内容，输入框聚焦
       window.requestAnimationFrame(() => {
         scrollToBottom();
         elements.composerInput?.focus();
@@ -4436,6 +4435,7 @@
       });
     }
   }
+
 
   async function resetConversation() {
     if (conversationRunning() || state.adminBusy || state.submitting) return;
