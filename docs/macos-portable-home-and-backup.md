@@ -89,4 +89,8 @@ miyu backup now
 - `config.jsonc` 会递归清除 API key、token、password、secret、credential、authorization 等字段后再进入快照。
 - `.env*`、私钥/证书、缓存、日志和 Git 凭据不会进入提交。
 
-当前备份覆盖人格、用户身份、skills、长期记忆、对话状态和图片资产。自动恢复、macOS 登录项和 Keychain 管理仍属于后续阶段；在实现恢复前，远端仓库已经是可检查的标准 Git 快照，不是私有二进制格式。
+当前备份覆盖人格、用户身份、skills、长期记忆、对话状态和图片资产。远程自动恢复和 Keychain 管理仍属于后续阶段；在实现恢复前，远端仓库已经是可检查的标准 Git 快照，不是私有二进制格式。
+
+## 开机自启
+
+菜单栏应用的“开机自启”菜单项会安装 `~/Library/LaunchAgents/dev.gqy.menubar.plist`，让顾清影在下次登录时自动启动；再次点击可移除。该 LaunchAgent 会为后端设置同一个 `GQY_HOME`。
