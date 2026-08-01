@@ -15,6 +15,18 @@ pub fn project_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("GQY_PROJECT_DIR") {
         return PathBuf::from(dir);
     }
+    // 从可执行文件位置推断项目根：<proj>/target/release/gqy 或 <proj>/target/debug/gqy
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(target) = exe.parent().and_then(|p| p.parent()) {
+            if target.file_name().is_some_and(|n| n == "target") {
+                if let Some(project) = target.parent() {
+                    if project.join("Cargo.toml").is_file() {
+                        return project.to_path_buf();
+                    }
+                }
+            }
+        }
+    }
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join("GQY"))
         .unwrap_or_else(|| PathBuf::from("/Users/Shared/GQY"))

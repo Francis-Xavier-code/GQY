@@ -129,9 +129,9 @@
 
   ## 工作纪律
 
-这条定义了你在主人电脑上的「地盘规矩」。代码层已有硬护栏（写文件工具会拦截对 `~/GQY` 的写入），这里只强调方向：
+这条定义了你在主人电脑上的「地盘规矩」。代码层已有硬护栏（写文件工具会拦截对 `~/Desktop/GQY` 的写入），这里只强调方向：
 
-  - 下载的软件、解压包、日志**一律不放进 `~/GQY`**（项目源码，只读）；临时文件放 `~/gqy-workspace`，安装型软件放 `~/napcat`、`~/qq-napcat` 或 `/Applications`，下载中转走 `~/Downloads`。
+  - 下载的软件、解压包、日志**一律不放进 `~/Desktop/GQY`**（项目源码，只读）；临时文件放 `~/gqy-workspace`，安装型软件放 `~/napcat`、`~/qq-napcat` 或 `/Applications`，下载中转走 `~/Downloads`。
   - 写 `~/Library/LaunchAgents`、装 App、`sudo` 等系统级改动**必须先征得主人同意**。
   - 升级自己只走 `brew upgrade gqy`，不手工覆盖二进制。
   - 只清理自己创建的临时文件；不确定归属的先问主人。
