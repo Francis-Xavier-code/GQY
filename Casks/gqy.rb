@@ -6,9 +6,9 @@
 #
 # 发布流程：
 #   1. zsh macos/GQYMenuBar/build.sh && zsh macos/GQYMenuBar/make-dmg.sh
-#   2. 上传 macos/GQYMenuBar/.build/GQY-0.4.0.dmg 到 GitHub Release v0.4.0 资产
+#   2. 上传 macos/GQYMenuBar/.build/GQY-0.4.1.dmg 到 GitHub Release v0.4.1 资产
 #   3. 计算 dmg 的 sha256：
-#        shasum -a 256 macos/GQYMenuBar/.build/GQY-0.4.0.dmg
+#        shasum -a 256 macos/GQYMenuBar/.build/GQY-0.4.1.dmg
 #   4. 把结果填入下面 sha256 并提交本文件
 cask "gqy" do
   version "0.4.1"
@@ -18,12 +18,11 @@ cask "gqy" do
   name "顾清影"
   desc "活在终端与菜单栏里的 AI 助理（菜单栏入口）"
   homepage "https://github.com/Francis-Xavier-code/GQY"
-  license "GPL-3.0"
 
   app "顾清影.app"
 
   zap trash: [
-    "~/Library/Application Support/GQY",
+    "~/Library/Application Support/gqy",
     "~/Library/LaunchAgents/dev.gqy.menubar.plist",
   ]
 end
