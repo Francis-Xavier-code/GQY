@@ -15,9 +15,18 @@ export GQY_HOME="$HOME/Library/Application Support/GQY"
 open "macos/GQYMenuBar/.build/顾清影.app"
 ```
 
-构建脚本会优先把 `target/release/gqy` 打进 `.app`，开发时则回退到 `target/debug/gqy`。也可以用 `GQY_BIN=/absolute/path/to/gqy` 显式指定后端。
+构建脚本会优先把 `target/release/gqy` 打进 `.app`，开发时则回退到 `target/debug/gqy`。也可以用 `GQY_BIN=/absolute/path/to/gqy` 显式指定后端。脚本会用 `GQY-icon.png` 生成 App 图标（`.icns`），版本号跟随 `Cargo.toml`；默认 ad-hoc 签名，设置 `CODESIGN_IDENTITY` 环境变量可用 Developer ID 正式签名。
 
 菜单栏提供终端对话、本地 Web 面板、立即备份、打开独立主目录和开机自启五个入口。
+
+## 打包 DMG
+
+```zsh
+zsh macos/GQYMenuBar/build.sh
+zsh macos/GQYMenuBar/make-dmg.sh
+```
+
+产物为 `macos/GQYMenuBar/.build/顾清影.dmg`，内含 `顾清影.app` 与 `Applications` 快捷方式，挂载后拖入 Applications 即可安装。
 
 ## 开机自启（登录项）
 

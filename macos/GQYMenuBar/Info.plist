@@ -8,6 +8,8 @@
     <string>顾清影</string>
     <key>CFBundleExecutable</key>
     <string>GQYMenuBar</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>dev.gqy.menubar</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -17,10 +19,18 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.3.0</string>
+    <key>CFBundleVersion</key>
+    <string>0.3.0</string>
+    <key>CFBundleCopyright</key>
+    <string>Copyright © 2026 GQY. MIT License.</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 GQY. MIT License.</string>
 </dict>
 </plist>
