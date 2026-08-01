@@ -22,8 +22,8 @@ class Gqy < Formula
   depends_on "chafa"
 
   def install
-    system "cargo", "build", "--release", "--locked"
-    bin.install "target/release/gqy"
+    system "cargo", "install", *std_cargo_args
+    bin.install Dir[libexec/"bin/*"]
   end
 
   test do
