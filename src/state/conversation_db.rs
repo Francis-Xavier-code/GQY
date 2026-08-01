@@ -276,6 +276,18 @@ impl ConversationDb {
     }
 
     #[allow(dead_code)]
+    /// 流式进度写入：终端对话进行中周期更新 assistant_content（不改变 status），
+    /// 供面板/迷你窗口轮询同步显示逐字回复。节流由调用方控制。
+    pub fn update_assistant_progress(&self, turn_id: &str, content: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2 WHERE turn_id = ?3",
+            params![content, now, turn_id],
+        )?;
+        Ok(())
+    }
+
     pub fn complete_turn(
         &self,
         turn_id: &str,

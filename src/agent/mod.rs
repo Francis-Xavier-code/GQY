@@ -1002,16 +1002,30 @@ impl Agent {
                 let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
                 spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 spinner_interval.tick().await;
+                // 流式进度同步：累积正文，每 ~1s 写入 db 供面板轮询显示
+                let mut progress_sync = tokio::time::interval(std::time::Duration::from_secs(1));
+                progress_sync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut progress_content = String::new();
                 loop {
                     tokio::select! {
                         result = &mut llm_future => {
                             break result?;
                         }
                         Some((chunk, received_at)) = chunk_rx.recv() => {
+                            if chunk.kind == ChatStreamKind::Content {
+                                progress_content.push_str(&chunk.text);
+                            }
                             emit_filtered_chunk_at(chunk, received_at, &mut reasoning_filter, on_event)?;
                         }
                         _ = spinner_interval.tick() => {
                             on_event(AgentEvent::SpinnerTick)?;
+                        }
+                        _ = progress_sync.tick() => {
+                            if !progress_content.is_empty() {
+                                let _ = self
+                                    .state
+                                    .update_assistant_progress(current_turn_id, &progress_content);
+                            }
                         }
                     }
                 }
