@@ -7438,7 +7438,7 @@ mod repl_input_tests {
 
         assert_eq!(
             strip_terminal_control_sequences(&output),
-            "\n┃\n┃ hello\n┃\n\n"
+            "\n❯\n❯ hello\n❯\n\n"
         );
     }
 
