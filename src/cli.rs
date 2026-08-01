@@ -731,6 +731,11 @@ fn localize_backup_command(mut command: clap::Command) -> clap::Command {
             "Restore state from the backup remote",
             "从备份远程恢复状态",
         ),
+        (
+            "remote",
+            "Attach or replace the backup remote",
+            "绑定或更换备份远程仓库",
+        ),
     ];
     for (name, en, zh) in descriptions {
         command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
@@ -938,12 +943,13 @@ pub enum BackupCommand {
     Now(BackupNowArgs),
     Status,
     Restore(BackupRestoreArgs),
+    Remote(BackupRemoteArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct BackupInitArgs {
     #[arg(long)]
-    pub remote: String,
+    pub remote: Option<String>,
     #[arg(long, default_value = "main")]
     pub branch: String,
     #[arg(long, default_value = "GQY Memory")]
@@ -975,7 +981,21 @@ pub struct BackupRestoreArgs {
     #[arg(long)]
     pub ssh_key: Option<PathBuf>,
     #[arg(long)]
+    pub no_auto_push: bool,
+    #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupRemoteArgs {
+    #[arg(value_name = "URL")]
+    pub url: String,
+    #[arg(long)]
+    pub ssh_key: Option<PathBuf>,
+    #[arg(long, conflicts_with = "no_auto_push")]
+    pub auto_push: bool,
+    #[arg(long)]
+    pub no_auto_push: bool,
 }
 
 #[derive(Debug, Args)]
@@ -8027,10 +8047,15 @@ fn run_memory(paths: &MiyuPaths, args: MemoryArgs) -> Result<()> {
 fn run_backup(paths: &MiyuPaths, args: BackupArgs) -> Result<()> {
     match args.command {
         BackupCommand::Init(args) => {
+            let remote = args
+                .remote
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let local_mode = remote.is_none();
             crate::backup::init(
                 paths,
                 BackupInitOptions {
-                    remote: args.remote,
+                    remote,
                     branch: args.branch,
                     git_name: args.name,
                     git_email: args.email,
@@ -8038,13 +8063,23 @@ fn run_backup(paths: &MiyuPaths, args: BackupArgs) -> Result<()> {
                     ssh_key: args.ssh_key,
                 },
             )?;
-            println!(
-                "{}",
-                t(
-                    "initialized isolated Git backup; run `miyu backup now` after remote authentication is ready",
-                    "已初始化独立 Git 备份；远程认证就绪后运行 `miyu backup now`"
-                )
-            );
+            if local_mode {
+                println!(
+                    "{}",
+                    t(
+                        "initialized local Git backup; attach a remote later with `miyu backup remote <url>`",
+                        "已初始化本地 Git 备份；之后可用 `miyu backup remote <url>` 绑定远程"
+                    )
+                );
+            } else {
+                println!(
+                    "{}",
+                    t(
+                        "initialized isolated Git backup; run `miyu backup now` after remote authentication is ready",
+                        "已初始化独立 Git 备份；远程认证就绪后运行 `miyu backup now`"
+                    )
+                );
+            }
         }
         BackupCommand::Now(args) => {
             let outcome = crate::backup::backup_now(paths, !args.no_push)?;
@@ -8060,6 +8095,7 @@ fn run_backup(paths: &MiyuPaths, args: BackupArgs) -> Result<()> {
                     git_name: args.name,
                     git_email: args.email,
                     ssh_key: args.ssh_key,
+                    auto_push: !args.no_auto_push,
                     force: args.force,
                 },
             )?;
@@ -8068,6 +8104,21 @@ fn run_backup(paths: &MiyuPaths, args: BackupArgs) -> Result<()> {
                 t(
                     "restored GQY state from the backup remote; re-enter API keys if the restored config redacted them",
                     "已从备份远程恢复 GQY 状态；若恢复的配置脱敏了密钥，请重新填写"
+                )
+            );
+        }
+        BackupCommand::Remote(args) => {
+            let auto_push = match (args.auto_push, args.no_auto_push) {
+                (true, false) => Some(true),
+                (false, true) => Some(false),
+                _ => None,
+            };
+            crate::backup::set_remote(paths, args.url, args.ssh_key, auto_push)?;
+            println!(
+                "{}",
+                t(
+                    "backup remote updated; next `miyu backup now` will push to it",
+                    "备份远程已更新；下一次 `miyu backup now` 将推送到该远程"
                 )
             );
         }

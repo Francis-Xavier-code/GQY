@@ -54,6 +54,11 @@ open "macos/GQYMenuBar/.build/顾清影.app"
 
 远程仓库应设置为 private。记忆和对话本身可能包含私人内容，即使配置文件已经脱敏，也不适合公开。
 
+有两种起步方式：
+
+- **本地模式**（不需要任何账号）：`miyu backup init` 不带 `--remote`，先启用本地自动快照，之后随时用 `miyu backup remote <url>` 绑定远程。
+- **直接配置远程**：创建 private 仓库后按下面的流程一次到位。
+
 推荐为她单独创建 SSH key：
 
 ```zsh
@@ -69,6 +74,14 @@ miyu backup init \
   --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519" \
   --name "GQY Memory" \
   --email "gqy@localhost"
+```
+
+本地模式起步后再绑定远程：
+
+```zsh
+miyu backup remote git@github.com:YOUR_NAME/gqy-memory.git \
+  --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519" \
+  --auto-push
 ```
 
 手动检查和备份：
@@ -87,9 +100,9 @@ miyu backup restore \
   --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519"
 ```
 
-`backup restore` 会跳过首次初始化，直接把快照还原进独立主目录；已存在本地配置时需 `--force` 覆盖，且不会覆盖已有 `config.jsonc`（避免用脱敏配置冲掉真实密钥，恢复后再重新填写 API key 即可）。恢复完成后 `backup now` 即可继续增量备份。
+`backup restore` 会跳过首次初始化，直接把快照还原进独立主目录；已存在本地配置时需 `--force` 覆盖，且不会覆盖已有 `config.jsonc`（避免用脱敏配置冲掉真实密钥，恢复后再重新填写 API key 即可）。恢复完成后自动推送默认开启（与 `init` 一致），传入 `--no-auto-push` 可关闭；`backup now` 可随时继续增量备份。
 
-初始化后默认开启自动推送：每次成功完成一轮对话并落盘记忆后，程序刷新快照、提交变更并推送。传入 `backup init --no-auto-push` 可只保留手动备份。
+默认开启自动保存：每次成功完成一轮对话并落盘记忆后，程序刷新快照并提交；绑定远程后同一开关会同时推送到远程。传入 `backup init --no-auto-push` 可改为只保留手动备份。`backup status` 在未绑定远程时会明确显示本地模式。
 
 ### 隔离与安全边界
 

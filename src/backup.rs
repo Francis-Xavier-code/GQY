@@ -25,7 +25,7 @@ pub struct BackupSettings {
 
 #[derive(Debug, Clone)]
 pub struct BackupInitOptions {
-    pub remote: String,
+    pub remote: Option<String>,
     pub branch: String,
     pub git_name: String,
     pub git_email: String,
@@ -47,6 +47,7 @@ pub struct RestoreOptions {
     pub git_name: String,
     pub git_email: String,
     pub ssh_key: Option<PathBuf>,
+    pub auto_push: bool,
     pub force: bool,
 }
 
@@ -62,7 +63,7 @@ pub fn init(paths: &MiyuPaths, options: BackupInitOptions) -> Result<()> {
 
     let settings = BackupSettings {
         version: SETTINGS_VERSION,
-        remote: options.remote.trim().to_string(),
+        remote: options.remote.clone().unwrap_or_default(),
         branch: options.branch.trim().to_string(),
         git_name: options.git_name.trim().to_string(),
         git_email: options.git_email.trim().to_string(),
@@ -101,19 +102,22 @@ pub fn init(paths: &MiyuPaths, options: BackupInitOptions) -> Result<()> {
         ["config", "--local", "core.hooksPath", hooks_path.as_str()],
     )?;
 
-    let has_origin = git_output(&backup_dir, &settings, ["remote", "get-url", "origin"]).is_ok();
-    if has_origin {
-        run_git(
-            &backup_dir,
-            &settings,
-            ["remote", "set-url", "origin", settings.remote.as_str()],
-        )?;
-    } else {
-        run_git(
-            &backup_dir,
-            &settings,
-            ["remote", "add", "origin", settings.remote.as_str()],
-        )?;
+    let remote = settings.remote.clone();
+    if !remote.is_empty() {
+        let has_origin = git_output(&backup_dir, &settings, ["remote", "get-url", "origin"]).is_ok();
+        if has_origin {
+            run_git(
+                &backup_dir,
+                &settings,
+                ["remote", "set-url", "origin", remote.as_str()],
+            )?;
+        } else {
+            run_git(
+                &backup_dir,
+                &settings,
+                ["remote", "add", "origin", remote.as_str()],
+            )?;
+        }
     }
 
     write_repository_files(&repo)?;
@@ -144,7 +148,7 @@ pub fn backup_now(paths: &MiyuPaths, push: bool) -> Result<BackupOutcome> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let pushed = push && commit.is_some();
+    let pushed = push && commit.is_some() && !settings.remote.is_empty();
     if pushed {
         run_git(
             &backup_dir,
@@ -181,15 +185,29 @@ pub fn status(paths: &MiyuPaths) -> Result<String> {
     let settings = load_settings(&backup_dir)?;
     let repo = backup_dir.join("repository");
     let git_status = git_output(&backup_dir, &settings, ["status", "--short", "--branch"])?;
+    let remote = if settings.remote.is_empty() {
+        t_local_mode()
+    } else {
+        settings.remote.clone()
+    };
+    let auto_push = if settings.remote.is_empty() {
+        format!("{} (commits only, no remote)", settings.auto_push)
+    } else {
+        settings.auto_push.to_string()
+    };
     Ok(format!(
         "home: {}\nrepository: {}\nremote: {}\nbranch: {}\nauto push: {}\n{}",
         home.display(),
         repo.display(),
-        settings.remote,
+        remote,
         settings.branch,
-        settings.auto_push,
+        auto_push,
         git_status.trim_end()
     ))
+}
+
+fn t_local_mode() -> String {
+    "(none — local mode; run `miyu backup remote <url>` to attach one)".to_string()
 }
 
 pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
@@ -197,11 +215,11 @@ pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
     validate_init_options(
         &home,
         &BackupInitOptions {
-            remote: options.remote.clone(),
+            remote: Some(options.remote.clone()),
             branch: options.branch.clone(),
             git_name: options.git_name.clone(),
             git_email: options.git_email.clone(),
-            auto_push: false,
+            auto_push: options.auto_push,
             ssh_key: options.ssh_key.clone(),
         },
     )?;
@@ -230,6 +248,7 @@ pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
     }
 
     std::fs::create_dir_all(&backup_dir)?;
+    std::fs::create_dir_all(backup_dir.join("no-hooks"))?;
     ensure_isolated_global_config(&backup_dir)?;
     let settings = BackupSettings {
         version: SETTINGS_VERSION,
@@ -237,7 +256,7 @@ pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
         branch: options.branch.trim().to_string(),
         git_name: options.git_name.trim().to_string(),
         git_email: options.git_email.trim().to_string(),
-        auto_push: false,
+        auto_push: options.auto_push,
         ssh_key: options.ssh_key,
     };
 
@@ -252,6 +271,11 @@ pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
         .with_context(|| "failed to start isolated git clone")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if repo.exists() {
+            // Remove partial clones so a corrected retry does not trip the
+            // "already exists" guard above.
+            let _ = std::fs::remove_dir_all(&repo);
+        }
         bail!("git clone failed: {}", stderr.trim());
     }
 
@@ -281,6 +305,41 @@ pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
         &settings,
         ["config", "--local", "core.hooksPath", hooks_path.as_str()],
     )?;
+    Ok(())
+}
+
+pub fn set_remote(
+    paths: &MiyuPaths,
+    url: String,
+    ssh_key: Option<PathBuf>,
+    auto_push: Option<bool>,
+) -> Result<()> {
+    let home = required_isolated_home(paths)?;
+    let backup_dir = home.join("backup");
+    let mut settings = load_settings(&backup_dir)?;
+    let remote = url.trim().to_string();
+    validate_remote(&home, &remote, ssh_key.as_deref())?;
+    if let Some(auto_push) = auto_push {
+        settings.auto_push = auto_push;
+    }
+    settings.remote = remote.clone();
+    settings.ssh_key = ssh_key;
+    write_settings(&backup_dir, &settings)?;
+
+    let has_origin = git_output(&backup_dir, &settings, ["remote", "get-url", "origin"]).is_ok();
+    if has_origin {
+        run_git(
+            &backup_dir,
+            &settings,
+            ["remote", "set-url", "origin", remote.as_str()],
+        )?;
+    } else {
+        run_git(
+            &backup_dir,
+            &settings,
+            ["remote", "add", "origin", remote.as_str()],
+        )?;
+    }
     Ok(())
 }
 
@@ -359,7 +418,6 @@ fn required_isolated_home(paths: &MiyuPaths) -> Result<PathBuf> {
 
 fn validate_init_options(home: &Path, options: &BackupInitOptions) -> Result<()> {
     for (label, value) in [
-        ("remote", options.remote.as_str()),
         ("branch", options.branch.as_str()),
         ("git name", options.git_name.as_str()),
         ("git email", options.git_email.as_str()),
@@ -371,23 +429,37 @@ fn validate_init_options(home: &Path, options: &BackupInitOptions) -> Result<()>
     if options.branch.contains(char::is_whitespace) {
         bail!("branch must not contain whitespace");
     }
-    if options.branch.starts_with('-') || options.remote.trim_start().starts_with('-') {
-        bail!("branch and remote must not start with '-'");
+    if options.branch.starts_with('-') {
+        bail!("branch must not start with '-'");
     }
-    if options
-        .remote
-        .chars()
-        .any(|character| character.is_control())
-    {
+    match &options.remote {
+        Some(remote) => validate_remote(home, remote, options.ssh_key.as_deref())?,
+        None => {
+            if options.ssh_key.is_some() {
+                bail!("--ssh-key requires a remote; local mode does not need it");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_remote(home: &Path, remote: &str, ssh_key: Option<&Path>) -> Result<()> {
+    if remote.trim().is_empty() {
+        bail!("remote must not be empty");
+    }
+    if remote.trim_start().starts_with('-') {
+        bail!("remote must not start with '-'");
+    }
+    if remote.chars().any(|character| character.is_control()) {
         bail!("remote must not contain control characters");
     }
-    if http_remote_contains_credentials(&options.remote) {
+    if http_remote_contains_credentials(remote) {
         bail!("remote URLs must not contain credentials; use an isolated SSH key instead");
     }
-    if is_ssh_remote(&options.remote) && options.ssh_key.is_none() {
+    if is_ssh_remote(remote) && ssh_key.is_none() {
         bail!("SSH remotes require --ssh-key so backup authentication stays isolated");
     }
-    if let Some(key) = &options.ssh_key {
+    if let Some(key) = ssh_key {
         if !key.is_absolute() {
             bail!("--ssh-key must be an absolute path");
         }
@@ -799,7 +871,7 @@ mod tests {
         std::env::set_var(GQY_HOME_ENV, &home1);
 
         let options = BackupInitOptions {
-            remote: remote.display().to_string(),
+            remote: Some(remote.display().to_string()),
             branch: "main".to_string(),
             git_name: "Test".to_string(),
             git_email: "test@localhost".to_string(),
@@ -820,6 +892,7 @@ mod tests {
                 git_name: "Test".to_string(),
                 git_email: "test@localhost".to_string(),
                 ssh_key: None,
+                auto_push: false,
                 force: false,
             },
         )
@@ -849,7 +922,7 @@ mod tests {
         std::fs::write(paths1.state_dir.join("memory.md"), "keep me\n").unwrap();
         std::env::set_var(GQY_HOME_ENV, &home1);
         let options = BackupInitOptions {
-            remote: remote.display().to_string(),
+            remote: Some(remote.display().to_string()),
             branch: "main".to_string(),
             git_name: "Test".to_string(),
             git_email: "test@localhost".to_string(),
@@ -873,6 +946,7 @@ mod tests {
                 git_name: "Test".to_string(),
                 git_email: "test@localhost".to_string(),
                 ssh_key: None,
+                auto_push: false,
                 force: false,
             },
         )
@@ -887,6 +961,7 @@ mod tests {
                 git_name: "Test".to_string(),
                 git_email: "test@localhost".to_string(),
                 ssh_key: None,
+                auto_push: false,
                 force: true,
             },
         )
@@ -896,5 +971,81 @@ mod tests {
         assert_eq!(live, "{\"live\":true}\n");
         let restored = std::fs::read_to_string(paths2.state_dir.join("memory.md")).unwrap();
         assert_eq!(restored, "keep me\n");
+    }
+
+    #[test]
+    fn local_mode_commits_without_remote() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let paths = test_paths(&home);
+        std::env::set_var(GQY_HOME_ENV, &home);
+
+        let options = BackupInitOptions {
+            remote: None,
+            branch: "main".to_string(),
+            git_name: "Test".to_string(),
+            git_email: "test@localhost".to_string(),
+            auto_push: true,
+            ssh_key: None,
+        };
+        init(&paths, options).unwrap();
+
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        std::fs::write(paths.state_dir.join("memory.md"), "hello\n").unwrap();
+        let outcome = backup_now(&paths, true).unwrap();
+        assert!(outcome.committed);
+        assert!(!outcome.pushed);
+        assert!(outcome.commit.is_some());
+
+        let text = status(&paths).unwrap();
+        assert!(text.contains("local mode"));
+
+        let auto = maybe_auto_backup(&paths).unwrap();
+        assert!(auto.is_some());
+        assert!(!auto.unwrap().pushed);
+    }
+
+    #[test]
+    fn set_remote_enables_pushing_after_local_mode() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        assert!(std::process::Command::new("git")
+            .args(["init", "--bare", "--initial-branch=main"])
+            .arg(&remote)
+            .status()
+            .unwrap()
+            .success());
+
+        let home = root.path().join("home");
+        let paths = test_paths(&home);
+        std::env::set_var(GQY_HOME_ENV, &home);
+        init(
+            &paths,
+            BackupInitOptions {
+                remote: None,
+                branch: "main".to_string(),
+                git_name: "Test".to_string(),
+                git_email: "test@localhost".to_string(),
+                auto_push: false,
+                ssh_key: None,
+            },
+        )
+        .unwrap();
+
+        set_remote(&paths, remote.display().to_string(), None, Some(true)).unwrap();
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        std::fs::write(paths.state_dir.join("memory.md"), "world\n").unwrap();
+        let outcome = backup_now(&paths, true).unwrap();
+        assert!(outcome.committed);
+        assert!(outcome.pushed);
+
+        let remote_log = std::process::Command::new("git")
+            .args(["--git-dir", remote.to_str().unwrap(), "log", "--oneline"])
+            .output()
+            .unwrap();
+        assert!(remote_log.status.success());
+        assert!(!String::from_utf8_lossy(&remote_log.stdout).trim().is_empty());
     }
 }
