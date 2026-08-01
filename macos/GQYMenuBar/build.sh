@@ -17,6 +17,7 @@ xcrun clang \
   -fmodules-cache-path="$module_cache" \
   -framework AppKit \
   -framework Foundation \
+  -framework WebKit \
   -mmacosx-version-min=13.0 \
   "$project_dir/main.m" \
   -o "$binary_dir/GQYMenuBar"
