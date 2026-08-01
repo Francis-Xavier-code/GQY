@@ -47,6 +47,10 @@
 
       <footer class="sidebar-footer">
         <div class="sidebar-actions">
+          <button class="sidebar-action" id="usageButton" type="button" title="用量统计">
+            <span class="icon-slot" data-icon="chart-column" aria-hidden="true"><span class="icon-fallback">▤</span></span>
+            <span class="settings-label">用量</span>
+          </button>
           <button class="sidebar-action" id="settingsButton" type="button">
             <span class="icon-slot" data-icon="settings-2" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
             <span class="settings-label">设置</span>
@@ -153,10 +157,6 @@
           <span>回到底部</span>
         </button>
 
-        <div class="mini-toolbar" id="miniToolbar">
-          <span class="mini-title">顾清影 · 迷你对话</span>
-          <button class="mini-expand" id="miniExpandButton" type="button" title="放大为面板" aria-label="放大为面板">⤢</button>
-        </div>
         <footer class="composer-dock" id="composerDock">
           <div class="question-dock" id="questionDock" aria-label="待回答问题" aria-live="polite" hidden></div>
           <form class="composer" id="composerForm">
@@ -192,6 +192,39 @@
             </div>
           </form>
         </footer>
+      </section>
+
+      <section class="usage-view" id="usageView" aria-labelledby="usageTitle" hidden>
+        <header class="usage-header">
+          <div>
+            <h2 id="usageTitle">用量统计</h2>
+            <small id="usageSubtitle">正在载入…</small>
+          </div>
+          <button class="secondary-button compact-button" id="usageBackButton" type="button">返回对话</button>
+        </header>
+        <div class="usage-scroll" id="usageScroll">
+          <div class="usage-summary" id="usageSummary"></div>
+          <div class="usage-chart-section">
+            <div class="usage-section-heading">
+              <h3>每日 Token 消耗</h3>
+              <span class="usage-chart-hint">最近 365 天</span>
+            </div>
+            <div class="usage-contribution" id="usageContribution" role="img" aria-label="每日 token 消耗贡献图"></div>
+            <div class="usage-legend">
+              <span>少</span>
+              <i class="cell-level-0" aria-hidden="true"></i>
+              <i class="cell-level-1" aria-hidden="true"></i>
+              <i class="cell-level-2" aria-hidden="true"></i>
+              <i class="cell-level-3" aria-hidden="true"></i>
+              <i class="cell-level-4" aria-hidden="true"></i>
+              <span>多</span>
+            </div>
+          </div>
+          <div class="usage-models">
+            <h3>模型消耗明细</h3>
+            <div class="usage-model-table-wrap" id="usageModelTable"></div>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -289,24 +322,6 @@
     </aside>
 
     <div class="toast-region" id="toastRegion" role="status" aria-live="polite" aria-atomic="true"></div>
-
-    <dialog class="reset-dialog" id="resetDialog" aria-labelledby="resetDialogTitle" aria-describedby="resetDialogDescription">
-      <form method="dialog">
-        <header>
-          <span class="dialog-icon" aria-hidden="true">
-            <span class="icon-slot" data-icon="triangle-alert"><span class="icon-fallback">!</span></span>
-          </span>
-          <div>
-            <h2 id="resetDialogTitle">清空全部对话？</h2>
-            <p id="resetDialogDescription">当前全部对话与上下文将被永久删除，无法找回。如果这些记录重要，请先通过菜单栏「立即备份并推送」或终端 <code>gqy backup now</code> 备份后再继续。</p>
-          </div>
-        </header>
-        <footer>
-          <button class="secondary-button" id="resetCancelButton" type="submit" value="cancel">取消</button>
-          <button class="danger-button" id="resetConfirmButton" type="button">清除并新建</button>
-        </footer>
-      </form>
-    </dialog>
   </div>
 
   <noscript>

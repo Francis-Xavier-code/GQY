@@ -54,9 +54,6 @@ const LOGIN_ATTEMPT_LIMIT: u8 = 5;
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const STYLES_CSS: &str = include_str!("../web/styles.css");
 const APP_JS: &str = include_str!("../web/app.js");
-const MINI_HTML: &str = include_str!("../web/mini.html");
-const MINI_CSS: &str = include_str!("../web/mini.css");
-const MINI_JS: &str = include_str!("../web/mini.js");
 const GQY_LOGO: &[u8] = include_bytes!("../pics/GQY-avatar.png");
 const GQY_WALLPAPER: &[u8] = include_bytes!("../pics/GQY-image.png");
 const PROVIDER_ICONS: &str = include_str!("../web/assets/provider-icons.svg");
@@ -982,9 +979,6 @@ fn router(state: WebState) -> Router {
         .route("/", get(index_asset))
         .route("/styles.css", get(styles_asset))
         .route("/app.js", get(app_asset))
-        .route("/mini", get(mini_asset))
-        .route("/mini.css", get(mini_css_asset))
-        .route("/mini.js", get(mini_js_asset))
         .route("/assets/gqy-logo.png", get(logo_asset))
         .route("/assets/gqy-wallpaper.png", get(wallpaper_asset))
         .route("/assets/provider-icons.svg", get(provider_icons_asset))
@@ -1003,6 +997,7 @@ fn router(state: WebState) -> Router {
         .route("/api/conversation/reset", post(reset_conversation))
         .route("/api/alarms", get(list_alarms_web))
         .route("/api/state", get(session_state))
+        .route("/api/usage/stats", get(usage_stats_web))
         .route("/api/alarms/{alarm_id}", delete(cancel_alarm_web))
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .with_state(state)
@@ -1018,18 +1013,6 @@ async fn styles_asset() -> Response {
 
 async fn app_asset() -> Response {
     text_asset(APP_JS, "application/javascript; charset=utf-8")
-}
-
-async fn mini_asset() -> Response {
-    text_asset(MINI_HTML, "text/html; charset=utf-8")
-}
-
-async fn mini_css_asset() -> Response {
-    text_asset(MINI_CSS, "text/css; charset=utf-8")
-}
-
-async fn mini_js_asset() -> Response {
-    text_asset(MINI_JS, "application/javascript; charset=utf-8")
 }
 
 async fn logo_asset() -> Response {
@@ -1189,8 +1172,14 @@ async fn session_state(
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
-    let entries = state.state_store.load_conversation().map_err(ApiError::internal)?;
-    let last_seq = entries.len() as i64;
+    let visible = state
+        .state_store
+        .load_visible_turns()
+        .map_err(ApiError::internal)?;
+    let last_seq = visible
+        .iter()
+        .filter(|turn| !turn.is_summary)
+        .count() as i64;
     let running = state
         .state_store
         .has_running_turns()
@@ -1201,6 +1190,19 @@ async fn session_state(
         "running": running,
     }))
     .into_response())
+}
+
+/// 用量统计（贡献图数据源）：每日 token + 按模型明细。
+async fn usage_stats_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let stats = state
+        .state_store
+        .usage_stats()
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({ "ok": true, "stats": stats })).into_response())
 }
 
 /// 取消定时任务（面板「取消」按钮）。
@@ -1282,7 +1284,7 @@ async fn bootstrap(
     }
     let turns = state
         .state_store
-        .load_turns()
+        .load_visible_turns()
         .map_err(ApiError::internal)?
         .into_iter()
         .filter(|turn| !turn.is_summary)

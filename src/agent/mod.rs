@@ -598,7 +598,7 @@ impl Agent {
         }
         let mut used_tools = Vec::new();
         let mut persisted_tool_reports = Vec::new();
-        let result = self
+        let mut result = self
             .chat_with_tools(
                 &turn_id,
                 &mut messages,
@@ -612,6 +612,15 @@ impl Agent {
             self.state.append_persisted_context(&turn_id, &report)?;
         }
         let token_total = result.usage.as_ref().map(Usage::effective_total_tokens);
+        // 兜底：模型只输出思考（reasoning）而没有正文时，补一句说明，
+        // 保证面板/终端/历史都有可读的回复内容
+        if result.content.trim().is_empty() {
+            if let Some(reasoning) = result.reasoning.as_deref() {
+                if !reasoning.trim().is_empty() {
+                    result.content = "（本轮思考完成，没有额外的文字回复。）".to_string();
+                }
+            }
+        }
         guard.complete_with_model(
             &result.content,
             result.reasoning.as_deref(),
@@ -632,21 +641,29 @@ impl Agent {
             );
         }
         if let Some(usage) = result.usage.clone() {
-            self.state.add_usage(&usage)?;
+            self.state.add_usage(
+                &usage,
+                result.provider_id.as_deref().unwrap_or("unknown"),
+                result.model.as_deref().unwrap_or("(未标注)"),
+            )?;
         }
         // 自动备份移出对话热路径：后台执行，且内部有 30 分钟节流。
         // 一次性 CLI（gqy "问题"）退出前会通过 settle_pending_backup 等它完成。
-        let backup_paths = self.paths.clone();
-        let backup_task = tokio::task::spawn_blocking(move || {
-            if let Err(error) = crate::backup::maybe_auto_backup(&backup_paths) {
-                tracing::error!("automatic backup failed: {error:#}");
-                eprintln!(
-                    "{}: {error:#}",
-                    crate::i18n::text("warning: automatic backup failed", "警告：自动备份失败")
-                );
-            }
-        });
-        self.pending_backup = Some(backup_task);
+        // 测试二进制不触发：并行测试会经由进程级 GQY_HOME 误操作其他测试的备份仓库。
+        #[cfg(not(test))]
+        {
+            let backup_paths = self.paths.clone();
+            let backup_task = tokio::task::spawn_blocking(move || {
+                if let Err(error) = crate::backup::maybe_auto_backup(&backup_paths) {
+                    tracing::error!("automatic backup failed: {error:#}");
+                    eprintln!(
+                        "{}: {error:#}",
+                        crate::i18n::text("warning: automatic backup failed", "警告：自动备份失败")
+                    );
+                }
+            });
+            self.pending_backup = Some(backup_task);
+        }
         Ok(result)
     }
 
@@ -764,7 +781,7 @@ impl Agent {
         let Some(compact) = self.handle_overflow(context_tokens, &mut on_event).await? else {
             return Ok(None);
         };
-        self.state.add_auxiliary_usage(&compact.usage)?;
+        self.state.add_auxiliary_usage(&compact.usage, "system", "memory_compact")?;
         Ok(Some(ChatResult {
             content: String::new(),
             reasoning: None,
@@ -834,7 +851,7 @@ impl Agent {
         let Some(compact) = compact else {
             return Ok(None);
         };
-        self.state.add_auxiliary_usage(&compact.usage)?;
+        self.state.add_auxiliary_usage(&compact.usage, "system", "memory_compact")?;
         Ok(Some(ChatResult {
             content: String::new(),
             reasoning: None,
