@@ -206,6 +206,21 @@ impl MemoryStore {
         Ok(conn.last_insert_rowid())
     }
 
+    /// 记录自动学习技能（自我成长：skill_records 表，供清理/统计管理）。
+    pub fn record_skill(&self, name: &str, path: &str, summary: &str) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        self.init()?;
+        let conn = self.data_conn()?;
+        conn.execute(
+            "INSERT INTO skill_records (name, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(name) DO UPDATE SET path=excluded.path, summary=excluded.summary, updated_at=excluded.updated_at",
+            params![name.trim(), path.trim(), summary.trim(), now()],
+        )?;
+        Ok(())
+    }
+
     /// 读取最近的心情记录（source='mood'），最多 limit 条，新的在前。
     pub fn recent_moods(&self, limit: usize) -> Result<Value> {
         if !self.data_db.is_file() {

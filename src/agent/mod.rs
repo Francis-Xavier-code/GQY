@@ -619,6 +619,16 @@ impl Agent {
             result.usage_estimated,
         )?;
         self.memory.process_after_turn(&input, &result.content)?;
+        // 自我成长：用户明确要求记住的方法 → 沉淀为技能（规则匹配，零模型开销）
+        if let Some((skill_name, is_new)) =
+            crate::learning::maybe_learn(&self.paths, &self.config, &input, &result.content)?
+        {
+            crate::activity::record(
+                &self.paths,
+                "learned_skill",
+                &serde_json::json!({ "name": skill_name, "created": is_new }),
+            );
+        }
         if let Some(usage) = result.usage.clone() {
             self.state.add_usage(&usage)?;
         }

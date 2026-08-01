@@ -97,6 +97,7 @@
     contextBar: document.getElementById("contextBar"),
     settingsButton: document.getElementById("settingsButton"),
     sidebarThemeButton: document.getElementById("sidebarThemeButton"),
+    sidebarCollapseButton: document.getElementById("sidebarCollapseButton"),
     conversationTitle: document.getElementById("conversationTitle"),
     conversationMeta: document.getElementById("conversationMeta"),
     modeSwitch: document.getElementById("modeSwitch"),
@@ -4508,6 +4509,24 @@
     elements.applyAdvancedConfigButton.addEventListener("click", applyAdvancedConfig);
     elements.themeButton.addEventListener("click", () => setTheme(elements.body.dataset.theme === "graphite" ? "linen" : "graphite"));
     elements.sidebarThemeButton.addEventListener("click", () => setTheme(elements.body.dataset.theme === "graphite" ? "linen" : "graphite"));
+    // 折叠侧栏（仅桌面；移动端侧栏是抽屉，不显示折叠按钮）
+    const applyCollapseButtonVisibility = () => {
+      if (!elements.sidebarCollapseButton) return;
+      elements.sidebarCollapseButton.hidden = window.innerWidth <= 980;
+    };
+    applyCollapseButtonVisibility();
+    window.addEventListener("resize", applyCollapseButtonVisibility);
+    elements.sidebarCollapseButton?.addEventListener("click", () => {
+      const collapsed = elements.body.dataset.sidebarCollapsed === "1";
+      elements.body.dataset.sidebarCollapsed = collapsed ? "" : "1";
+      safeStorageSet("gqy.web.sidebarCollapsed", !collapsed);
+      elements.sidebarCollapseButton.title = collapsed ? "折叠会话栏" : "展开会话栏";
+      elements.sidebarCollapseButton.setAttribute("aria-label", elements.sidebarCollapseButton.title);
+    });
+    // 恢复持久化的折叠状态
+    if (safeStorageGet("gqy.web.sidebarCollapsed") === "true") {
+      elements.body.dataset.sidebarCollapsed = "1";
+    }
     document.querySelectorAll("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => setTheme(button.dataset.themeChoice)));
     elements.modeSwitch.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
     elements.modelButton.addEventListener("click", (event) => {

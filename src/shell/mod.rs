@@ -128,18 +128,35 @@ fn first_command_token_with_rest(input: &str) -> Option<(String, &str)> {
     None
 }
 
+/// 歧义命令（既是合法命令又常被当自然语言开头）：
+/// 尾巴含中文/问号/语气词 → 判为自然语言。
+/// 扩展版：新增常见聊天开头词（帮/请/帮我/怎么/为什么/如何/能不能/今天/明天/等
+/// 下/写/查/搜/翻译/推荐/解释/什么是…），这些词后接中文时几乎总是对话。
 fn ambiguous_command_tail_looks_like_message(command: &str, rest: &str) -> bool {
-    if !matches!(
-        command,
-        "time" | "test" | "date" | "which" | "type" | "command" | "history"
-    ) {
+    const AMBIGUOUS: &[&str] = &[
+        "time", "test", "date", "which", "type", "command", "history", "help", "man",
+    ];
+    const CHAT_OPENERS: &[&str] = &[
+        "帮", "请", "帮我", "怎么", "为什么", "如何", "能不能", "可以", "今天", "明天",
+        "昨天", "等下", "写", "查", "搜", "翻译", "推荐", "解释", "什么是", "告诉我",
+        "你说", "你觉得", "介绍一下", "点评", "总结", "分析",
+    ];
+    let rest = rest.trim();
+    if rest.is_empty() {
         return false;
     }
-    let rest = rest.trim();
-    !rest.is_empty()
-        && rest
-            .chars()
-            .any(|ch| ch == '?' || ch == '？' || is_cjk_char(ch))
+    let has_chat_signal = rest
+        .chars()
+        .any(|ch| ch == '?' || ch == '？' || is_cjk_char(ch));
+    if AMBIGUOUS.contains(&command) {
+        return has_chat_signal;
+    }
+    // 聊天开场词：即使命令存在于 PATH（如 `写`、`查` 很少是命令），
+    // 只要它是首词且后接中文，判为自然语言
+    if CHAT_OPENERS.iter().any(|opener| command.starts_with(opener)) {
+        return has_chat_signal;
+    }
+    false
 }
 
 fn is_cjk_char(ch: char) -> bool {

@@ -20,6 +20,15 @@
 - `gqy tools import` 许可证检查：识别仓库 LICENSE（MIT/Apache/BSD/GPL 等），
   随包保留 LICENSE 文件，`gqy tools list` 显示许可证，无许可证/非宽松许可时警告
 - WebUI 流式输出打字机光标 + 新消息块淡入动画
+- WebUI 增强（参考 llama.cpp tools/ui 设计，保留月夜特色）：
+  - 桌面侧栏可折叠为 48px 图标条（hover 自动展开，状态持久化）
+  - 细滚动条（hover 才显示，界面干净不抖动）
+  - 更多自研动画：消息滑入/上浮、工具卡片弹入、思考进度条渐变流光、
+    上下文条填充过渡、输入框聚焦月青光晕、菜单弹入、回到底部按钮弹出
+    （全部尊重 prefers-reduced-motion）
+- shell 意图判断增强：歧义命令清单扩展（time/test/date/which/type/command/history/help/man），
+  新增聊天开场词检测（帮/请/怎么/为什么/如何/能不能/写/查/搜/翻译/推荐…），
+  后接中文即判为自然语言，命令拦截更准
 - `gqy history --search <词>`：关键词搜索会话记录（当前会话全部轮次 + 已归档轮次），
   不占对话上下文
 - `gqy activity [--search <词>]`：活动日志查询（GQY 干了什么的流水账，
@@ -34,6 +43,13 @@
 - 远程备份支持 gh CLI：`gqy backup remote owner/repo` 自动创建私有仓库
   并用 gh 凭据推送（无需 SSH key）
 - 首次运行自动播种：创建 scripts 索引、随包知识库自动导入（brew 安装后开箱即用）
+- `gqy watch` 管家监控：后台采样进程 CPU/内存，检测异常（≥150% CPU 或 ≥2 个高占用）
+  时给运行中的会话入队「主动消息」——顾清影先自己判断再决定是否打扰用户
+- 自我成长（知识库反哺）：对话中用户明确说「记住这个方法/记下来」时，
+  自动把结论沉淀为可加载技能（SKILL.md + skill_records 记录），规则匹配零模型开销
+- `gqy memes list` / `gqy memes stats`：查看表情库数量与格式分布
+- 情绪感知：系统提示新增情绪规则——感知用户情绪变化时用 `log_mood` 记心情日志，
+  情感场景允许自然道歉（代码场景保持克制不道歉）
 
 ### 变更
 - 菜单栏面板改为独立 App 窗口（可拖动缩放，不再依赖浏览器）；窗口 720px 宽，

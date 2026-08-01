@@ -10,6 +10,7 @@ mod config;
 mod config_tui;
 mod default_models;
 mod i18n;
+mod learning;
 mod llm;
 mod logging;
 mod memory;
@@ -25,6 +26,7 @@ mod state;
 mod token_counter;
 mod token_estimate;
 mod tools;
+mod watch;
 mod web;
 
 use anyhow::Result;
