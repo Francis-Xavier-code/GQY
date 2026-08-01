@@ -55,6 +55,14 @@ pub fn init(paths: &GqyPaths, options: BackupInitOptions) -> Result<()> {
     let home = required_isolated_home(paths)?;
     validate_init_options(&home, &options)?;
 
+    // gh 集成：`owner/repo` 形式的远程 → 确保仓库存在（gh 认证）并解析为 HTTPS URL
+    let remote = options
+        .remote
+        .as_deref()
+        .map(|value| ensure_gh_remote(value))
+        .transpose()?
+        .unwrap_or_default();
+
     let backup_dir = home.join("backup");
     let repo = backup_dir.join("repository");
     std::fs::create_dir_all(&repo)?;
@@ -63,7 +71,7 @@ pub fn init(paths: &GqyPaths, options: BackupInitOptions) -> Result<()> {
 
     let settings = BackupSettings {
         version: SETTINGS_VERSION,
-        remote: options.remote.clone().unwrap_or_default(),
+        remote,
         branch: options.branch.trim().to_string(),
         git_name: options.git_name.trim().to_string(),
         git_email: options.git_email.trim().to_string(),
@@ -340,7 +348,8 @@ pub fn set_remote(
     let home = required_isolated_home(paths)?;
     let backup_dir = home.join("backup");
     let mut settings = load_settings(&backup_dir)?;
-    let remote = url.trim().to_string();
+    // gh 集成：`owner/repo` 形式的远程 → 确保仓库存在并用 gh 凭据推送
+    let remote = ensure_gh_remote(&url)?;
     validate_remote(&home, &remote, ssh_key.as_deref())?;
     if let Some(auto_push) = auto_push {
         settings.auto_push = auto_push;
@@ -498,6 +507,70 @@ fn validate_remote(home: &Path, remote: &str, ssh_key: Option<&Path>) -> Result<
         }
     }
     Ok(())
+}
+
+/// 判断是否为 GitHub `owner/repo` 短名（排除 URL/SSH 形式）。
+fn looks_like_gh_repo(trimmed: &str) -> bool {
+    let parts = trimmed.split('/').collect::<Vec<_>>();
+    parts.len() == 2
+        && parts[0].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && !parts[0].is_empty()
+        && !parts[1].is_empty()
+        && !trimmed.starts_with("http")
+        && !trimmed.starts_with("ssh")
+        && !trimmed.starts_with("git@")
+}
+
+/// GitHub 仓库名（`owner/repo`）→ HTTPS URL，并通过 gh CLI 确保仓库存在、认证就绪。
+/// 返回可用的推送 URL。非 `owner/repo` 形式的远程原样返回。
+fn ensure_gh_remote(remote: &str) -> Result<String> {
+    let trimmed = remote.trim();
+    if !looks_like_gh_repo(trimmed) {
+        return Ok(trimmed.to_string());
+    }
+
+    // gh 认证检查
+    let auth = std::process::Command::new("gh")
+        .args(["auth", "status"])
+        .output()
+        .context("gh CLI not found; install GitHub CLI (brew install gh) or pass a full git URL")?;
+    if !auth.status.success() {
+        bail!(
+            "gh is not authenticated; run `gh auth login` first, or pass a full git URL (https:// or git@...)"
+        );
+    }
+
+    // 仓库不存在则创建私有仓库
+    let view = std::process::Command::new("gh")
+        .args(["repo", "view", trimmed, "--json", "name"])
+        .output()
+        .context("failed to check GitHub repository")?;
+    if !view.status.success() {
+        let create = std::process::Command::new("gh")
+            .args(["repo", "create", trimmed, "--private", "--source", "."])
+            .current_dir(std::env::current_dir().unwrap_or_default())
+            .output()
+            .context("failed to create GitHub repository via gh")?;
+        if !create.status.success() {
+            bail!(
+                "gh repo create failed: {}",
+                String::from_utf8_lossy(&create.stderr).trim()
+            );
+        }
+    }
+
+    // gh 凭据接入隔离 git：HTTPS + gh 的 credential helper
+    let setup = std::process::Command::new("gh")
+        .args(["auth", "setup-git"])
+        .output()
+        .context("failed to configure gh git credentials")?;
+    if !setup.status.success() {
+        bail!(
+            "gh auth setup-git failed: {}",
+            String::from_utf8_lossy(&setup.stderr).trim()
+        );
+    }
+    Ok(format!("https://github.com/{trimmed}.git"))
 }
 
 fn is_ssh_remote(remote: &str) -> bool {
@@ -767,8 +840,27 @@ fn git_command(backup_dir: &Path, settings: &BackupSettings) -> Command {
             shell_quote(&known_hosts)
         );
         command.env("GIT_SSH_COMMAND", ssh);
+    } else if is_https_remote(&settings.remote) {
+        // gh 集成：HTTPS 远程时让隔离 git 用 gh 的 credential helper（gh auth setup-git 写入 ~/.gitconfig）
+        let gh_exists = std::process::Command::new("gh")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if gh_exists {
+            command.env("GIT_CONFIG_COUNT", "1");
+            command.env(
+                "GIT_CONFIG_KEY_0",
+                "credential.https://github.com.helper",
+            );
+            command.env("GIT_CONFIG_VALUE_0", "!gh auth git-credential");
+        }
     }
     command
+}
+
+fn is_https_remote(remote: &str) -> bool {
+    remote.trim_start().starts_with("https://")
 }
 
 fn git_output<I, S>(backup_dir: &Path, settings: &BackupSettings, args: I) -> Result<String>
@@ -1122,5 +1214,21 @@ mod tests {
             .unwrap();
         assert!(remote_log.status.success());
         assert!(!String::from_utf8_lossy(&remote_log.stdout).trim().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod gh_remote_tests {
+    use super::*;
+
+    #[test]
+    fn detects_gh_repo_names() {
+        let repo = looks_like_gh_repo("Francis-Xavier-code/GQY-backup");
+        assert!(repo);
+        assert!(!looks_like_gh_repo("https://github.com/a/b.git"));
+        assert!(!looks_like_gh_repo("git@github.com:a/b.git"));
+        assert!(!looks_like_gh_repo("ssh://git@github.com/a/b"));
+        assert!(!looks_like_gh_repo("a/b/c"));
+        assert!(!looks_like_gh_repo(""));
     }
 }

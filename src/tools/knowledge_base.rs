@@ -188,6 +188,11 @@ impl KnowledgeBase {
     }
 
     pub async fn add_path(&self, source: &Path) -> Result<Vec<String>> {
+        self.add_path_sync(source)
+    }
+
+    /// 同步版导入（首次初始化等无 runtime 场景使用）。
+    pub fn add_path_sync(&self, source: &Path) -> Result<Vec<String>> {
         self.init()?;
         let mut added = Vec::new();
         if source.is_dir() {

@@ -20,6 +20,20 @@
 - `gqy tools import` 许可证检查：识别仓库 LICENSE（MIT/Apache/BSD/GPL 等），
   随包保留 LICENSE 文件，`gqy tools list` 显示许可证，无许可证/非宽松许可时警告
 - WebUI 流式输出打字机光标 + 新消息块淡入动画
+- `gqy history --search <词>`：关键词搜索会话记录（当前会话全部轮次 + 已归档轮次），
+  不占对话上下文
+- `gqy activity [--search <词>]`：活动日志查询（GQY 干了什么的流水账，
+  默认不进 LLM 上下文，零 token 开销；工具调用与子代理完成自动记录）
+- `pomodoro` 工具：番茄钟专注循环（工作 25 分钟 + 休息 5 分钟，周期响铃可取消）
+- `set_alarm` 支持 `repeat` 周期提醒（如每 25 分钟响一次）
+- `log_mood` / `recall_mood`：心情日志与情绪记忆（情感场景专用，不参与代码任务）
+- 记忆关联注入极简相对时间（「3天前」等，每条约 2-4 token），模型感知时效不耗上下文
+- 子代理新增 `researcher` 类型（深度研究，80 步工具预算 / 20 分钟超时），
+  `task` 工具支持 `model` 参数指定子代理模型（如 `provider/model-name` 或纯模型名）
+- WebUI 新增「定时任务」面板：闹钟/番茄钟/周期提醒可视化，可一键取消
+- 远程备份支持 gh CLI：`gqy backup remote owner/repo` 自动创建私有仓库
+  并用 gh 凭据推送（无需 SSH key）
+- 首次运行自动播种：创建 scripts 索引、随包知识库自动导入（brew 安装后开箱即用）
 
 ### 变更
 - 菜单栏面板改为独立 App 窗口（可拖动缩放，不再依赖浏览器）；窗口 720px 宽，
@@ -35,10 +49,14 @@
 - 用户消息 ❯ 条、思考详情小字同步月夜配色
 - 省 token：工具描述精简（56 个工具描述 24.3k→20.4k 字符，每轮请求省约 1.3k tokens）；
   历史压缩与回放不再重放模型思考全文（reasoning），仅缺失正文时保留首行占位
+- 终端图片显示统一标准：探测图片宽高比后按比例适配（chafa 不再拉伸变形），
+  显式 symbols 字符集输出，不同分辨率/格式图片显示一致
 - 「新对话」确认文案强化（提示先备份）
 - 桥接脚本随 brew 打包（`share/gqy/bridges`），`gqy napcat/tg` 开箱即用
 
 ### 修复
+- 内置脚本 procusage / battery-care 的 `mapfile`（bash 4+ 特性）改为 while-read 循环，
+  macOS 自带 bash 3.2 下可正常使用
 - 备份快照排除 macOS `._*` AppleDouble 文件（从备份 tar 恢复后快照不再卡死）
 - Cask 安装后自动移除 quarantine，Gatekeeper 不再静默拦截启动
 - 双配置不同步问题：统一 `GQY_HOME/config/config.jsonc` 单一配置源

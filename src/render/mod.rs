@@ -645,7 +645,6 @@ fn render_markdown_structured(markdown: &str) -> String {
     // 行内样式
     let mut italic = false;
     let mut strike = false;
-    let mut link_url: Option<String> = None;
 
     /// 行首补缩进与引用竖线（段落跨行保持前缀）。
     fn emit_line_prefix(out: &mut String, quote_depth: usize, list_indent: usize) {
@@ -2699,15 +2698,6 @@ impl MarkdownLineRenderer {
             table_buffer: Vec::new(),
             active_table: None,
         }
-    }
-
-    /// 整段渲染（一次性输出用）：逐行渲染，与流式一致。
-    fn render_lines(&mut self, text: &str) -> String {
-        let mut output = String::new();
-        for line in text.lines() {
-            output.push_str(&self.render_line(line));
-        }
-        output
     }
 
     fn render_line(&mut self, line: &str) -> String {

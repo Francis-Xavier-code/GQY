@@ -981,7 +981,9 @@ parse_global_options() {
 
 declare -a REMAINING_ARGS
 if [[ $# -eq 0 && ! -t 0 ]]; then
-  mapfile -t STDIN_ARGS < <(argv_from_stdin "$(cat)" 2>/dev/null || true)
+  # macOS bash 3.2 无 mapfile，用 while-read 兼容
+  STDIN_ARGS=()
+  while IFS= read -r _line; do STDIN_ARGS+=("$_line"); done < <(argv_from_stdin "$(cat)" 2>/dev/null || true)
   if ((${#STDIN_ARGS[@]} > 0)); then
     set -- "${STDIN_ARGS[@]}"
   fi

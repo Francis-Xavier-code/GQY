@@ -123,6 +123,9 @@ pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
         io::stdout().flush()?;
         return Ok(());
     }
+    // 统一图片显示标准：先探测宽高比，chafa 用单边尺寸保持比例，
+    // 避免固定 WxH 把不同分辨率的图拉伸变形（用户反馈「看不清」的根因）。
+    let aspect = image_aspect_ratio(path);
     let mut command = Command::new("chafa");
     if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
         command.args(["--probe", "off", "--relative", "off"]);
@@ -131,9 +134,44 @@ pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
         // 会降级成黑白；显式强制 256 色，让 ANSI 转义码原样透传。
         command.args(["--colors", "256", "--probe", "off"]);
     }
+    // 显式 symbols 字符集输出，块状字符在任意终端一致可读
+    command.arg("--format").arg("symbols");
     if let Some(size) = size {
-        command.arg("--size").arg(size);
+        // 尺寸带比例：固定 WxH 会把不同分辨率的图拉伸变形。
+        // 已知图片比例时，在请求框内按比例最大适配；未知时原样传。
+        if let Some((ratio_w, ratio_h)) = aspect {
+            let mut dims = size.split('x');
+            if let (Some(w), Some(h)) = (dims.next(), dims.next()) {
+                if let (Ok(w), Ok(h)) = (w.parse::<f32>(), h.parse::<f32>()) {
+                    if w > 0.0 && h > 0.0 {
+                        let scale = (w / ratio_w).min(h / ratio_h);
+                        command.arg("--size").arg(format!(
+                            "{}x{}",
+                            (ratio_w * scale).round().max(1.0),
+                            (ratio_h * scale).round().max(1.0)
+                        ));
+                        return run_chafa(command, path).await;
+                    }
+                }
+            }
+            command.arg("--size").arg(&size);
+        } else {
+            command.arg("--size").arg(&size);
+        }
+    } else if let Some((ratio_w, ratio_h)) = aspect {
+        // 未指定尺寸：按终端 50% 宽等比适配（保持比例不变形）
+        let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        let target_cols = (cols as f32 * 0.5).round().max(16.0);
+        let target_rows = (target_cols * ratio_h / ratio_w).round().max(8.0);
+        command
+            .arg("--size")
+            .arg(format!("{}x{}", target_cols, target_rows));
     }
+    run_chafa(command, path).await
+}
+
+/// 执行 chafa 子进程并等待完成。
+async fn run_chafa(mut command: Command, path: &Path) -> Result<()> {
     command.kill_on_drop(true);
     let status = command
         .arg(path)
@@ -149,6 +187,16 @@ pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
     println!();
     io::stdout().flush()?;
     Ok(())
+}
+
+/// 探测图片宽高比（w/h），解码失败返回 None（chafa 自行处理）。
+fn image_aspect_ratio(path: &Path) -> Option<(f32, f32)> {
+    let reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let dimensions = reader.into_dimensions().ok()?;
+    if dimensions.0 == 0 || dimensions.1 == 0 {
+        return None;
+    }
+    Some((dimensions.0 as f32, dimensions.1 as f32))
 }
 
 pub fn configured_print_size(print_config: &PrintImagePluginConfig) -> Option<String> {
