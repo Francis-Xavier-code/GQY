@@ -480,7 +480,8 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         CGFloat y = NSMinY(screen) + 12;
         [self.miniWindow setFrameOrigin:NSMakePoint(x, y)];
     }
-    NSString *urlString = [NSString stringWithFormat:@"%@?mini=1", self.panelURL.absoluteString];
+    // 迷你窗口加载独立页面（/mini），与面板各自一套 UI 与逻辑
+    NSString *urlString = [NSString stringWithFormat:@"%@/mini", self.panelURL.absoluteString];
     if (![self.miniWebView.URL.absoluteString hasPrefix:urlString]) {
         [self.miniWebView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:urlString]]];
     } else {

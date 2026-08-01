@@ -2796,6 +2796,7 @@
     article.className = "message assistant-message live-assistant";
     article.dataset.role = "assistant";
     article.dataset.runId = live.runId;
+    article.classList.add("is-thinking");  // 流式回复期间头像呼吸
     const header = document.createElement("header");
     header.className = "assistant-label";
     const avatar = document.createElement("img");
@@ -2844,6 +2845,8 @@
       live.currentText.element.classList.remove("streaming");
     }
     live.currentText = null;
+    const finishedArticle = live.blocks?.closest(".assistant-message");
+    if (finishedArticle) finishedArticle.classList.remove("is-thinking");
   }
 
   function scheduleMarkdownRender(block) {
@@ -3746,6 +3749,8 @@
       live.currentText.element.classList.remove("streaming");
     }
     live.currentText = null;
+    const finishedArticle = live.blocks?.closest(".assistant-message");
+    if (finishedArticle) finishedArticle.classList.remove("is-thinking");
     live.assistantText = "";
     live.assistantReasoning = "";
     live.reasoning = null;
@@ -3966,7 +3971,10 @@
       live.turnId = String(data?.turn_id || "");
       removeRunningStatus(live.turnId);
       ensureActiveTurnUser(live.turnId);
-    } else if (name === "assistant.delta") appendAssistantDelta(live, data?.delta);
+    } else if (name === "assistant.delta") {
+      clearIdleSyncTimer();
+      appendAssistantDelta(live, data?.delta);
+    }
     else if (name.startsWith("reasoning.")) handleReasoningEvent(name, live, data);
     else if (name === "queue.consumed") consumeLiveQueue(live, data);
     else if (name.startsWith("tool.")) handleToolEvent(name, live, data);
