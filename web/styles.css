@@ -4057,6 +4057,11 @@ body[data-mini] .timeline {
   padding: 12px 16px 14px;
   max-width: 100%;
 }
+body[data-mini] .timeline {
+  padding: 12px 16px 14px;
+  max-width: 100%;
+  overflow-y: auto;
+}
 /* 迷你模式专属：卡片感 + 大圆角输入框（与面板不同的视觉） */
 body[data-mini] .composer {
   border-radius: 18px;
