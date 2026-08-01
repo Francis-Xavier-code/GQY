@@ -1,3 +1,4 @@
+mod activity;
 mod agent;
 mod alarm;
 mod backup;

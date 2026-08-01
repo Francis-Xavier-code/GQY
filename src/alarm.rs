@@ -15,6 +15,9 @@ pub struct AlarmRecord {
     pub due_at: i64,
     pub pid: Option<u32>,
     pub status: AlarmStatus,
+    /// 周期重复间隔秒数：0 表示一次性；>0 时响铃后自动重新调度（番茄钟/休息提醒）。
+    #[serde(default)]
+    pub repeat_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -300,6 +303,7 @@ mod tests {
             due_at: 123,
             pid: None,
             status: AlarmStatus::Scheduled,
+            repeat_seconds: 0,
         };
         upsert(&paths, record).unwrap();
         assert_eq!(load(&paths).unwrap().len(), 1);
@@ -340,6 +344,7 @@ mod tests {
             due_at: 123,
             pid: Some(999999),
             status: AlarmStatus::Scheduled,
+            repeat_seconds: 0,
         };
         let live = AlarmRecord {
             id: "alarm-live".to_string(),
@@ -349,6 +354,7 @@ mod tests {
             due_at: 123,
             pid: Some(999998),
             status: AlarmStatus::Scheduled,
+            repeat_seconds: 0,
         };
         let _lock = WorkerLock::acquire(&paths, &live.id).unwrap();
         upsert(&paths, dead).unwrap();

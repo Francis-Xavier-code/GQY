@@ -10,18 +10,40 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
+    let pomo_paths = paths.clone();
+    registry.register(ToolSpec::new(
+        "pomodoro",
+        t(
+            "Start a pomodoro focus cycle: work 25 minutes then break 5 minutes, repeating until cancelled. Rings with GQY's sound at each boundary. Cancel with cancel_alarm.",
+            "开启番茄钟专注循环：工作 25 分钟后休息 5 分钟，循环直到取消。每个阶段切换时用 GQY 内置声音提醒。取消用 cancel_alarm。",
+        ),
+        json!({
+            "type": "object",
+            "properties": {
+                "work_minutes": { "type": "integer", "description": t("Work duration in minutes, default 25.", "工作时长（分钟），默认 25。") },
+                "break_minutes": { "type": "integer", "description": t("Break duration in minutes, default 5.", "休息时长（分钟），默认 5。") }
+            },
+            "required": [],
+            "additionalProperties": false
+        }),
+        move |args| {
+            let paths = pomo_paths.clone();
+            async move { start_pomodoro(args, paths).await }
+        },
+    ).writes());
     let set_paths = paths.clone();
     registry.register(ToolSpec::new(
         "set_alarm",
         t(
-            "Set a local alarm or countdown. Accepts duration like 30s, 10m, 1h 30m, or a time like 14:30. The alarm runs in a background GQY process and uses GQY's embedded sound.",
-            "设置本地闹钟或倒计时。支持 30s、10m、1h 30m 或 14:30。闹钟在后台 GQY 进程运行，并使用 GQY 内置声音。",
+            "Set a local alarm, countdown, or repeating reminder. Accepts duration like 30s, 10m, 1h 30m, or a time like 14:30. Set repeat to a duration to ring every interval (e.g. pomodoro 25m / break 5m). Runs in a background GQY process with GQY's embedded sound.",
+            "设置本地闹钟、倒计时或周期提醒。支持 30s、10m、1h 30m 或 14:30。repeat 传时长可周期性响铃（如番茄钟 25m / 休息 5m）。在后台 GQY 进程运行并使用内置声音。",
         ),
         json!({
             "type": "object",
             "properties": {
                 "time": { "type": "string", "description": t("Duration or clock time.", "时长或时钟时间。") },
                 "label": { "type": "string", "description": t("Optional alarm label.", "可选闹钟标签。") },
+                "repeat": { "type": "string", "description": t("Optional repeat interval (e.g. 25m, 1h). Rings every interval until cancelled.", "可选重复间隔（如 25m、1h）。按间隔周期性响铃直到取消。") },
                 "audio_file": { "type": "string", "description": t("Optional local .wav or .mp3 audio file to play instead of GQY's built-in alarm sound.", "可选本地 .wav 或 .mp3 音频文件，用它替代 GQY 内置闹钟音。") }
             },
             "required": ["time"],
@@ -60,6 +82,107 @@ pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
     ).writes());
 }
 
+/// 番茄钟：工作阶段闹钟（每 work+break 分钟响一次），随后自动排一个休息闹钟。
+/// 两个闹钟都带 label 便于用户识别；取消任意一个即停止循环。
+async fn start_pomodoro(args: Value, paths: GqyPaths) -> Result<String> {
+    let work_minutes = args
+        .get("work_minutes")
+        .and_then(Value::as_u64)
+        .unwrap_or(25)
+        .clamp(1, 180);
+    let break_minutes = args
+        .get("break_minutes")
+        .and_then(Value::as_u64)
+        .unwrap_or(5)
+        .clamp(1, 60);
+    let work_seconds = work_minutes * 60;
+    let break_seconds = break_minutes * 60;
+
+    // 工作结束（同时排下一个工作）= 每 (work+break) 分钟响一次
+    let work_alarm = set_alarm_impl(
+        &format!("{work_seconds}s"),
+        "番茄钟：工作结束，休息一下",
+        work_seconds + break_seconds,
+        None,
+        &paths,
+    )
+    .await?;
+    // 休息结束 = 工作开始后 work 分钟响一次
+    let break_alarm = set_alarm_impl(
+        &format!("{work_seconds}s"),
+        "番茄钟：休息结束，继续工作",
+        work_seconds + break_seconds,
+        None,
+        &paths,
+    )
+    .await?;
+
+    Ok(json!({
+        "ok": true,
+        "work_minutes": work_minutes,
+        "break_minutes": break_minutes,
+        "work_alarm": work_alarm,
+        "break_alarm": break_alarm,
+        "note": "每个阶段切换都会响铃；cancel_alarm 可停止任一个。"
+    })
+    .to_string())
+}
+
+/// 底层调度实现：解析 time/repeat，spawn 后台 worker，落库。
+async fn set_alarm_impl(
+    time: &str,
+    label: &str,
+    repeat_seconds: u64,
+    audio_file: Option<PathBuf>,
+    paths: &GqyPaths,
+) -> Result<String> {
+    let due_at = alarm::due_at_from_time(time)?;
+    let id = format!(
+        "alarm-{}-{}",
+        Local::now().timestamp_millis(),
+        std::process::id()
+    );
+    let exe = std::env::current_exe()?;
+    let mut command = Command::new(exe);
+    command
+        .arg("__alarm-worker")
+        .arg("--id")
+        .arg(&id)
+        .arg("--time")
+        .arg(time)
+        .arg("--label")
+        .arg(label)
+        .arg("--state-dir")
+        .arg(&paths.state_dir)
+        .arg("--cache-dir")
+        .arg(&paths.cache_dir)
+        .arg("--repeat")
+        .arg(repeat_seconds.to_string());
+    if let Some(path) = &audio_file {
+        command.arg("--audio-file").arg(path);
+    }
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let pid = child.id();
+    alarm::upsert(
+        paths,
+        AlarmRecord {
+            id: id.clone(),
+            label: label.to_string(),
+            time: time.to_string(),
+            audio_file: audio_file.clone(),
+            due_at,
+            pid,
+            status: AlarmStatus::Scheduled,
+            repeat_seconds,
+        },
+    )?;
+    Ok(id)
+}
+
 async fn set_alarm(args: Value, paths: GqyPaths) -> Result<String> {
     let time = args
         .get("time")
@@ -80,56 +203,24 @@ async fn set_alarm(args: Value, paths: GqyPaths) -> Result<String> {
         .filter(|value| !value.trim().is_empty())
         .map(resolve_audio_file)
         .transpose()?;
+    let repeat_seconds = args
+        .get("repeat")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| alarm::parse_alarm_seconds(value).map_err(anyhow::Error::from))
+        .transpose()?
+        .unwrap_or(0);
+    let id = set_alarm_impl(time, label, repeat_seconds, audio_file.clone(), &paths).await?;
     let due_at = alarm::due_at_from_time(time)?;
-    let id = format!(
-        "alarm-{}-{}",
-        Local::now().timestamp_millis(),
-        std::process::id()
-    );
-    let exe = std::env::current_exe()?;
-    let mut command = Command::new(exe);
-    command
-        .arg("__alarm-worker")
-        .arg("--id")
-        .arg(&id)
-        .arg("--time")
-        .arg(time)
-        .arg("--label")
-        .arg(label)
-        .arg("--state-dir")
-        .arg(&paths.state_dir)
-        .arg("--cache-dir")
-        .arg(&paths.cache_dir);
-    if let Some(path) = &audio_file {
-        command.arg("--audio-file").arg(path);
-    }
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let pid = child.id();
-    alarm::upsert(
-        &paths,
-        AlarmRecord {
-            id: id.clone(),
-            label: label.to_string(),
-            time: time.to_string(),
-            audio_file: audio_file.clone(),
-            due_at,
-            pid,
-            status: AlarmStatus::Scheduled,
-        },
-    )?;
     Ok(json!({
         "ok": true,
         "id": id,
         "time": time,
         "label": label,
+        "repeat": repeat_seconds,
         "audio_file": audio_file,
         "due_at": due_at,
         "due_at_local": alarm::format_due_at(due_at),
-        "pid": pid,
     })
     .to_string())
 }

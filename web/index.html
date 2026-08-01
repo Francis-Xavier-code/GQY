@@ -206,6 +206,7 @@
         <nav class="settings-nav" aria-label="设置分类">
           <button class="active" type="button" data-settings-view="interface">界面</button>
           <button type="button" data-settings-view="general">全局</button>
+          <button type="button" data-settings-view="tasks">定时任务</button>
           <button type="button" data-settings-view="providers">供应商</button>
           <button type="button" data-settings-view="models">模型池</button>
           <button type="button" data-settings-view="plugins">插件</button>
@@ -242,6 +243,14 @@
           <section class="settings-section settings-panel" data-settings-panel="general" hidden>
           <h2>全局设置</h2>
           <div class="config-form" id="generalConfigForm"></div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="tasks" hidden>
+          <h2>定时任务</h2>
+          <p class="settings-description">闹钟 / 番茄钟 / 周期提醒（由 set_alarm、pomodoro 创建，可随时取消）。</p>
+          <div class="alarm-list" id="alarmList">
+            <p class="settings-description">正在载入…</p>
+          </div>
+          <button class="secondary-button compact-button" id="refreshAlarmsButton" type="button">刷新</button>
           </section>
           <section class="settings-section settings-panel" data-settings-panel="providers" hidden>
           <div class="settings-section-heading"><h2>供应商</h2><button class="secondary-button compact-button" id="addProviderButton" type="button">添加</button></div>

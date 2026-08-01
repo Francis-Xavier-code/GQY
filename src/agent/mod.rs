@@ -1287,6 +1287,8 @@ impl Agent {
                     None
                 };
                 messages.push(ChatMessage::tool(call.id, output.clone()));
+                // 活动日志：记录工具调用成败（默认不进上下文，gqy activity 可查）
+                crate::activity::record_tool(&self.paths, &call.function.name, tool_succeeded);
                 if tool_succeeded && call.function.name == "load_tools" {
                     let loaded = loaded_items_from_output(&output);
                     for name in &loaded.tools {

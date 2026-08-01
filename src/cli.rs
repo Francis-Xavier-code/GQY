@@ -824,6 +824,7 @@ pub enum Command {
     ZshInit,
     RemoveShellHook,
     History(HistoryArgs),
+    Activity(ActivityArgs),
     Pop(PopArgs),
     Kb(KbArgs),
     Memory(MemoryArgs),
@@ -894,6 +895,9 @@ pub struct AlarmWorkerArgs {
     pub cache_dir: PathBuf,
     #[arg(long)]
     pub audio_file: Option<PathBuf>,
+    /// 周期重复间隔秒数（0 = 一次性）
+    #[arg(long, default_value_t = 0)]
+    pub repeat: u64,
 }
 
 #[derive(Debug, Args)]
@@ -918,6 +922,21 @@ pub struct HistoryArgs {
 
     #[arg(long)]
     pub no_thinking: bool,
+
+    /// 关键词搜索（当前会话全部轮次 + 已归档轮次），不设则按时间倒序显示最近记录
+    #[arg(long)]
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ActivityArgs {
+    /// 关键词过滤活动日志
+    #[arg(long)]
+    pub search: Option<String>,
+
+    /// 显示条数，默认 20
+    #[arg(short, long, default_value_t = 20)]
+    pub limit: usize,
 }
 
 #[derive(Debug, Args)]
@@ -1276,6 +1295,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::ZshInit) => shell::zsh::install(&paths),
         Some(Command::RemoveShellHook) => remove_shell_hooks(&paths),
         Some(Command::History(args)) => run_history(&paths, args),
+        Some(Command::Activity(args)) => run_activity(&paths, args),
         Some(Command::Pop(args)) => run_pop(&paths, args),
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
@@ -1308,7 +1328,7 @@ async fn run_tool(paths: &GqyPaths, mode: AgentMode, args: ToolArgs) -> Result<(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum InitKind {
     FirstRun,
     Explicit,
@@ -1347,6 +1367,19 @@ fn run_init(paths: &GqyPaths, kind: InitKind) -> Result<()> {
         t("Preparing data directory", "正在准备数据目录"),
         &paths.data_dir.display().to_string(),
     )?;
+    // 默认文件播种：scripts 索引不存在时创建空索引（GQY 扫描依赖它），
+    // 用户知识库为空且随包有默认 kb 时自动导入（brew 安装后开箱即用）
+    let scripts_index = paths.config_dir.join("scripts/index.json");
+    if !scripts_index.exists() {
+        std::fs::create_dir_all(paths.config_dir.join("scripts"))?;
+        std::fs::write(
+            &scripts_index,
+            "{\n  \"scripts\": []\n}\n",
+        )?;
+    }
+    if kind == InitKind::FirstRun {
+        seed_default_knowledge_base(paths, interactive)?;
+    }
     if interactive {
         println!("\n{}\n", t("Initialization complete.", "初始化完成。"));
         std::thread::sleep(Duration::from_millis(420));
@@ -1358,6 +1391,37 @@ fn run_init(paths: &GqyPaths, kind: InitKind) -> Result<()> {
             paths.config_dir.display()
         );
     }
+    Ok(())
+}
+
+/// 首次运行时：若用户知识库为空且随包携带默认 kb 目录（brew 的 share/gqy/kb），
+/// 自动导入，让 `gqy kb search` 开箱即用（幂等：已有内容则跳过）。
+fn seed_default_knowledge_base(paths: &GqyPaths, interactive: bool) -> Result<()> {
+    let kb_root = paths.data_dir.join("kb");
+    let has_content = kb_root.exists()
+        && std::fs::read_dir(&kb_root).map(|mut entries| entries.next().is_some()).unwrap_or(false);
+    let kb_dir = paths.kb_dir.clone();
+    let has_bundled = kb_dir.is_dir()
+        && std::fs::read_dir(&kb_dir)
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false);
+    if has_content || !has_bundled {
+        return Ok(());
+    }
+    let config = AppConfig::load(paths)?;
+    let kb = tools::knowledge_base::KnowledgeBase::new(config, paths.clone())?;
+    let imported = match kb.add_path_sync(&kb_dir) {
+        Ok(imported) => imported,
+        Err(_) => return Ok(()),
+    };
+    if imported.is_empty() {
+        return Ok(());
+    }
+    print_init_step(
+        interactive,
+        t("Importing bundled knowledge base", "正在导入随包知识库"),
+        &format!("{} 条文档", imported.len()),
+    );
     Ok(())
 }
 
@@ -1484,32 +1548,39 @@ fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {
     let paths = alarm_worker_paths(args.state_dir, args.cache_dir);
     // 先持 flock 再干活：取消/清理据此判定进程是否存活，杜绝 PID 复用误杀
     let _worker_lock = crate::alarm::WorkerLock::acquire(&paths, &args.id)?;
-    let seconds = crate::alarm::parse_alarm_seconds(&args.time)?;
     let source = args
         .audio_file
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "builtin".to_string());
-    let _ = append_alarm_log(
-        &paths,
-        &format!("{}: scheduled in {seconds}s; source={source}\n", args.id),
-    );
-    std::thread::sleep(Duration::from_secs(seconds));
-    let _ = crate::alarm::update_status(&paths, &args.id, crate::alarm::AlarmStatus::Ringing);
-    let _ = append_alarm_log(&paths, &format!("{}: playback starting\n", args.id));
-    let result = play_alarm_once(args.audio_file.as_deref()).or_else(|err| {
-        append_alarm_log(
+    let mut interval = crate::alarm::parse_alarm_seconds(&args.time)?;
+    loop {
+        let _ = append_alarm_log(
             &paths,
-            &format!("{}: audio playback failed: {err}\n", args.id),
-        )?;
-        terminal_bell_fallback();
-        Ok(())
-    });
-    if result.is_ok() {
-        let _ = append_alarm_log(&paths, &format!("{}: playback finished\n", args.id));
+            &format!("{}: scheduled in {interval}s; source={source}\n", args.id),
+        );
+        std::thread::sleep(Duration::from_secs(interval));
+        let _ = crate::alarm::update_status(&paths, &args.id, crate::alarm::AlarmStatus::Ringing);
+        let _ = append_alarm_log(&paths, &format!("{}: playback starting\n", args.id));
+        let result = play_alarm_once(args.audio_file.as_deref()).or_else(|err| {
+            append_alarm_log(
+                &paths,
+                &format!("{}: audio playback failed: {err}\n", args.id),
+            )?;
+            terminal_bell_fallback();
+            Ok(())
+        });
+        if result.is_ok() {
+            let _ = append_alarm_log(&paths, &format!("{}: playback finished\n", args.id));
+        }
+        if args.repeat == 0 {
+            let _ = crate::alarm::remove(&paths, &args.id);
+            return result;
+        }
+        // 周期闹钟：按 repeat 间隔重新调度（响铃期间的等待不计入间隔）
+        interval = args.repeat;
+        let _ = crate::alarm::update_status(&paths, &args.id, crate::alarm::AlarmStatus::Scheduled);
     }
-    let _ = crate::alarm::remove(&paths, &args.id);
-    result
 }
 
 fn play_alarm_once(audio_file: Option<&std::path::Path>) -> Result<()> {
@@ -8179,6 +8250,9 @@ mod repl_input_tests {
 
 fn run_history(paths: &GqyPaths, args: HistoryArgs) -> Result<()> {
     let state = StateStore::new(paths)?;
+    if let Some(query) = args.search.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        return run_history_search(paths, &state, query, args.limit, args.raw, args.no_thinking);
+    }
     for entry in state.history(args.limit)? {
         if args.raw {
             println!("{}", serde_json::to_string(&entry)?);
@@ -8209,6 +8283,108 @@ fn run_history(paths: &GqyPaths, args: HistoryArgs) -> Result<()> {
             println!("{}", entry.content);
         }
         println!();
+    }
+    Ok(())
+}
+
+/// 关键词搜索会话记录：当前会话全部轮次 + 已归档轮次（evicted_turns）。
+/// 只输出命中轮次，不占对话上下文；供 GQY 查「之前干了什么」。
+fn run_history_search(
+    paths: &GqyPaths,
+    state: &StateStore,
+    query: &str,
+    limit: usize,
+    raw: bool,
+    no_thinking: bool,
+) -> Result<()> {
+    let needle = query.to_lowercase();
+    let mut matched = Vec::new();
+
+    // 当前会话全部轮次
+    for entry in state.load_conversation()? {
+        let hay = format!("{} {}", entry.role, entry.content)
+            .to_lowercase();
+        if hay.contains(&needle) {
+            matched.push(entry);
+        }
+    }
+    // 已归档轮次（记忆库 evicted_turns）
+    if let Ok(config) = AppConfig::load(paths) {
+        if config.memory_config().evicted_context_enabled {
+            let store = crate::memory::MemoryStore::new(&config, paths);
+            if let Ok(results) = store.search_evicted_context_readonly(query, 50) {
+                if let Some(list) = results.get("results").and_then(serde_json::Value::as_array) {
+                    for item in list {
+                        let content = item
+                            .get("content")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        if content.to_lowercase().contains(&needle) {
+                            matched.push(crate::state::StoredConversationEntry {
+                                timestamp: item
+                                    .get("timestamp")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                role: "archived".to_string(),
+                                content: content.to_string(),
+                                reasoning: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let shown = matched.into_iter().rev().take(limit).rev().collect::<Vec<_>>();
+    if shown.is_empty() {
+        println!("{}", t("No matches.", "没有找到匹配的记录。"));
+        return Ok(());
+    }
+    for entry in shown {
+        if raw {
+            println!("{}", serde_json::to_string(&entry)?);
+            continue;
+        }
+        println!("{} {}", entry.timestamp, entry.role);
+        if entry.role.starts_with("assistant") {
+            let response = crate::llm::ChatResult {
+                content: entry.content,
+                reasoning: if no_thinking { None } else { entry.reasoning },
+                usage: None,
+                usage_estimated: false,
+                tool_calls: Vec::new(),
+                provider_id: None,
+                model: None,
+            };
+            render::print_assistant_response(&response, !no_thinking)?;
+        } else {
+            println!("{}", entry.content);
+        }
+        println!();
+    }
+    Ok(())
+}
+
+/// 查看活动日志（`gqy activity`）：GQY 干了什么的流水账。
+/// 默认不进对话上下文（零 token），需要时查询。
+fn run_activity(paths: &GqyPaths, args: ActivityArgs) -> Result<()> {
+    let entries = crate::activity::query(paths, args.search.as_deref(), args.limit)?;
+    if entries.is_empty() {
+        println!("{}", t("No activity recorded yet.", "还没有活动记录。"));
+        return Ok(());
+    }
+    for entry in entries {
+        let ts = entry.get("ts").and_then(serde_json::Value::as_str).unwrap_or("");
+        let event = entry.get("event").and_then(serde_json::Value::as_str).unwrap_or("");
+        let detail = entry.get("detail").cloned().unwrap_or(serde_json::Value::Null);
+        let detail = if detail.is_null() {
+            String::new()
+        } else {
+            format!(" {}", serde_json::to_string(&detail).unwrap_or_default())
+        };
+        println!("{ts} [{event}]{detail}");
     }
     Ok(())
 }
@@ -8363,8 +8539,8 @@ fn run_backup(paths: &GqyPaths, args: BackupArgs) -> Result<()> {
             println!(
                 "{}",
                 t(
-                    "backup remote updated; next `gqy backup now` will push to it",
-                    "备份远程已更新；下一次 `gqy backup now` 将推送到该远程"
+                    "backup remote updated; next `gqy backup now` will push to it (supports `owner/repo` via gh CLI)",
+                    "备份远程已更新；下一次 `gqy backup now` 将推送到该远程（支持用 gh CLI 传 `owner/repo`）"
                 )
             );
         }

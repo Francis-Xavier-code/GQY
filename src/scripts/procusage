@@ -480,7 +480,9 @@ parse_args() {
   limit=10
 
   if [[ $# -eq 0 && ! -t 0 ]]; then
-    mapfile -t stdin_args < <(argv_from_stdin "$(cat)" 2>/dev/null || true)
+    # macOS bash 3.2 无 mapfile，用 while-read 兼容
+    stdin_args=()
+    while IFS= read -r _line; do stdin_args+=("$_line"); done < <(argv_from_stdin "$(cat)" 2>/dev/null || true)
     if ((${#stdin_args[@]} > 0)); then
       set -- "${stdin_args[@]}"
     fi

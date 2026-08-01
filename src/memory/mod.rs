@@ -192,6 +192,46 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// 写入一条日记式记忆（心情日志、事件记录等）。source 用于区分类型（mood/episode）。
+    pub fn remember_episode(&self, content: &str, source: &str) -> Result<i64> {
+        if !self.config.enabled || content.trim().is_empty() {
+            return Ok(0);
+        }
+        self.init()?;
+        let conn = self.data_conn()?;
+        conn.execute(
+            "INSERT INTO episodes (content, source, status, recall_count, created_at, updated_at) VALUES (?1, ?2, 'active', 0, ?3, ?3)",
+            params![content.trim(), source.trim(), now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 读取最近的心情记录（source='mood'），最多 limit 条，新的在前。
+    pub fn recent_moods(&self, limit: usize) -> Result<Value> {
+        if !self.data_db.is_file() {
+            return Ok(json!({ "ok": true, "moods": [] }));
+        }
+        self.init()?;
+        let conn = self.data_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, content, created_at FROM episodes WHERE source='mood' AND status != 'forgotten' ORDER BY created_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        let mut moods = Vec::new();
+        for row in rows {
+            let (id, content, created_at) = row?;
+            moods.push(json!({
+                "id": id,
+                "content": content,
+                "timestamp": created_at,
+                "relative": relative_time(&created_at),
+            }));
+        }
+        Ok(json!({ "ok": true, "moods": moods }))
+    }
+
     pub fn stats(&self) -> Result<Value> {
         self.init()?;
         self.prune_missing_skill_records()?;
@@ -399,7 +439,10 @@ impl MemoryStore {
         if !association.episodes.is_empty() {
             output.push_str("\n曾经发生的事情：\n");
             for hit in &association.episodes {
-                output.push_str("- ");
+                // 极简相对时间（如「3天前」），约 2-4 token，让模型感知时效而不浪费上下文
+                output.push_str("- [");
+                output.push_str(&relative_time(&hit.timestamp));
+                output.push_str("] ");
                 output.push_str(&compact_line(&hit.content));
                 output.push('\n');
             }
@@ -759,6 +802,39 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+/// RFC3339 UTC → 极简相对时间（「刚刚」「X 分钟前」「X 小时前」「X 天前」「X 周前」「X 月前」「X 年前」）。
+/// 解析失败时原样返回，保证不崩。
+fn relative_time(timestamp: &str) -> String {
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) else {
+        return timestamp.to_string();
+    };
+    let delta = Utc::now().signed_duration_since(parsed.with_timezone(&Utc));
+    let minutes = delta.num_minutes();
+    if minutes < 1 {
+        return "刚刚".to_string();
+    }
+    if minutes < 60 {
+        return format!("{minutes}分钟前");
+    }
+    let hours = delta.num_hours();
+    if hours < 24 {
+        return format!("{hours}小时前");
+    }
+    let days = delta.num_days();
+    if days < 7 {
+        return format!("{days}天前");
+    }
+    let weeks = days / 7;
+    if weeks < 5 {
+        return format!("{weeks}周前");
+    }
+    let months = days / 30;
+    if months < 12 {
+        return format!("{months}月前");
+    }
+    format!("{}年前", days / 365)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,5 +936,30 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("旧上下文"));
+    }
+}
+
+#[cfg(test)]
+mod time_tests {
+    use super::*;
+
+    #[test]
+    fn relative_time_formats_rfc3339() {
+        let now = Utc::now();
+        let rfc = |seconds: i64| (now + chrono::Duration::seconds(seconds)).to_rfc3339();
+        assert_eq!(relative_time(&rfc(0)), "刚刚");
+        assert_eq!(relative_time(&rfc(-30)), "刚刚");
+        assert_eq!(relative_time(&rfc(-5 * 60)), "5分钟前");
+        assert_eq!(relative_time(&rfc(-3 * 3600)), "3小时前");
+        assert_eq!(relative_time(&rfc(-2 * 86400)), "2天前");
+        assert_eq!(relative_time(&rfc(-21 * 86400)), "3周前");
+        assert_eq!(relative_time(&rfc(-90 * 86400)), "3月前");
+        assert_eq!(relative_time(&rfc(-400 * 86400)), "1年前");
+    }
+
+    #[test]
+    fn relative_time_falls_back_on_bad_input() {
+        assert_eq!(relative_time("not-a-date"), "not-a-date");
+        assert_eq!(relative_time(""), "");
     }
 }

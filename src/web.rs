@@ -993,6 +993,8 @@ fn router(state: WebState) -> Router {
         .route("/api/questions/{question_id}/answer", post(answer_question))
         .route("/api/models/active", put(set_models))
         .route("/api/conversation/reset", post(reset_conversation))
+        .route("/api/alarms", get(list_alarms_web))
+        .route("/api/alarms/{alarm_id}", delete(cancel_alarm_web))
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .with_state(state)
 }
@@ -1152,6 +1154,47 @@ async fn health() -> Json<Value> {
         "status": "ready",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// 取消定时任务（面板「取消」按钮）。
+async fn cancel_alarm_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Path(alarm_id): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let removed = crate::alarm::remove(&state.paths, &alarm_id).map_err(ApiError::internal)?;
+    if removed.is_none() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "alarm not found"));
+    }
+    Ok(Json(json!({ "ok": true, "id": alarm_id })).into_response())
+}
+
+/// 定时任务（闹钟/番茄钟）列表，供面板可视化。
+async fn list_alarms_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let records = crate::alarm::cleanup_dead(&state.paths).map_err(ApiError::internal)?;
+    let alarms = records
+        .into_iter()
+        .map(|record| {
+            json!({
+                "id": record.id,
+                "label": record.label,
+                "time": record.time,
+                "due_at": record.due_at,
+                "due_at_local": crate::alarm::format_due_at(record.due_at),
+                "repeat_seconds": record.repeat_seconds,
+                "status": match record.status {
+                    crate::alarm::AlarmStatus::Scheduled => "scheduled",
+                    crate::alarm::AlarmStatus::Ringing => "ringing",
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "ok": true, "alarms": alarms })).into_response())
 }
 
 async fn bootstrap(

@@ -411,7 +411,7 @@
   }
 
   function setSettingsView(view) {
-    const selected = ["interface", "general", "providers", "models", "plugins", "prompts", "advanced"].includes(view) ? view : "interface";
+    const selected = ["interface", "general", "tasks", "providers", "models", "plugins", "prompts", "advanced"].includes(view) ? view : "interface";
     state.settingsView = selected;
     elements.settingsNav.querySelectorAll("[data-settings-view]").forEach((button) => {
       const active = button.dataset.settingsView === selected;
@@ -421,6 +421,7 @@
     elements.settingsPanels.forEach((panel) => {
       panel.hidden = panel.dataset.settingsPanel !== selected;
     });
+    if (selected === "tasks") loadAlarms();
   }
 
   function configValue(path, fallback = undefined) {
@@ -1312,6 +1313,57 @@
     }
     if (!response.ok) throw new ApiError(await readErrorMessage(response), response.status);
     return response;
+  }
+
+  // ── 定时任务面板（闹钟/番茄钟可视化）────────────────────────────
+  async function loadAlarms() {
+    const list = document.getElementById("alarmList");
+    if (!list) return;
+    list.innerHTML = "";
+    const placeholder = document.createElement("p");
+    placeholder.className = "settings-description";
+    placeholder.textContent = "正在载入…";
+    list.appendChild(placeholder);
+    let data;
+    try {
+      const response = await apiRequest("/api/alarms");
+      data = await response.json();
+    } catch (_) {
+      placeholder.textContent = "载入定时任务失败";
+      return;
+    }
+    list.innerHTML = "";
+    const alarms = Array.isArray(data?.alarms) ? data.alarms : [];
+    if (alarms.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "settings-description";
+      empty.textContent = "暂无定时任务（说「设置一个 25 分钟后的闹钟」或「开启番茄钟」即可创建）";
+      list.appendChild(empty);
+      return;
+    }
+    for (const alarm of alarms) {
+      const item = document.createElement("div");
+      item.className = "alarm-item";
+      const label = document.createElement("span");
+      label.className = "alarm-label";
+      const repeat = Number(alarm.repeat_seconds || 0) > 0 ? " · 周期" : "";
+      label.textContent = `${alarm.label}${repeat}`;
+      const time = document.createElement("span");
+      time.className = "alarm-time";
+      time.textContent = alarm.due_at_local || "";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "secondary-button compact-button";
+      cancel.textContent = "取消";
+      cancel.addEventListener("click", async () => {
+        try {
+          await apiRequest(`/api/alarms/${encodeURIComponent(alarm.id)}`, { method: "DELETE" });
+          loadAlarms();
+        } catch (_) { /* 静默 */ }
+      });
+      item.append(label, time, cancel);
+      list.appendChild(item);
+    }
   }
 
   function asFiniteNumber(value, fallback = 0) {
@@ -4450,6 +4502,8 @@
       }
     });
     elements.reloadConfigButton.addEventListener("click", loadConfigDraft);
+    const refreshAlarmsButton = document.getElementById("refreshAlarmsButton");
+    if (refreshAlarmsButton) refreshAlarmsButton.addEventListener("click", loadAlarms);
     elements.saveConfigButton.addEventListener("click", saveConfigDraft);
     elements.applyAdvancedConfigButton.addEventListener("click", applyAdvancedConfig);
     elements.themeButton.addEventListener("click", () => setTheme(elements.body.dataset.theme === "graphite" ? "linen" : "graphite"));

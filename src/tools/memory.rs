@@ -33,6 +33,59 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: GqyPaths)
             }
         },
     ).writes());
+    // 情绪感知：记录当前心情（心情日志），供后续回忆关联。
+    // 只在情感场景激活，不参与代码任务；写入极简文本，不耗额外 token。
+    let mood_config = config.clone();
+    let mood_paths = paths.clone();
+    registry.register(ToolSpec::new(
+        "log_mood",
+        t(
+            "Record the current mood or emotional state as a diary entry. Use sparingly in emotional or personal conversations; not for coding tasks.",
+            "把当前心情或情绪状态记入心情日志。仅在情感/闲聊场景使用，不要用于代码任务。",
+        ),
+        json!({
+            "type": "object",
+            "properties": {
+                "mood": { "type": "string", "description": t("Mood in a few words, e.g. 平静 / 开心 / 疲惫 / 烦躁.", "几个字描述心情，如 平静 / 开心 / 疲惫 / 烦躁。") },
+                "note": { "type": "string", "description": t("Optional short context note.", "可选简短背景说明。") }
+            },
+            "required": ["mood"],
+            "additionalProperties": false
+        }),
+        {
+            let config = mood_config;
+            let paths = mood_paths;
+            move |args| {
+                let config = config.clone();
+                let paths = paths.clone();
+                async move { log_mood(args, config, paths).await }
+            }
+        },
+    ).writes());
+    // 情绪感知：查看最近心情记录（心情日志回看）。
+    let recall_mood_config = config.clone();
+    let recall_mood_paths = paths.clone();
+    registry.register(ToolSpec::new(
+        "recall_mood",
+        t("Show recent mood diary entries, newest first.", "查看最近的心情日志记录，新的在前。"),
+        json!({
+            "type": "object",
+            "properties": {
+                "max_results": { "type": "integer", "description": t("Optional result limit.", "可选结果数量限制。") }
+            },
+            "required": [],
+            "additionalProperties": false
+        }),
+        {
+            let config = recall_mood_config;
+            let paths = recall_mood_paths;
+            move |args| {
+                let config = config.clone();
+                let paths = paths.clone();
+                async move { recall_mood(args, config, paths).await }
+            }
+        },
+    ));
 }
 
 pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: GqyPaths) {
@@ -228,4 +281,33 @@ mod tests {
         register_readonly(&mut pop_registry, pop_config, paths);
         assert!(tool_names(&pop_registry).contains("search_evicted_context"));
     }
+}
+
+async fn log_mood(args: Value, config: AppConfig, paths: GqyPaths) -> Result<String> {
+    let mood = args
+        .get("mood")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if mood.is_empty() {
+        bail!("mood is required")
+    }
+    let note = args
+        .get("note")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let content = match note {
+        Some(note) => format!("心情：{mood}（{note}）"),
+        None => format!("心情：{mood}"),
+    };
+    let store = MemoryStore::new(&config, &paths);
+    let id = store.remember_episode(&content, "mood")?;
+    Ok(json!({ "ok": true, "id": id, "content": content }).to_string())
+}
+
+async fn recall_mood(args: Value, config: AppConfig, paths: GqyPaths) -> Result<String> {
+    let limit = optional_limit(&args).max(1).min(50);
+    let store = MemoryStore::new(&config, &paths);
+    Ok(store.recent_moods(limit)?.to_string())
 }

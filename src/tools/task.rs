@@ -10,6 +10,7 @@ use std::time::Duration;
 
 const EXPLORE_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-explore.md");
 const GENERAL_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.md");
+const RESEARCHER_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-researcher.md");
 
 const EXPLORE_ALLOWED: &[&str] = &[
     "read_file",
@@ -50,10 +51,13 @@ const GENERAL_EXCLUDED: &[&str] = &[
 
 const EXPLORE_MAX_STEPS: usize = 30;
 const GENERAL_MAX_STEPS: usize = 50;
+const RESEARCHER_MAX_STEPS: usize = 80;
 const EXPLORE_TOOL_TIMEOUT: u64 = 60;
 const GENERAL_TOOL_TIMEOUT: u64 = 120;
+const RESEARCHER_TOOL_TIMEOUT: u64 = 180;
 const EXPLORE_TOTAL_TIMEOUT: u64 = 300;
 const GENERAL_TOTAL_TIMEOUT: u64 = 600;
+const RESEARCHER_TOTAL_TIMEOUT: u64 = 1200;
 
 #[derive(Clone)]
 struct TaskContext {
@@ -66,12 +70,14 @@ struct TaskContext {
 enum SubagentType {
     Explore,
     General,
+    Researcher,
 }
 
 impl SubagentType {
     fn from_str(s: &str) -> Self {
         match s {
             "explore" => Self::Explore,
+            "researcher" => Self::Researcher,
             _ => Self::General,
         }
     }
@@ -80,6 +86,7 @@ impl SubagentType {
         match self {
             Self::Explore => "explore",
             Self::General => "general",
+            Self::Researcher => "researcher",
         }
     }
 
@@ -87,6 +94,7 @@ impl SubagentType {
         match self {
             Self::Explore => EXPLORE_SYSTEM_PROMPT,
             Self::General => GENERAL_SYSTEM_PROMPT,
+            Self::Researcher => RESEARCHER_SYSTEM_PROMPT,
         }
     }
 
@@ -94,6 +102,7 @@ impl SubagentType {
         match self {
             Self::Explore => EXPLORE_MAX_STEPS,
             Self::General => GENERAL_MAX_STEPS,
+            Self::Researcher => RESEARCHER_MAX_STEPS,
         }
     }
 
@@ -101,6 +110,7 @@ impl SubagentType {
         match self {
             Self::Explore => EXPLORE_TOOL_TIMEOUT,
             Self::General => GENERAL_TOOL_TIMEOUT,
+            Self::Researcher => RESEARCHER_TOOL_TIMEOUT,
         }
     }
 
@@ -108,6 +118,7 @@ impl SubagentType {
         match self {
             Self::Explore => EXPLORE_TOTAL_TIMEOUT,
             Self::General => GENERAL_TOTAL_TIMEOUT,
+            Self::Researcher => RESEARCHER_TOTAL_TIMEOUT,
         }
     }
 }
@@ -142,13 +153,18 @@ pub fn register(
                 },
                 "subagent_type": {
                     "type": "string",
-                    "enum": ["explore", "general"],
-                    "description": t("Subagent type. explore: read-only search for codebase exploration and info gathering; general: multi-step tasks with file read/write and command execution. Defaults to general.", "子代理类型。explore：只读搜索，适合代码库探索和信息收集；general：通用多步任务，可读写文件和运行命令。默认 general。"),
+                    "enum": ["explore", "general", "researcher"],
+                    "description": t("Subagent type. explore: read-only search; general: multi-step tasks with file and command access; researcher: deep research with high tool budget (web searches, files, synthesis). Defaults to general.", "子代理类型。explore：只读搜索；general：通用多步任务（可读写文件、运行命令）；researcher：深度研究，高工具预算（多轮搜索、读文件、综合结论）。默认 general。"),
                     "default": "general"
+                },
+                "model": {
+                    "type": "string",
+                    "description": t("Optional. Model for this subagent, e.g. `deepseek/deepseek-chat` or a model name like `deepseek-reasoner`. Use a larger model for heavy research. Defaults to the active model.", "可选。该子代理使用的模型，如 `deepseek/deepseek-chat` 或模型名如 `deepseek-reasoner`。重研究可用更大模型。默认用当前模型。"),
+                    "default": ""
                 },
                 "max_steps": {
                     "type": "integer",
-                    "description": t("Optional. Override the subagent's tool call budget. explore defaults to 30, general defaults to 50.", "可选。覆盖子代理的工具调用预算上限。explore 默认 30，general 默认 50。")
+                    "description": t("Optional. Override the subagent's tool call budget. explore defaults to 30, general defaults to 50, researcher defaults to 80.", "可选。覆盖子代理的工具调用预算上限。explore 默认 30，general 默认 50，researcher 默认 80。")
                 }
             },
             "required": ["description", "prompt"],
@@ -201,20 +217,20 @@ async fn run_task(
     let enabled = context.config.plugins.deep_research.show_progress;
     let sa_progress = SubagentProgress::new(progress, mode, enabled);
 
-    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
+    let client = subagent_client(&context, args.get("model").and_then(Value::as_str), mode)?
         .for_subagent_output(mode == ProgressMode::Full);
     let tools = match sa_type {
         SubagentType::Explore => context.tools.clone_filtered(EXPLORE_ALLOWED),
         SubagentType::General => context.tools.clone(),
+        SubagentType::Researcher => context.tools.clone(),
     };
 
     let runner = SubagentRunner::new(client, sa_type.system_prompt(), tools, sa_progress)
         .max_steps(max_steps)
         .timeout_seconds(tool_timeout)
-        .excluded_tools(if sa_type == SubagentType::General {
-            GENERAL_EXCLUDED
-        } else {
-            &[]
+        .excluded_tools(match sa_type {
+            SubagentType::General | SubagentType::Researcher => GENERAL_EXCLUDED,
+            SubagentType::Explore => &[],
         });
 
     let (result, stats) =
@@ -250,6 +266,14 @@ async fn run_task(
         "completed"
     };
 
+    // 子代理活动日志（默认不进上下文，gqy activity 可查）
+    crate::activity::record_subagent(
+        &context.paths,
+        sa_type.label(),
+        stats.tool_calls,
+        state == "completed",
+    );
+
     let final_text = result.content.trim().to_string();
 
     Ok(serde_json::to_string_pretty(&json!({
@@ -261,4 +285,35 @@ async fn run_task(
         "result": final_text,
         "stats": stats.public(),
     }))?)
+}
+
+/// 构造子代理 client：可指定 `provider/model` 或纯模型名（如 deepseek-reasoner），
+/// 未指定时用当前激活模型。
+fn subagent_client(
+    context: &TaskContext,
+    model_arg: Option<&str>,
+    mode: ProgressMode,
+) -> Result<OpenAiCompatibleClient> {
+    let model = model_arg.map(str::trim).filter(|value| !value.is_empty());
+    let Some(model) = model else {
+        return OpenAiCompatibleClient::from_config(&context.config, &context.paths);
+    };
+    let (provider_id, model_name) = match model.split_once('/') {
+        Some((provider, model)) => (Some(provider.trim().to_string()), model.trim()),
+        None => (None, model),
+    };
+    if model_name.is_empty() {
+        bail!("model must not be empty");
+    }
+    // 在已配置的 provider/model 池里找匹配项
+    let mut provider = context
+        .config
+        .provider(provider_id.as_deref())?
+        .clone();
+    if !provider.models.iter().any(|m| m == model_name) {
+        bail!("unknown model: {model_name} (check `gqy models`)");
+    }
+    provider.default_model = model_name.to_string();
+    let _ = mode;
+    OpenAiCompatibleClient::new(&provider, &context.config, &context.paths)
 }
