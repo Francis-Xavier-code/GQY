@@ -62,10 +62,11 @@ fn is_noise_process(comm: &str) -> bool {
 }
 
 /// 本地判断：是否值得打扰（CPU 突增进程存在且非瞬时）。
-/// 简单启发式：存在 ≥2 个高 CPU 进程，或单个 ≥150% CPU（多核满载）。
+/// 简单启发式：存在 ≥2 个高 CPU 进程，或单个 ≥150% CPU（多核满载），
+/// 或系统整体内存占用超过 90%（内存吃紧）。
 pub fn should_alert(sample: &WatchSample) -> bool {
     let heavy = sample.hot_processes.iter().filter(|(_, cpu, _)| *cpu >= 150.0).count();
-    heavy >= 1 || sample.hot_processes.len() >= 2
+    heavy >= 1 || sample.hot_processes.len() >= 2 || sample.memory_pressure >= 90.0
 }
 
 /// 构造主动消息（给顾清影的判断材料，不直接打扰用户）。

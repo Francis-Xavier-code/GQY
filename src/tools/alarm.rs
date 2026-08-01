@@ -130,17 +130,6 @@ async fn start_pomodoro(args: Value, paths: GqyPaths) -> Result<String> {
     .to_string())
 }
 
-/// 底层调度实现：解析 time/repeat，spawn 后台 worker，落库。
-async fn set_alarm_impl(
-    time: &str,
-    label: &str,
-    repeat_seconds: u64,
-    audio_file: Option<PathBuf>,
-    paths: &GqyPaths,
-) -> Result<String> {
-    set_alarm_impl_full(time, label, repeat_seconds, 20, audio_file, paths).await
-}
-
 async fn set_alarm_impl_full(
     time: &str,
     label: &str,
