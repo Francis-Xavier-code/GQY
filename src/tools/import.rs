@@ -49,10 +49,10 @@ pub struct ImportResult {
     pub skills: Vec<String>,
 }
 
-/// 导入工具包：source 为本地目录或 Git 仓库 URL（https/git@）。
-pub fn import_tools(paths: &GqyPaths, source: &str, name: Option<&str>) -> Result<ImportResult> {
+/// 解析并准备仓库/目录（git URL 克隆到 workspace，本地路径规范化）。
+fn resolve_source(source: &str) -> Result<PathBuf> {
     let workspace = crate::tools::path_guard::workspace_dir().join("tool-imports");
-    let dir = if is_git_url(source) {
+    if is_git_url(source) {
         let dir_name = source
             .trim_end_matches('/')
             .rsplit(['/', ':'])
@@ -79,19 +79,74 @@ pub fn import_tools(paths: &GqyPaths, source: &str, name: Option<&str>) -> Resul
                 bail!("git clone 失败：{source}");
             }
         }
-        target
+        return Ok(target);
     } else {
         let path = PathBuf::from(source);
         if !path.is_dir() {
             bail!("工具目录不存在：{source}");
         }
-        path.canonicalize()?
+        return Ok(path.canonicalize()?);
+    }
+}
+
+/// 先理解再导入：列出候选可执行脚本与头部摘要，供 GQY/用户判断核心功能。
+/// 只读仓库头部几行，不导入任何东西。
+pub fn inspect_source(source: &str) -> Result<Vec<(String, String)>> {
+    let dir = resolve_source(source)?;
+    let dir = dir.canonicalize().unwrap_or(dir);
+    let entries = auto_scan(&dir)?;
+    let mut result = Vec::new();
+    for entry in entries {
+        let path = dir.join(&entry.path);
+        let header = read_header_lines(&path, 3);
+        result.push((entry.path, header));
+    }
+    Ok(result)
+}
+
+fn read_header_lines(path: &Path, limit: usize) -> String {
+    let Ok(text) = fs::read_to_string(path) else {
+        return String::new();
     };
+    text.lines()
+        .take(limit)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
+        .chars()
+        .take(160)
+        .collect()
+}
+
+/// 导入工具包：source 为本地目录或 Git 仓库 URL（https/git@）。
+/// `only` 非空时只导入指定的候选（GQY 理解项目后挑核心功能）。
+pub fn import_tools(
+    paths: &GqyPaths,
+    source: &str,
+    name: Option<&str>,
+    only: Option<&[String]>,
+) -> Result<ImportResult> {
+    let dir = resolve_source(source)?;
 
     // 统一解析真实路径：/tmp 在 macOS 上是 /private/tmp 的符号链接，
     // 不 canonicalize 会导致后续 starts_with 越界误判
     let dir = dir.canonicalize().unwrap_or(dir);
-    let entries = load_entries(&dir)?;
+    let mut entries = load_entries(&dir)?;
+    if let Some(only) = only {
+        // 先理解再导入：只保留指定候选（按文件名/相对路径匹配）
+        let wanted: Vec<&str> = only.iter().map(String::as_str).collect();
+        entries.retain(|entry| {
+            let file_name = Path::new(&entry.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            wanted.iter().any(|w| *w == entry.path || *w == file_name)
+        });
+        if entries.is_empty() {
+            bail!("--only 指定的候选都不存在（先 gqy tools inspect 查看候选）");
+        }
+    }
     if entries.is_empty() {
         bail!(
             "{} 里没有找到工具（需要 gqy-tools.json/manifest.json 清单，或可执行文件）",

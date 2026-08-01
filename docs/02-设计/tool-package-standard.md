@@ -61,6 +61,22 @@ gqy tools list                        # 查看已导入的工具包
 没有清单时，GQY 自动扫描仓库内**有执行权限的文件**（跳过 `.git`、`.` 开头文件），
 描述取脚本头部的 `Description:` 注释（`# Description: xxx` / `; Description:` 均可）。
 
+## 二点五、先理解再导入（推荐流程）
+
+仓库里常常混着**与功能无关的脚本**（构建、发布、CI 辅助），无脑全转会让模型面对一堆
+候选时误用。推荐两步走：
+
+```zsh
+# 1. 先看候选：列出所有可执行脚本 + 头部摘要，判断哪些是核心功能
+gqy tools inspect https://github.com/xxx/tool-repo
+
+# 2. 精准导入核心工具（构建/发布脚本不转）
+gqy tools import https://github.com/xxx/tool-repo --only download.sh,install.sh
+```
+
+给顾清影的用法：把仓库链接发给她，让她先 `gqy tools inspect` + 读 README 判断核心功能，
+再 `gqy tools import ... --only` 导入，最后 `gqy tools list` 确认。她全程可自主完成。
+
 ## 三、导入后的行为
 
 - 文件复制到 `GQY_HOME/config/scripts/<包名>/`，权限 755；
