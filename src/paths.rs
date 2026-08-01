@@ -32,20 +32,19 @@ impl GqyPaths {
             "could not determine XDG base directories",
             "无法确定 XDG 基础目录",
         ))?;
-        // macOS 上与文档/菜单栏约定保持一致（~/Library/Application Support/GQY）
-        let app_dir = if cfg!(target_os = "macos") { "GQY" } else { "gqy" };
-        let config_dir = base.config_dir().join(app_dir);
-        let data_dir = base.data_dir().join(app_dir);
-        let cache_dir = base.cache_dir().join(app_dir);
+        // 统一使用小写 gqy：升级只替换二进制，目录路径不变即数据不变
+        let config_dir = base.config_dir().join("gqy");
+        let data_dir = base.data_dir().join("gqy");
+        let cache_dir = base.cache_dir().join("gqy");
         let state_dir = base
             .state_dir()
             .unwrap_or_else(|| base.data_dir())
-            .join(app_dir);
+            .join("gqy");
         let pictures_dir = std::env::var_os("XDG_PICTURES_DIR")
             .map(PathBuf::from)
             .or_else(|| UserDirs::new().and_then(|dirs| dirs.picture_dir().map(PathBuf::from)))
             .unwrap_or_else(|| base.home_dir().join("Pictures"))
-            .join(app_dir);
+            .join("gqy");
         let fish_hook_file = base.config_dir().join("fish/conf.d/gqy.fish");
         let bash_hook_file = config_dir.join("shell/bash-hook.sh");
         let zsh_hook_file = config_dir.join("shell/zsh-hook.zsh");

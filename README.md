@@ -25,7 +25,7 @@ GQY 是从我的想法中诞生出来的人格，从 [shorin-miyu](https://githu
 gqy config
 ```
 
-她的所有配置、记忆和对话状态都收拢在独立主目录 `GQY_HOME`（建议 `~/Library/Application Support/GQY`）中，与宿主机其他配置隔离；每一轮对话后还会自动生成 Git 快照保存记忆，绑定私有远程仓库后自动推送，换机器一键恢复。详见 [macOS、独立主目录与记忆备份](docs/01-指南/macos-portable-home-and-backup.md)。
+她的所有配置、记忆和对话状态都收拢在独立主目录 `GQY_HOME`（建议 `~/Library/Application Support/gqy`）中，与宿主机其他配置隔离；每一轮对话后还会自动生成 Git 快照保存记忆，绑定私有远程仓库后自动推送，换机器一键恢复。详见 [macOS、独立主目录与记忆备份](docs/01-指南/macos-portable-home-and-backup.md)。
 
 ## 如何安装？
 
@@ -60,7 +60,7 @@ brew install rust chafa
 首次运行（会创建 GQY_HOME 与默认配置）：
 
 ```
-export GQY_HOME="$HOME/Library/Application Support/GQY"
+export GQY_HOME="$HOME/Library/Application Support/gqy"
 ./target/release/gqy
 ```
 
@@ -135,7 +135,7 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
   首次使用导入：
 
   ```
-  export GQY_HOME="$HOME/Library/Application Support/GQY"
+  export GQY_HOME="$HOME/Library/Application Support/gqy"
   ./target/release/gqy kb add kb/
   ```
 
@@ -202,7 +202,7 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
   A：清影——清冷的影子，是我给她的名字。她平时清冷，聊熟了又活泼，像量子叠加态。
 
 - **Q：换电脑/重装系统怎么把她带走？**
-  A：所有状态都在 `GQY_HOME`（建议 `~/Library/Application Support/GQY`）。配好远程仓库后，新机器上 `gqy backup restore --remote <url> --ssh-key <key>` 一条命令恢复人格、记忆、对话和知识库。
+  A：所有状态都在 `GQY_HOME`（建议 `~/Library/Application Support/gqy`）。配好远程仓库后，新机器上 `gqy backup restore --remote <url> --ssh-key <key>` 一条命令恢复人格、记忆、对话和知识库。
 
 - **Q：远程仓库会不会泄露 API key？**
   A：不会。快照里的 `config.jsonc` 会自动清空所有 api_key/token/password 等字段；私钥、`.env`、缓存、日志都不会进入提交。详见 [隔离与安全边界](docs/01-指南/macos-portable-home-and-backup.md)。
