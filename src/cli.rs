@@ -826,6 +826,7 @@ pub enum Command {
     History(HistoryArgs),
     Activity(ActivityArgs),
     Pop(PopArgs),
+    Memes(MemesArgs),
     Kb(KbArgs),
     Memory(MemoryArgs),
     Backup(BackupArgs),
@@ -835,6 +836,7 @@ pub enum Command {
     Web(WebArgs),
     Balance,
     Alarm(AlarmArgs),
+    Watch(WatchArgs),
     Napcat(NapcatArgs),
     Tg(TgArgs),
 }
@@ -1072,6 +1074,20 @@ pub struct BackupRemoteArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct MemesArgs {
+    #[command(subcommand)]
+    pub command: Option<MemesCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MemesCommand {
+    /// 列出表情库（内置 + 用户覆盖层）
+    List,
+    /// 统计表情库（数量/格式/大小）
+    Stats,
+}
+
+#[derive(Debug, Args)]
 pub struct SkillsArgs {
     #[command(subcommand)]
     pub command: SkillsCommand,
@@ -1094,6 +1110,17 @@ pub enum AlarmCommand {
         #[arg(long)]
         all: bool,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    /// 采样间隔（如 30s、5m），默认 60s
+    #[arg(long, default_value = "60s")]
+    pub every: String,
+
+    /// 只采样一次并输出报告（不循环）
+    #[arg(long)]
+    pub once: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1289,6 +1316,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
 
     match cli.command {
         Some(Command::Alarm(args)) => run_alarm_cmd(&paths, args),
+        Some(Command::Watch(args)) => run_watch(&paths, args),
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Preview) => {
@@ -1325,6 +1353,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::History(args)) => run_history(&paths, args),
         Some(Command::Activity(args)) => run_activity(&paths, args),
         Some(Command::Pop(args)) => run_pop(&paths, args),
+        Some(Command::Memes(args)) => run_memes(&paths, args),
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Backup(args)) => run_backup(&paths, args),
@@ -1570,6 +1599,45 @@ fn remove_shell_hooks(paths: &GqyPaths) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// 管家监控：采样系统进程，检测到异常时给运行中的 WebUI 会话入队主动消息。
+fn run_watch(paths: &GqyPaths, args: WatchArgs) -> Result<()> {
+    let interval = crate::alarm::parse_alarm_seconds(&args.every)?;
+    loop {
+        let sample = match crate::watch::sample_system() {
+            Ok(sample) => sample,
+            Err(err) => {
+                eprintln!("watch: {err}");
+                return Ok(());
+            }
+        };
+        if crate::watch::should_alert(&sample) {
+            let message = crate::watch::alert_message(&sample);
+            let delivered = crate::watch::enqueue_alert(paths, &message)?;
+            if delivered {
+                println!(
+                    "{}",
+                    t(
+                        "watch: anomaly detected, alert queued to the running session",
+                        "监控：检测到异常，已给运行中的会话入队主动提醒"
+                    )
+                );
+            } else {
+                println!(
+                    "{}",
+                    t(
+                        "watch: anomaly detected (WebUI not running, alert skipped)",
+                        "监控：检测到异常（WebUI 未运行，跳过提醒）"
+                    )
+                );
+            }
+        }
+        if args.once {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+    }
 }
 
 fn run_alarm_cmd(paths: &GqyPaths, args: AlarmArgs) -> Result<()> {
@@ -8526,6 +8594,109 @@ fn run_activity(paths: &GqyPaths, args: ActivityArgs) -> Result<()> {
         println!("{ts} [{event}]{detail}");
     }
     Ok(())
+}
+
+fn run_memes(paths: &GqyPaths, args: MemesArgs) -> Result<()> {
+    match args.command.unwrap_or(MemesCommand::List) {
+        MemesCommand::List => {
+            let libs = meme_library_summaries(paths);
+            if libs.is_empty() {
+                println!("{}", t("No meme libraries found.", "未找到表情库。"));
+                return Ok(());
+            }
+            for (library, count) in libs {
+                println!("{library}: {count} 个表情");
+            }
+            println!();
+            println!(
+                "{}",
+                t(
+                    "Add more with `add_meme` in conversation (give it an image path).",
+                    "对话中用 add_meme 工具（提供图片路径）即可添加更多表情。"
+                )
+            );
+            Ok(())
+        }
+        MemesCommand::Stats => {
+            let (total, formats) = meme_format_stats(paths);
+            if crate::i18n::is_zh() {
+                println!("共 {total} 个表情；格式分布：{formats}");
+            } else {
+                println!("{total} memes total; formats: {formats}");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// 扫描表情库目录（内置 + 用户覆盖层），返回 (库名, 表情数)。
+fn meme_library_summaries(paths: &GqyPaths) -> Vec<(String, usize)> {
+    let mut result = Vec::new();
+    let mut scan = |root: &std::path::Path| {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let index = path.join("index.json");
+            if !index.is_file() {
+                continue;
+            }
+            let count = std::fs::read_to_string(&index)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|value| {
+                    value
+                        .get("memes")
+                        .and_then(serde_json::Value::as_array)
+                        .map(Vec::len)
+                })
+                .unwrap_or(0);
+            result.push((entry.file_name().to_string_lossy().to_string(), count));
+        }
+    };
+    // 三种布局都扫：brew/app 的 share/memes、源码树的 share/src/memes、用户覆盖层
+    scan(&paths.share_dir.join("memes"));
+    scan(&paths.share_dir.join("src/memes"));
+    scan(&paths.data_dir.join("memes"));
+    result
+}
+
+/// 表情格式分布统计（jpg/gif/png/webp…）。
+fn meme_format_stats(paths: &GqyPaths) -> (usize, String) {
+    use std::collections::BTreeMap;
+    let mut formats: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total = 0usize;
+    for root in [
+        paths.share_dir.join("memes"),
+        paths.share_dir.join("src/memes"),
+        paths.data_dir.join("memes"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let images = entry.path().join("images");
+            let Ok(files) = std::fs::read_dir(&images) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let name = file.file_name().to_string_lossy().to_string();
+                let ext = name.rsplit('.').next().unwrap_or("?").to_lowercase();
+                *formats.entry(ext).or_insert(0) += 1;
+                total += 1;
+            }
+        }
+    }
+    let summary = formats
+        .into_iter()
+        .map(|(ext, count)| format!("{ext}×{count}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (total, summary)
 }
 
 async fn run_kb(paths: &GqyPaths, args: KbArgs) -> Result<()> {
