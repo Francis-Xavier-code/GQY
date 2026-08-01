@@ -5,17 +5,17 @@
 #   brew install gqy
 #
 # 发布流程：
-#   1. git tag v0.4.3 && git push origin v0.4.3
+#   1. git tag v0.4.4 && git push origin v0.4.4
 #   2. 计算源码 tarball 的 sha256：
-#        curl -Ls https://github.com/Francis-Xavier-code/GQY/archive/refs/tags/v0.4.3.tar.gz | shasum -a 256
+#        curl -Ls https://github.com/Francis-Xavier-code/GQY/archive/refs/tags/v0.4.4.tar.gz | shasum -a 256
 #   3. 把结果填入下面 sha256 并提交本文件
 #   4. 同步到 homebrew-GQY tap 仓库
 #   5. brew install gqy 验证
 class Gqy < Formula
   desc "顾清影 —— 活在终端与菜单栏里的 AI 助理"
   homepage "https://github.com/Francis-Xavier-code/GQY"
-  url "https://github.com/Francis-Xavier-code/GQY/archive/refs/tags/v0.4.3.tar.gz"
-  sha256 "e55538c086cbd17ff76a3a86aeb65883d94e535d283e0a74590f629c3e834513"
+  url "https://github.com/Francis-Xavier-code/GQY/archive/refs/tags/v0.4.4.tar.gz"
+  sha256 "7af51338572f770dd85ebf55c09bcc17fed08d0e654bbbdf4dfef3409f9b7231"
   license "GPL-3.0"
 
   depends_on "rust" => :build
