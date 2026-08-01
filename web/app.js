@@ -1271,6 +1271,7 @@
       });
       applyConfigPayload(await response.json());
       if (resetsConversation) await loadBootstrap();
+      state.configSavedAt = Date.now();
       showToast("配置已保存");
     } catch (error) {
       showToast(error.message || "配置保存失败", "error");
@@ -4146,8 +4147,11 @@
       return;
     }
     if (name === "config.reloaded") {
-      // 配置文件被外部修改（CLI/编辑），后端已自动重载：提示并刷新配置显示
-      showToast("检测到配置变更，已自动重新加载", "info");
+      // 配置文件被外部修改（CLI/编辑），后端已自动重载：提示并刷新配置显示。
+      // 面板自己刚保存的配置（5 秒内）静默同步，避免「切换模型」重复弹提示。
+      if (Date.now() - (state.configSavedAt || 0) > 5000) {
+        showToast("检测到配置变更，已自动重新加载", "info");
+      }
       loadConfigDraft();
       loadBootstrap();
       return;
@@ -4395,6 +4399,8 @@
         closeModelMenu();
         renderModelMenu();
         updateContext();
+        // 面板自己保存的配置：随后 config.reloaded 静默同步，不再重复提示
+        state.configSavedAt = Date.now();
         showToast("模型设置已更新");
       }
       updateControlState();

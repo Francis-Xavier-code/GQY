@@ -1892,6 +1892,8 @@ async fn reset_conversation(
 
 /// 配置文件热重载：每 2 秒检查 config.jsonc 的修改时间，
 /// 变化时重新加载配置并重建 agent（不重置会话），同时发布事件让前端刷新。
+/// 注意：ApplyConfig 内部会把规范化后的配置写回文件（mtime 再次变化），
+/// 因此必须在应用完成后把写入后的 mtime 作为新基线，否则会自我触发无限循环。
 fn spawn_config_watcher(paths: GqyPaths, actor_tx: mpsc::UnboundedSender<ActorCommand>, events: EventHub) {
     let mut last_mtime = std::fs::metadata(&paths.config_file)
         .and_then(|meta| meta.modified())
@@ -1910,7 +1912,6 @@ fn spawn_config_watcher(paths: GqyPaths, actor_tx: mpsc::UnboundedSender<ActorCo
                 continue;
             }
             let Some(mtime) = mtime else { continue };
-            last_mtime = Some(mtime);
             let Ok(config) = AppConfig::load(&paths) else {
                 tracing::warn!("config watcher: failed to reload configuration");
                 continue;
@@ -1918,7 +1919,7 @@ fn spawn_config_watcher(paths: GqyPaths, actor_tx: mpsc::UnboundedSender<ActorCo
             let Ok(prompts) = read_prompt_documents(&config, &paths) else {
                 continue;
             };
-            let (reply, _receiver) = tokio::sync::oneshot::channel();
+            let (reply, receiver) = tokio::sync::oneshot::channel();
             if actor_tx
                 .send(ActorCommand::ApplyConfig {
                     config,
@@ -1928,6 +1929,12 @@ fn spawn_config_watcher(paths: GqyPaths, actor_tx: mpsc::UnboundedSender<ActorCo
                 })
                 .is_ok()
             {
+                // 等应用完成（含配置写回），把写入后的 mtime 设为基线，
+                // 吸收自我写入，避免「重载→写回→再重载」死循环
+                let _ = receiver.await;
+                last_mtime = std::fs::metadata(&paths.config_file)
+                    .and_then(|meta| meta.modified())
+                    .ok();
                 tracing::info!("config watcher: configuration reloaded from file");
                 events.publish("config.reloaded", serde_json::json!({}));
             }
