@@ -99,19 +99,21 @@ async fn start_pomodoro(args: Value, paths: GqyPaths) -> Result<String> {
     let break_seconds = break_minutes * 60;
 
     // 工作结束（同时排下一个工作）= 每 (work+break) 分钟响一次
-    let work_alarm = set_alarm_impl(
+    let work_alarm = set_alarm_impl_full(
         &format!("{work_seconds}s"),
         "番茄钟：工作结束，休息一下",
         work_seconds + break_seconds,
+        20,
         None,
         &paths,
     )
     .await?;
     // 休息结束 = 工作开始后 work 分钟响一次
-    let break_alarm = set_alarm_impl(
+    let break_alarm = set_alarm_impl_full(
         &format!("{work_seconds}s"),
         "番茄钟：休息结束，继续工作",
         work_seconds + break_seconds,
+        20,
         None,
         &paths,
     )
@@ -136,6 +138,17 @@ async fn set_alarm_impl(
     audio_file: Option<PathBuf>,
     paths: &GqyPaths,
 ) -> Result<String> {
+    set_alarm_impl_full(time, label, repeat_seconds, 20, audio_file, paths).await
+}
+
+async fn set_alarm_impl_full(
+    time: &str,
+    label: &str,
+    repeat_seconds: u64,
+    max_rings: u64,
+    audio_file: Option<PathBuf>,
+    paths: &GqyPaths,
+) -> Result<String> {
     let due_at = alarm::due_at_from_time(time)?;
     let id = format!(
         "alarm-{}-{}",
@@ -157,7 +170,11 @@ async fn set_alarm_impl(
         .arg("--cache-dir")
         .arg(&paths.cache_dir)
         .arg("--repeat")
-        .arg(repeat_seconds.to_string());
+        .arg(repeat_seconds.to_string())
+        .arg("--max-rings")
+        .arg(max_rings.to_string())
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string());
     if let Some(path) = &audio_file {
         command.arg("--audio-file").arg(path);
     }
@@ -178,6 +195,7 @@ async fn set_alarm_impl(
             pid,
             status: AlarmStatus::Scheduled,
             repeat_seconds,
+            max_rings,
         },
     )?;
     Ok(id)
@@ -210,7 +228,19 @@ async fn set_alarm(args: Value, paths: GqyPaths) -> Result<String> {
         .map(|value| alarm::parse_alarm_seconds(value).map_err(anyhow::Error::from))
         .transpose()?
         .unwrap_or(0);
-    let id = set_alarm_impl(time, label, repeat_seconds, audio_file.clone(), &paths).await?;
+    let max_rings = args
+        .get("max_rings")
+        .and_then(Value::as_u64)
+        .unwrap_or(20);
+    let id = set_alarm_impl_full(
+        time,
+        label,
+        repeat_seconds,
+        max_rings,
+        audio_file.clone(),
+        &paths,
+    )
+    .await?;
     let due_at = alarm::due_at_from_time(time)?;
     Ok(json!({
         "ok": true,
@@ -254,16 +284,8 @@ async fn cancel_alarm(args: Value, paths: GqyPaths) -> Result<String> {
     if id.is_empty() {
         bail!("id is required")
     }
-    let removed = alarm::remove(&paths, id)?;
-    if let Some(record) = &removed {
-        if let Some(pid) = record.pid {
-            // flock 判定存活：锁被占用 = worker 还在（PID 复用安全）
-            if alarm::worker_alive(&paths, id, pid) {
-                alarm::stop_process(pid)?;
-            }
-        }
-    }
-    Ok(json!({"ok": removed.is_some(), "id": id, "removed": removed.is_some()}).to_string())
+    let cancelled = alarm::cancel(&paths, id)?;
+    Ok(json!({"ok": cancelled, "id": id, "removed": cancelled}).to_string())
 }
 
 fn resolve_audio_file(value: &str) -> Result<PathBuf> {

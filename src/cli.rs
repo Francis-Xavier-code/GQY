@@ -834,6 +834,7 @@ pub enum Command {
     Reset(ResetArgs),
     Web(WebArgs),
     Balance,
+    Alarm(AlarmArgs),
     Napcat(NapcatArgs),
     Tg(TgArgs),
 }
@@ -898,6 +899,12 @@ pub struct AlarmWorkerArgs {
     /// 周期重复间隔秒数（0 = 一次性）
     #[arg(long, default_value_t = 0)]
     pub repeat: u64,
+    /// 周期闹钟最大响铃次数（0 = 不限，默认 20，防止无限响铃）
+    #[arg(long, default_value_t = 20)]
+    pub max_rings: u64,
+    /// 父进程 PID：周期闹钟检测父进程退出（孤儿保护）
+    #[arg(long, default_value_t = 0)]
+    pub parent_pid: u32,
 }
 
 #[derive(Debug, Args)]
@@ -1069,6 +1076,26 @@ pub struct SkillsArgs {
     #[command(subcommand)]
     pub command: SkillsCommand,
 }
+#[derive(Debug, Args)]
+pub struct AlarmArgs {
+    #[command(subcommand)]
+    pub command: AlarmCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AlarmCommand {
+    /// 列出当前闹钟/番茄钟/周期提醒
+    List,
+    /// 按 id 取消闹钟
+    Cancel { id: String },
+    /// 全局停止：终止所有运行中的闹钟 worker（孤儿兜底）
+    Stop {
+        /// 停止全部闹钟（唯一模式）
+        #[arg(long)]
+        all: bool,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct ToolsArgs {
     #[command(subcommand)]
@@ -1261,6 +1288,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
     }
 
     match cli.command {
+        Some(Command::Alarm(args)) => run_alarm_cmd(&paths, args),
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Preview) => {
@@ -1544,22 +1572,109 @@ fn remove_shell_hooks(paths: &GqyPaths) -> Result<()> {
     Ok(())
 }
 
+fn run_alarm_cmd(paths: &GqyPaths, args: AlarmArgs) -> Result<()> {
+    match args.command {
+        AlarmCommand::List => {
+            let records = crate::alarm::cleanup_dead(paths)?;
+            if records.is_empty() {
+                println!("{}", t("No alarms.", "暂无闹钟。"));
+                return Ok(());
+            }
+            for record in records {
+                let repeat = if record.repeat_seconds > 0 {
+                    format!(" · 每 {}s 一次", record.repeat_seconds)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{}  {}  {}  {}{repeat}",
+                    record.id,
+                    crate::alarm::format_due_at(record.due_at),
+                    record.label,
+                    match record.status {
+                        crate::alarm::AlarmStatus::Scheduled => "scheduled",
+                        crate::alarm::AlarmStatus::Ringing => "ringing",
+                    }
+                );
+            }
+            Ok(())
+        }
+        AlarmCommand::Cancel { id } => {
+            let cancelled = crate::alarm::cancel(paths, &id)?;
+            if cancelled {
+                println!("{}", t("Alarm cancelled.", "闹钟已取消。"));
+            } else {
+                println!("{}", t("Alarm not found.", "未找到该闹钟。"));
+            }
+            Ok(())
+        }
+        AlarmCommand::Stop { all } => {
+            if !all {
+                println!(
+                    "{}",
+                    t("use `gqy alarm stop --all` to stop all alarm workers", "使用 `gqy alarm stop --all` 停止全部闹钟")
+                );
+                return Ok(());
+            }
+            let stopped = crate::alarm::stop_all(paths)?;
+            if crate::i18n::is_zh() {
+                println!("已停止 {stopped} 个闹钟进程。");
+            } else {
+                println!("Stopped {stopped} alarm worker(s).");
+            }
+            Ok(())
+        }
+    }
+}
+
 fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {
     let paths = alarm_worker_paths(args.state_dir, args.cache_dir);
     // 先持 flock 再干活：取消/清理据此判定进程是否存活，杜绝 PID 复用误杀
     let _worker_lock = crate::alarm::WorkerLock::acquire(&paths, &args.id)?;
+    // pid 文件兜底：记录丢失时 cancel 仍能按 pid 终止孤儿 worker
+    let _ = crate::alarm::write_pid_file(&paths, &args.id, std::process::id());
     let source = args
         .audio_file
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "builtin".to_string());
     let mut interval = crate::alarm::parse_alarm_seconds(&args.time)?;
+    let mut rings = 0u64;
     loop {
+        // 每轮循环先确认自己仍被登记：记录被取消/清理删除 → 立即退出。
+        // 防止父进程退出后 worker 成为孤儿、无限响铃且无法停止（cancel 依赖记录存在）。
+        if !still_registered(&paths, &args.id) {
+            crate::alarm::remove_pid_file(&paths, &args.id);
+            let _ = append_alarm_log(
+                &paths,
+                &format!("{}: cancelled (no longer registered), exiting\n", args.id),
+            );
+            return Ok(());
+        }
+        // 孤儿保护（仅周期闹钟）：父进程退出后自动停止，避免无主无限响铃
+        if args.repeat > 0 && args.parent_pid != 0 && !parent_alive(args.parent_pid) {
+            crate::alarm::remove_pid_file(&paths, &args.id);
+            let _ = crate::alarm::remove(&paths, &args.id);
+            let _ = append_alarm_log(
+                &paths,
+                &format!("{}: parent process exited, stopping repeating alarm\n", args.id),
+            );
+            return Ok(());
+        }
         let _ = append_alarm_log(
             &paths,
             &format!("{}: scheduled in {interval}s; source={source}\n", args.id),
         );
         std::thread::sleep(Duration::from_secs(interval));
+        // 等待期间可能被取消：响铃前再确认一次
+        if !still_registered(&paths, &args.id) {
+            crate::alarm::remove_pid_file(&paths, &args.id);
+            let _ = append_alarm_log(
+                &paths,
+                &format!("{}: cancelled while waiting, exiting\n", args.id),
+            );
+            return Ok(());
+        }
         let _ = crate::alarm::update_status(&paths, &args.id, crate::alarm::AlarmStatus::Ringing);
         let _ = append_alarm_log(&paths, &format!("{}: playback starting\n", args.id));
         let result = play_alarm_once(args.audio_file.as_deref()).or_else(|err| {
@@ -1573,14 +1688,38 @@ fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {
         if result.is_ok() {
             let _ = append_alarm_log(&paths, &format!("{}: playback finished\n", args.id));
         }
+        rings += 1;
         if args.repeat == 0 {
+            crate::alarm::remove_pid_file(&paths, &args.id);
             let _ = crate::alarm::remove(&paths, &args.id);
             return result;
+        }
+        // 响铃上限：周期闹钟达到 max_rings 后自动停止（防无限响铃）
+        if args.max_rings > 0 && rings >= args.max_rings {
+            crate::alarm::remove_pid_file(&paths, &args.id);
+            let _ = crate::alarm::remove(&paths, &args.id);
+            let _ = append_alarm_log(
+                &paths,
+                &format!("{}: reached max rings ({rings}), stopping\n", args.id),
+            );
+            return Ok(());
         }
         // 周期闹钟：按 repeat 间隔重新调度（响铃期间的等待不计入间隔）
         interval = args.repeat;
         let _ = crate::alarm::update_status(&paths, &args.id, crate::alarm::AlarmStatus::Scheduled);
     }
+}
+
+/// 父进程是否存活（kill(pid, 0) 探测）。
+fn parent_alive(pid: u32) -> bool {
+    crate::alarm::process_exists(pid)
+}
+
+/// worker 是否仍被登记：cancel/cleanup 删除记录后返回 false（worker 应退出）。
+fn still_registered(paths: &GqyPaths, id: &str) -> bool {
+    crate::alarm::load(paths)
+        .map(|records| records.iter().any(|record| record.id == id))
+        .unwrap_or(false)
 }
 
 fn play_alarm_once(audio_file: Option<&std::path::Path>) -> Result<()> {

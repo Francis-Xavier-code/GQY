@@ -18,6 +18,9 @@ pub struct AlarmRecord {
     /// 周期重复间隔秒数：0 表示一次性；>0 时响铃后自动重新调度（番茄钟/休息提醒）。
     #[serde(default)]
     pub repeat_seconds: u64,
+    /// 周期闹钟最大响铃次数（0 = 不限）。达到后自动停止，防止无限响铃。
+    #[serde(default)]
+    pub max_rings: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +116,74 @@ pub fn remove(paths: &GqyPaths, id: &str) -> Result<Option<AlarmRecord>> {
     });
     save(paths, &records)?;
     Ok(removed)
+}
+
+/// 取消闹钟：删除记录 + 终止 worker 进程。
+/// 即使记录已被清理（worker 成为孤儿），也按 pid 文件里的 pid 尝试 kill——
+/// kill 不存在的进程是安全的（ESRCH 忽略），worker 本身也会在下一轮
+/// 循环发现「不再被登记」而自行退出，双保险杜绝无限响铃。
+pub fn cancel(paths: &GqyPaths, id: &str) -> Result<bool> {
+    let removed = remove(paths, id)?;
+    // pid 文件是第二来源：记录可能已被清理，但 worker 还在（孤儿兜底）
+    let pid = read_pid_file(paths, id)
+        .or_else(|| removed.as_ref().and_then(|record| record.pid));
+    if let Some(pid) = pid {
+        let _ = stop_process(pid);
+    }
+    remove_pid_file(paths, id);
+    Ok(removed.is_some())
+}
+
+/// 全局停止：扫描 `state/alarms/*.pid`，终止所有仍在运行的 worker 并清理记录。
+/// 返回被终止的 worker 数量。用于 `gqy alarm stop --all`（孤儿兜底）。
+pub fn stop_all(paths: &GqyPaths) -> Result<usize> {
+    let alarms_dir = paths.state_dir.join("alarms");
+    let mut stopped = 0usize;
+    let mut ids = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&alarms_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(id) = name.strip_suffix(".pid") {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    for id in ids {
+        if let Some(pid) = read_pid_file(paths, &id) {
+            if process_exists(pid) {
+                let _ = stop_process(pid);
+                stopped += 1;
+            }
+        }
+        remove_pid_file(paths, &id);
+        let _ = remove(paths, &id);
+    }
+    Ok(stopped)
+}
+
+/// worker pid 文件：`state/alarms/<id>.pid`，内容为 worker 进程号。
+/// worker 启动时写入、退出时删除；cancel 用它兜底杀孤儿。
+pub fn pid_file(paths: &GqyPaths, id: &str) -> PathBuf {
+    paths.state_dir.join("alarms").join(format!("{id}.pid"))
+}
+
+pub fn write_pid_file(paths: &GqyPaths, id: &str, pid: u32) -> Result<()> {
+    let path = pid_file(paths, id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, pid.to_string())?;
+    Ok(())
+}
+
+fn read_pid_file(paths: &GqyPaths, id: &str) -> Option<u32> {
+    std::fs::read_to_string(pid_file(paths, id))
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+}
+
+pub fn remove_pid_file(paths: &GqyPaths, id: &str) {
+    let _ = std::fs::remove_file(pid_file(paths, id));
 }
 
 pub fn cleanup_dead(paths: &GqyPaths) -> Result<Vec<AlarmRecord>> {
@@ -304,6 +375,7 @@ mod tests {
             pid: None,
             status: AlarmStatus::Scheduled,
             repeat_seconds: 0,
+            max_rings: 0,
         };
         upsert(&paths, record).unwrap();
         assert_eq!(load(&paths).unwrap().len(), 1);
@@ -345,6 +417,7 @@ mod tests {
             pid: Some(999999),
             status: AlarmStatus::Scheduled,
             repeat_seconds: 0,
+            max_rings: 0,
         };
         let live = AlarmRecord {
             id: "alarm-live".to_string(),
@@ -355,6 +428,7 @@ mod tests {
             pid: Some(999998),
             status: AlarmStatus::Scheduled,
             repeat_seconds: 0,
+            max_rings: 0,
         };
         let _lock = WorkerLock::acquire(&paths, &live.id).unwrap();
         upsert(&paths, dead).unwrap();
@@ -363,5 +437,73 @@ mod tests {
         let active = cleanup_dead(&paths).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, "alarm-live");
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    fn test_paths(root: &std::path::Path) -> GqyPaths {
+        GqyPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("config/fish-hook"),
+            bash_hook_file: root.join("config/bash-hook"),
+            zsh_hook_file: root.join("config/zsh-hook"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: root.join("scripts"),
+            share_dir: root.join("share/gqy"),
+            kb_dir: root.join("share/gqy/kb"),
+        }
+    }
+
+    #[test]
+    fn cancel_kills_worker_even_without_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let id = "alarm-orphan-test";
+
+        // 模拟孤儿：只有 pid 文件、没有记录（记录已被 cleanup 删除）
+        // 用一个真实会退出的进程（sleep）验证 kill 有效
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        write_pid_file(&paths, id, child.id()).unwrap();
+        assert!(read_pid_file(&paths, id) == Some(child.id()));
+
+        // 记录不存在，但 cancel 仍应 kill worker（pid 文件兜底）
+        let cancelled = cancel(&paths, id).unwrap();
+        assert!(!cancelled, "no record to remove");
+        assert!(read_pid_file(&paths, id).is_none(), "pid file cleaned");
+
+        // 回收僵尸后验证进程真的被终止
+        let _ = child.wait();
+        assert!(!process_exists(child.id()), "worker process should be killed");
+    }
+
+    #[test]
+    fn stop_process_kills_spawned_sleep() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        stop_process(child.id()).unwrap();
+        // 回收僵尸：父进程 wait 后 kill(pid, 0) 才返回「不存在」
+        let _ = child.wait();
+        assert!(!process_exists(child.id()), "direct stop_process should kill");
+    }
+
+    #[test]
+    fn pid_file_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        write_pid_file(&paths, "id-x", 4242).unwrap();
+        assert_eq!(read_pid_file(&paths, "id-x"), Some(4242));
+        remove_pid_file(&paths, "id-x");
+        assert_eq!(read_pid_file(&paths, "id-x"), None);
     }
 }
