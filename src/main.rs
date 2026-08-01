@@ -1,6 +1,8 @@
 mod agent;
 mod alarm;
 mod backup;
+mod balance;
+mod bridges;
 mod cli;
 mod clipboard;
 mod config;

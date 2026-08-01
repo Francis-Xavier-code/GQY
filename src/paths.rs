@@ -126,6 +126,26 @@ impl GqyPaths {
         self.cache_dir.join("logs")
     }
 
+    /// 给子进程/LaunchAgent 用的 GQY_HOME 提示值（统一布局下即数据根）。
+    pub fn home_hint(&self) -> String {
+        if let Ok(Some(home)) = self.isolated_home() {
+            return home.display().to_string();
+        }
+        directories::BaseDirs::new()
+            .map(|dirs| dirs.data_dir().join("gqy"))
+            .unwrap_or_else(|| PathBuf::from("/Users/Shared/gqy"))
+            .display()
+            .to_string()
+    }
+
+    /// 给子进程/LaunchAgent 用的 gqy 二进制路径提示。
+    pub fn bin_hint(&self) -> String {
+        std::env::current_exe()
+            .ok()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "/opt/homebrew/bin/gqy".to_string())
+    }
+
     pub fn print(&self) {
         if let Ok(Some(home)) = self.isolated_home() {
             println!("{}: {}", t("isolated home", "独立主目录"), home.display());

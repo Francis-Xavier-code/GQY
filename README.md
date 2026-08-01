@@ -112,6 +112,10 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 | `gqy memory stats` / `gqy memory remember <内容>` | 记忆查看 / 手动记忆 |
 | `gqy zsh-init` / `gqy remove-shell-hook` | 安装 / 移除终端自然语言 hook |
 | `gqy web` | 启动本地 Web 面板 |
+| `gqy balance` | 查询 DeepSeek 账户余额 |
+| `gqy config set <key> <value>` / `gqy config get [key]` | 免交互读写配置（密钥脱敏） |
+| `gqy napcat status/install/uninstall/config` | NapCat (QQ) 桥接管理（含自启动） |
+| `gqy tg status/install/uninstall/token/config` | Telegram 桥接管理（含自启动） |
 | `gqy backup init` / `gqy backup now` / `gqy backup status` | 备份初始化 / 立即备份 / 状态 |
 | `gqy backup remote <url>` | 绑定远程仓库 |
 | `gqy backup restore --remote <url>` | 从远程恢复 |
@@ -244,6 +248,15 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
   brew link gqy --overwrite
   ```
 
+- **Q：为什么别的 GitHub 项目下载的 DMG 双击就能开，GQY 的却提示无法验证/打不开？**
+  A：因为 GQY 是**开源免费项目，没有 Apple 开发者账号**（$99/年）做 Developer ID 签名和公证——这是苹果的付费墙，所有免费开源 macOS 应用都面临同样的问题。「别人能用」的 app 要么付了苹果的钱，要么用户手动放行。GQY 提供的免费方案：
+  - **brew 安装**（推荐）：`brew install --cask gqy` 会自动移除 quarantine，装完直接打开，无感；
+  - **手动放行**：右键（按住 Control 点）→「打开」→ 确认一次即可；或终端执行
+    ```
+    xattr -dr com.apple.quarantine /Applications/顾清影.app
+    ```
+  - 想彻底解决需要 Developer ID 证书 + 公证（苹果年费），开源项目一般靠赞助/众筹支付。
+
 - **Q：GQY 和 Miyu 是什么关系？**
   A：GQY 是从 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) fork 出来的，Miyu 的代码是 MIT 授权，本项目新增部分按 GPL-3.0 授权。
 
@@ -256,20 +269,23 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 > 不要手工覆盖 `/opt/homebrew/bin/gqy` 或直接跑 `target/release/gqy` 当日常环境，
 > 否则会出现二进制残留、版本错乱、hook 与数据不同步的麻烦。
 
-1. bump `Cargo.toml` 版本号（菜单栏 Info.plist 由 `build.sh` 自动跟随）；
-2. `git tag v0.4.3 && git push origin v0.4.3`；
-3. 构建并上传发布资产：
+1. bump `Cargo.toml` 版本号（菜单栏 Info.plist 由 `build.sh` 自动跟随），并把改动写进 `CHANGELOG.md`；
+2. `git tag v0.4.6 && git push origin v0.4.6`；
+3. 构建并上传发布资产（release notes 从 CHANGELOG 对应小节生成）：
    ```zsh
    cargo build --release --offline
    zsh macos/GQYMenuBar/build.sh
-   zsh macos/GQYMenuBar/make-dmg.sh   # 产出 .build/GQY-0.4.3.dmg
-   gh release create v0.4.3 macos/GQYMenuBar/.build/GQY-0.4.3.dmg --generate-notes
+   zsh macos/GQYMenuBar/make-dmg.sh   # 产出 .build/GQY-0.4.6.dmg
+   awk '/^## \[0.4.6\]/{flag=1;next}/^## \[/{if(flag)exit}flag' CHANGELOG.md > /tmp/release-notes.md
+   gh release create v0.4.6 macos/GQYMenuBar/.build/GQY-0.4.6.dmg --notes-file /tmp/release-notes.md
    ```
 4. 计算 `Formula/gqy.rb` 与 `Casks/gqy.rb` 里两个 `sha256`（源码 tarball 与 dmg）并提交；
 5. 同步到 Homebrew tap 仓库（`Francis-Xavier-code/homebrew-GQY`）里的同名文件并推送；
 6. 本机测试：
    ```zsh
+   brew update   # 拉取 tap 更新（不要加 HOMEBREW_NO_AUTO_UPDATE=1，否则用旧 formula）
    brew upgrade gqy && brew upgrade --cask gqy
+   brew link gqy --overwrite   # cask 与 formula 同名时补 bin 链接
    ```
    数据全在 `GQY_HOME`，升级只换二进制，对话/记忆/配置分毫不动。
 

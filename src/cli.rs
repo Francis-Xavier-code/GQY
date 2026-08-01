@@ -2,6 +2,8 @@ use crate::agent::{
     archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
 };
 use crate::backup::{BackupInitOptions, BackupOutcome, RestoreOptions};
+use crate::bridges::napcat::NapcatArgs;
+use crate::bridges::tg::TgArgs;
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::{ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions};
@@ -827,6 +829,9 @@ pub enum Command {
     Skills(SkillsArgs),
     Reset(ResetArgs),
     Web(WebArgs),
+    Balance,
+    Napcat(NapcatArgs),
+    Tg(TgArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1233,6 +1238,9 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::Skills(args)) => run_skills(&paths, args),
         Some(Command::Reset(args)) => run_reset(&paths, args.scope.as_deref()),
         Some(Command::Web(args)) => crate::web::run(paths, args).await,
+        Some(Command::Balance) => run_balance(&paths),
+        Some(Command::Napcat(args)) => crate::bridges::napcat::run(&paths, args).await,
+        Some(Command::Tg(args)) => crate::bridges::tg::run(&paths, args).await,
         None => {
             let message = join_message(cli.message);
             if message.is_empty() && io::stdin().is_terminal() {
@@ -2432,6 +2440,25 @@ fn regex_matches_secret_key(key: &str) -> bool {
     ["api_key", "api-key", "token", "password", "secret", "credential"]
         .iter()
         .any(|pattern| lower.contains(pattern))
+}
+
+fn run_balance(paths: &GqyPaths) -> Result<()> {
+    let config = AppConfig::load(paths)?;
+    match crate::balance::fetch_balance(&config)? {
+        Some(infos) => {
+            println!("{}", crate::balance::format_balances(&infos));
+            Ok(())
+        }
+        None => {
+            let provider = config
+                .provider(None)
+                .map(|p| p.id.clone())
+                .unwrap_or_default();
+            bail!(
+                "当前 provider（{provider}）没有公开的余额查询接口；目前支持 DeepSeek（gqy config set active_provider deepseek）"
+            );
+        }
+    }
 }
 
 fn run_clipboard_paste(paths: &GqyPaths) -> Result<()> {
@@ -4056,6 +4083,7 @@ enum LiveEditorAction {
     Submit(LiveSubmission),
     Interrupt,
     Exit,
+    ToggleReasoning,
 }
 
 impl LiveReplEditor {
@@ -4252,6 +4280,10 @@ impl LiveReplEditor {
                     insert_newline_at_cursor(&mut self.input, &mut self.cursor);
                     self.history_clean_index = None;
                     self.is_pasted = false;
+                }
+                KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Ctrl+O：展开/收起思考详情
+                    return Ok(LiveEditorAction::ToggleReasoning);
                 }
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -5316,6 +5348,8 @@ fn read_live_repl_input(
     loop {
         match live.editor.handle_event(event::read()?, paths, false)? {
             LiveEditorAction::None => {}
+            // 对话尚未开始：Ctrl+O 无意义，忽略
+            LiveEditorAction::ToggleReasoning => {}
             LiveEditorAction::Redraw => {
                 synchronized_terminal_update(CursorAfterUpdate::Preserve, || live.redraw())?
             }
@@ -5512,6 +5546,21 @@ async fn run_live_agent_turn(
                             }
                         }
                         LiveEditorAction::Interrupt | LiveEditorAction::Exit => break Ok(None),
+                        LiveEditorAction::ToggleReasoning => {
+                            // Ctrl+O：展开/收起思考详情（流式输出中即时生效）
+                            let mut renderer = renderer_cell.borrow_mut();
+                            let mode = renderer.toggle_reasoning_mode()?;
+                            let hint = match mode {
+                                render::ReasoningDisplayMode::Full => {
+                                    t("Thinking details expanded (Ctrl+O to collapse)", "思考详情：已展开（Ctrl+O 收起）")
+                                }
+                                _ => {
+                                    t("Thinking details collapsed (Ctrl+O to expand)", "思考详情：已收起（Ctrl+O 展开）")
+                                }
+                            };
+                            renderer.write_system_message(hint)?;
+                            live.apply_renderer_frame(&mut renderer)?;
+                        }
                     }
                     if live.mode() != mode_before {
                         control.set_mode(live.mode());
@@ -6261,10 +6310,12 @@ fn submitted_echo_lines(mode: AgentMode, input: &str, cols: usize) -> Vec<String
 }
 
 fn submitted_echo_bar(mode: AgentMode) -> String {
+    // GQY 紫色主题的用户消息条
+    let purple = "\x1b[1m\x1b[38;2;168;85;247m";
     match mode {
-        AgentMode::Normal => "\x1b[1m\x1b[34m┃\x1b[0m".to_string(),
-        AgentMode::Plan => "\x1b[1m\x1b[35m┃\x1b[0m".to_string(),
-        AgentMode::Chat => "\x1b[1m\x1b[32m┃\x1b[0m".to_string(),
+        AgentMode::Normal => format!("{purple}❯\x1b[0m"),
+        AgentMode::Plan => "\x1b[1m\x1b[38;2;56;189;248m❯\x1b[0m".to_string(),
+        AgentMode::Chat => "\x1b[1m\x1b[38;2;52;211;153m❯\x1b[0m".to_string(),
     }
 }
 
