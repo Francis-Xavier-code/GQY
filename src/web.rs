@@ -59,6 +59,7 @@ const MINI_CSS: &str = include_str!("../web/mini.css");
 const MINI_JS: &str = include_str!("../web/mini.js");
 const GQY_LOGO: &[u8] = include_bytes!("../pics/GQY-avatar.png");
 const GQY_WALLPAPER: &[u8] = include_bytes!("../pics/GQY-image.png");
+const PROVIDER_ICONS: &str = include_str!("../web/assets/provider-icons.svg");
 
 #[derive(Clone)]
 struct WebState {
@@ -986,6 +987,7 @@ fn router(state: WebState) -> Router {
         .route("/mini.js", get(mini_js_asset))
         .route("/assets/gqy-logo.png", get(logo_asset))
         .route("/assets/gqy-wallpaper.png", get(wallpaper_asset))
+        .route("/assets/provider-icons.svg", get(provider_icons_asset))
         .route("/api/health", get(health))
         .route("/api/auth/login", post(auth_login))
         .route("/api/bootstrap", get(bootstrap))
@@ -1036,6 +1038,10 @@ async fn logo_asset() -> Response {
 
 async fn wallpaper_asset() -> Response {
     binary_asset(GQY_WALLPAPER, "image/png")
+}
+
+async fn provider_icons_asset() -> Response {
+    text_asset(PROVIDER_ICONS, "image/svg+xml; charset=utf-8")
 }
 
 fn text_asset(content: &'static str, content_type: &'static str) -> Response {
