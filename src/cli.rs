@@ -1,6 +1,7 @@
 use crate::agent::{
     archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
 };
+use crate::backup::{BackupInitOptions, BackupOutcome};
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::{ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions};
@@ -504,6 +505,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "Inspect or edit assistant memory",
             "查看或编辑助手记忆",
         ),
+        (
+            "backup",
+            "Snapshot and sync portable assistant state",
+            "快照并同步助理的独立状态",
+        ),
         ("skills", "Manage assistant skills", "管理助手 skills"),
         (
             "reset",
@@ -523,6 +529,7 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         .mut_subcommand("pop", localize_pop_command)
         .mut_subcommand("kb", localize_kb_command)
         .mut_subcommand("memory", localize_memory_command)
+        .mut_subcommand("backup", localize_backup_command)
         .mut_subcommand("skills", localize_skills_command)
         .mut_subcommand("config", localize_config_command)
         .mut_subcommand("reset", localize_reset_command)
@@ -702,6 +709,30 @@ fn localize_memory_command(mut command: clap::Command) -> clap::Command {
         })
 }
 
+fn localize_backup_command(mut command: clap::Command) -> clap::Command {
+    let descriptions = [
+        (
+            "init",
+            "Configure an isolated Git backup",
+            "配置独立的 Git 备份",
+        ),
+        (
+            "now",
+            "Create and optionally push a snapshot",
+            "立即创建并推送快照",
+        ),
+        (
+            "status",
+            "Show backup configuration and Git status",
+            "显示备份配置与 Git 状态",
+        ),
+    ];
+    for (name, en, zh) in descriptions {
+        command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
+    }
+    command
+}
+
 fn localize_skills_command(mut command: clap::Command) -> clap::Command {
     let descriptions = [
         ("list", "List skills", "列出 skills"),
@@ -748,6 +779,7 @@ pub enum Command {
     Kb(KbArgs),
     UpdateDefaultKb,
     Memory(MemoryArgs),
+    Backup(BackupArgs),
     Skills(SkillsArgs),
     Reset(ResetArgs),
     Web(WebArgs),
@@ -887,6 +919,41 @@ pub struct MemoryRememberArgs {
     pub content: Vec<String>,
     #[arg(short, long, default_value = "manual")]
     pub source: String,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupArgs {
+    #[command(subcommand)]
+    pub command: BackupCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BackupCommand {
+    Init(BackupInitArgs),
+    Now(BackupNowArgs),
+    Status,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupInitArgs {
+    #[arg(long)]
+    pub remote: String,
+    #[arg(long, default_value = "main")]
+    pub branch: String,
+    #[arg(long, default_value = "GQY Memory")]
+    pub name: String,
+    #[arg(long, default_value = "gqy@localhost")]
+    pub email: String,
+    #[arg(long)]
+    pub ssh_key: Option<PathBuf>,
+    #[arg(long)]
+    pub no_auto_push: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupNowArgs {
+    #[arg(long)]
+    pub no_push: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1063,6 +1130,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
         Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
+        Some(Command::Backup(args)) => run_backup(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
         Some(Command::Reset(args)) => run_reset(&paths, args.scope.as_deref()),
         Some(Command::Web(args)) => crate::web::run(paths, args).await,
@@ -7931,6 +7999,50 @@ fn run_memory(paths: &MiyuPaths, args: MemoryArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_backup(paths: &MiyuPaths, args: BackupArgs) -> Result<()> {
+    match args.command {
+        BackupCommand::Init(args) => {
+            crate::backup::init(
+                paths,
+                BackupInitOptions {
+                    remote: args.remote,
+                    branch: args.branch,
+                    git_name: args.name,
+                    git_email: args.email,
+                    auto_push: !args.no_auto_push,
+                    ssh_key: args.ssh_key,
+                },
+            )?;
+            println!(
+                "{}",
+                t(
+                    "initialized isolated Git backup; run `miyu backup now` after remote authentication is ready",
+                    "已初始化独立 Git 备份；远程认证就绪后运行 `miyu backup now`"
+                )
+            );
+        }
+        BackupCommand::Now(args) => {
+            let outcome = crate::backup::backup_now(paths, !args.no_push)?;
+            print_backup_outcome(&outcome);
+        }
+        BackupCommand::Status => println!("{}", crate::backup::status(paths)?),
+    }
+    Ok(())
+}
+
+fn print_backup_outcome(outcome: &BackupOutcome) {
+    let commit = outcome.commit.as_deref().unwrap_or("-");
+    println!(
+        "{}: {} · {}: {} · {}: {}",
+        t("commit", "提交"),
+        commit,
+        t("new snapshot", "新快照"),
+        outcome.committed,
+        t("pushed", "已推送"),
+        outcome.pushed
+    );
 }
 
 fn run_skills(paths: &MiyuPaths, args: SkillsArgs) -> Result<()> {

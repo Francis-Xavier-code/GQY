@@ -619,6 +619,12 @@ impl Agent {
         if let Some(usage) = result.usage.clone() {
             self.state.add_usage(&usage)?;
         }
+        if let Err(error) = crate::backup::maybe_auto_backup(&self.paths) {
+            eprintln!(
+                "{}: {error:#}",
+                crate::i18n::text("warning: automatic backup failed", "警告：自动备份失败")
+            );
+        }
         Ok(result)
     }
 

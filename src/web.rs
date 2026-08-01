@@ -54,8 +54,8 @@ const LOGIN_ATTEMPT_LIMIT: u8 = 5;
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const STYLES_CSS: &str = include_str!("../web/styles.css");
 const APP_JS: &str = include_str!("../web/app.js");
-const MIYU_LOGO: &[u8] = include_bytes!("../pics/miyu-logo.png");
-const MIYU_WALLPAPER: &[u8] = include_bytes!("../pics/miyuwallpaper.png");
+const MIYU_LOGO: &[u8] = include_bytes!("../pics/GQY-icon.png");
+const MIYU_WALLPAPER: &[u8] = include_bytes!("../pics/GQY-image.png");
 
 #[derive(Clone)]
 struct WebState {
