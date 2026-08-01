@@ -45,7 +45,7 @@
             imageWithSystemSymbolName:@"sparkles"
             accessibilityDescription:@"顾清影"];
     }
-    self.statusItem.button.toolTip = @"顾清影 —— 点开菜单，面板在 App 内（⌥G 快速打开迷你对话）";
+    self.statusItem.button.toolTip = @"顾清影 —— 点开菜单（⌥G 迷你对话 · ⌥H 面板）";
 
     NSMenu *menu = [[NSMenu alloc] init];
 
@@ -135,20 +135,35 @@
     }
 }
 
-// ⌥G 全局快捷键：任何应用里按下都弹出迷你对话（面板窗口）
-static EventHotKeyRef g_hotkey_ref = NULL;
+// 全局快捷键：⌥G = 迷你对话窗口，⌥H = 完整面板
+static EventHotKeyRef g_mini_hotkey_ref = NULL;
+static EventHotKeyRef g_panel_hotkey_ref = NULL;
 static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
                                    EventRef event,
                                    void *userData) {
     (void)nextHandler;
     (void)event;
     GQYMenuBarDelegate *delegate = (__bridge GQYMenuBarDelegate *)userData;
+    EventHotKeyID hotkey_id;
+    if (GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID,
+                          NULL, sizeof(hotkey_id), NULL, &hotkey_id) == noErr) {
+        if (hotkey_id.id == 2) {
+            // ⌥H：面板
+            if (delegate.panelWindow.isVisible) {
+                [delegate.panelWindow orderOut:nil];
+                [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+            } else {
+                [delegate openWebPanel:nil];
+            }
+            return noErr;
+        }
+    }
+    // ⌥G：迷你窗口
     [delegate toggleMiniWindow:nil];
     return noErr;
 }
 
 - (void)registerGlobalHotkey {
-    EventHotKeyID hotkey_id = { .signature = 'GQYH', .id = 1 };
     EventTypeSpec event_type = { .eventClass = kEventClassKeyboard,
                                  .eventKind = kEventHotKeyPressed };
     InstallEventHandler(GetEventDispatcherTarget(),
@@ -157,9 +172,14 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
                         &event_type,
                         (__bridge void *)self,
                         NULL);
-    // ⌥G：Option + G（避开中文输入法的 ⌥Space）
-    RegisterEventHotKey(kVK_ANSI_G, optionKey, hotkey_id,
-                        GetEventDispatcherTarget(), 0, &g_hotkey_ref);
+    // ⌥G：Option + G（避开中文输入法的 ⌥Space）→ 迷你对话
+    EventHotKeyID mini_id = { .signature = 'GQYH', .id = 1 };
+    RegisterEventHotKey(kVK_ANSI_G, optionKey, mini_id,
+                        GetEventDispatcherTarget(), 0, &g_mini_hotkey_ref);
+    // ⌥H：Option + H → 完整面板
+    EventHotKeyID panel_id = { .signature = 'GQYH', .id = 2 };
+    RegisterEventHotKey(kVK_ANSI_H, optionKey, panel_id,
+                        GetEventDispatcherTarget(), 0, &g_panel_hotkey_ref);
 }
 
 - (void)restartWebServer:(id)sender {

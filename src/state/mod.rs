@@ -69,14 +69,15 @@ impl StateStore {
         Ok(())
     }
 
+    /// prompt 变化时只更新指纹，**不清空对话历史**。
+    /// 旧实现会 DELETE 全部 turns——开发迭代 prompt 是常态，误清历史不可接受。
+    /// 历史轮次继续保留（压缩/归档机制会自然管理上下文长度）。
     pub fn reset_if_prompt_changed(&self, system_prompt: &str) -> Result<()> {
         self.init_files()?;
         let fingerprint = prompt_fingerprint(system_prompt);
         let file = self.prompt_fingerprint_file();
         let previous = std::fs::read_to_string(&file).unwrap_or_default();
         if previous.trim() != fingerprint {
-            self.conv_db.reset_history()?;
-            self.clear_last_usage()?;
             std::fs::write(file, format!("{fingerprint}\n"))?;
         }
         Ok(())
@@ -93,6 +94,10 @@ impl StateStore {
     }
 
     #[allow(dead_code)]
+    pub fn update_assistant_progress(&self, turn_id: &str, content: &str) -> Result<()> {
+        self.conv_db.update_assistant_progress(turn_id, content)
+    }
+
     pub fn complete_turn(
         &self,
         turn_id: &str,
