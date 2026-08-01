@@ -609,25 +609,11 @@ pub fn print_assistant_response(response: &ChatResult, show_reasoning: bool) -> 
 }
 
 pub fn print_markdown(markdown: &str) {
-    println!("{}", gqy_skin().term_text(markdown.trim_end()));
-}
-
-/// GQY 紫色主题的 markdown 渲染皮肤（标题/列表/代码/引用统一紫系）。
-fn gqy_skin() -> termimad::MadSkin {
-    use termimad::crossterm::style::Color;
-    let mut skin = termimad::MadSkin::default();
-    skin.set_headers_fg(Color::Rgb { r: 168, g: 85, b: 247 });
-    skin.bold.set_fg(Color::Rgb { r: 196, g: 181, b: 253 });
-    skin.italic.set_fg(Color::Rgb { r: 148, g: 163, b: 184 });
-    skin.quote_mark.set_fg(Color::Rgb { r: 129, g: 140, b: 248 });
-    skin.bullet.set_fg(Color::Rgb { r: 168, g: 85, b: 247 });
-    skin.code_block.set_fg(Color::Rgb { r: 226, g: 232, b: 240 });
-    skin.code_block.set_bg(Color::Rgb { r: 26, g: 24, b: 40 });
-    skin.inline_code.set_fg(Color::Rgb { r: 232, g: 121, b: 249 });
-    skin.inline_code.set_bg(Color::Rgb { r: 26, g: 24, b: 40 });
-    skin.table.set_fg(Color::Rgb { r: 148, g: 163, b: 184 });
-    skin.ellipsis.set_fg(Color::Rgb { r: 148, g: 163, b: 184 });
-    skin
+    // 与流式 REPL 同一渲染器：月夜清影主题一致，链接 OSC 8 可点击
+    let mut renderer = MarkdownLineRenderer::new();
+    let mut output = renderer.render_lines(markdown);
+    output.push_str(&renderer.flush());
+    println!("{output}");
 }
 
 pub fn print_token_usage(
@@ -2418,6 +2404,15 @@ impl MarkdownLineRenderer {
         }
     }
 
+    /// 整段渲染（一次性输出用）：逐行渲染，与流式一致。
+    fn render_lines(&mut self, text: &str) -> String {
+        let mut output = String::new();
+        for line in text.lines() {
+            output.push_str(&self.render_line(line));
+        }
+        output
+    }
+
     fn render_line(&mut self, line: &str) -> String {
         if line.trim_start().starts_with("```") {
             if self.in_code_block {
@@ -2687,13 +2682,14 @@ fn render_inline(text: &str) -> String {
             if let Some(label_end) = find_marker(&chars, index + 1, ']') {
                 if chars.get(label_end + 1) == Some(&'(') {
                     if let Some(url_end) = find_marker(&chars, label_end + 2, ')') {
+                        let url: String = chars[label_end + 2..url_end].iter().collect();
+                        let label: String = chars[index + 1..label_end].iter().collect();
+                        // OSC 8 超链接：终端里点击即可打开
                         output.push_str(LINK_LABEL_STYLE);
-                        output.extend(chars[index + 1..label_end].iter());
+                        output.push_str(&osc8_link(&url, &label));
                         output.push_str(RESET);
                         output.push(' ');
-                        output.push_str(&render_url_wrapped(
-                            &chars[label_end + 2..url_end].iter().collect::<String>(),
-                        ));
+                        output.push_str(&render_url_wrapped(&url));
                         index = url_end + 1;
                         continue;
                     }
@@ -2704,8 +2700,8 @@ fn render_inline(text: &str) -> String {
             if let Some(end) = find_marker(&chars, index + 1, '>') {
                 let value = chars[index + 1..end].iter().collect::<String>();
                 if value.starts_with("http://") || value.starts_with("https://") {
-                    output.push_str("\x1b[4m");
-                    output.push_str(&render_url_wrapped(&value));
+                    output.push_str(LINK_LABEL_STYLE);
+                    output.push_str(&osc8_link(&value, &value));
                     output.push_str(RESET);
                     index = end + 1;
                     continue;
@@ -2723,29 +2719,35 @@ fn render_inline(text: &str) -> String {
     output
 }
 
+// ── 月夜清影主题：深蓝夜空 + 月光银白 + 冷蓝紫（顾清影：清冷的影子）──
 const RESET: &str = "\x1b[0m";
-const PRIMARY_STYLE: &str = "\x1b[38;5;189m";
-const SECONDARY_STYLE: &str = "\x1b[36m";
-const TERTIARY_STYLE: &str = "\x1b[35m";
-const HEADER_STYLE: &str = "\x1b[1m\x1b[35m";
-const INLINE_CODE_STYLE: &str = SECONDARY_STYLE;
-const LINK_LABEL_STYLE: &str = "\x1b[38;5;117m";
-const URL_STYLE: &str = "\x1b[2m\x1b[38;5;75m";
-const IMAGE_STYLE: &str = "\x1b[38;5;183m";
-const MATH_STYLE: &str = "\x1b[38;5;117m";
-const BOLD_STYLE: &str = "\x1b[1m\x1b[34m";
-const ITALIC_STYLE: &str = "\x1b[3m\x1b[38;5;250m";
-const STRIKE_STYLE: &str = "\x1b[9m";
-const CODE_BLOCK_BG: &str = "";
+const PRIMARY_STYLE: &str = "\x1b[38;2;203;213;225m";    // 月光银白（正文强调）
+const SECONDARY_STYLE: &str = "\x1b[38;2;147;197;253m";  // 月白蓝（次要）
+const TERTIARY_STYLE: &str = "\x1b[38;2;167;139;250m";   // 淡紫（列表/装饰）
+const HEADER_STYLE: &str = "\x1b[1m\x1b[38;2;59;130;246m"; // 冷蓝（标题）
+const INLINE_CODE_STYLE: &str = "\x1b[38;2;167;139;250m";
+const LINK_LABEL_STYLE: &str = "\x1b[4m\x1b[38;2;103;232;249m"; // 月青下划线（链接，可点击）
+const URL_STYLE: &str = "\x1b[2m\x1b[38;2;147;197;253m";
+const IMAGE_STYLE: &str = "\x1b[38;2;167;139;250m";
+const MATH_STYLE: &str = "\x1b[38;2;147;197;253m";
+const BOLD_STYLE: &str = "\x1b[1m\x1b[38;2;226;232;240m"; // 亮银粗体
+const ITALIC_STYLE: &str = "\x1b[3m\x1b[38;2;148;163;184m";
+const STRIKE_STYLE: &str = "\x1b[9m\x1b[38;2;148;163;184m";
+const CODE_BLOCK_BG: &str = "\x1b[48;2;16;24;40m";       // 深蓝夜空代码底
 const CODE_BLOCK_FRAME_STYLE: &str = SECONDARY_STYLE;
 const CODE_TOKEN_RESET: &str = "\x1b[0m";
-const CODE_KEYWORD_STYLE: &str = "\x1b[38;2;196;167;231m";
-const CODE_FUNCTION_STYLE: &str = "\x1b[38;2;156;207;216m";
-const CODE_STRING_STYLE: &str = "\x1b[38;2;166;214;160m";
-const CODE_NUMBER_STYLE: &str = "\x1b[38;2;246;193;119m";
-const CODE_COMMENT_STYLE: &str = "\x1b[32m";
+const CODE_KEYWORD_STYLE: &str = "\x1b[38;2;167;139;250m"; // 淡紫关键字
+const CODE_FUNCTION_STYLE: &str = "\x1b[38;2;147;197;253m"; // 月白函数
+const CODE_STRING_STYLE: &str = "\x1b[38;2;134;239;172m";  // 月绿字符串
+const CODE_NUMBER_STYLE: &str = "\x1b[38;2;251;191;36m";   // 月金数字
+const CODE_COMMENT_STYLE: &str = "\x1b[38;2;100;116;139m"; // 夜色注释
 const PATCH_DELETE_STYLE: &str = "\x1b[48;2;60;41;53m\x1b[38;5;210m";
 const PATCH_INSERT_STYLE: &str = "\x1b[48;2;32;52;67m\x1b[38;5;157m";
+
+/// OSC 8 超链接：支持的终端（iTerm2/Terminal.app/kitty）里可点击打开浏览器。
+fn osc8_link(url: &str, label: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
+}
 
 fn render_url(url: &str) -> String {
     format!("{URL_STYLE}{url}{RESET}")
@@ -3653,8 +3655,8 @@ fn write_full_reasoning_chunk(writer: &mut impl Write, text: &str) -> Result<()>
 
 fn print_reasoning(reasoning: &str) -> Result<()> {
     let mut stdout = io::stdout();
-    // 思考详情：紫色小字（区别于回复正文）
-    execute!(stdout, SetForegroundColor(Color::Rgb { r: 167, g: 139, b: 250 }))?;
+    // 思考详情：银灰小字（区别于回复正文，月夜清影）
+    execute!(stdout, SetForegroundColor(Color::Rgb { r: 148, g: 163, b: 184 }))?;
     for line in reasoning.trim().lines() {
         writeln!(stdout, "  {line}")?;
     }
@@ -3668,6 +3670,24 @@ fn print_reasoning(reasoning: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moon_theme_links_render_as_osc8_hyperlinks() {
+        let output = render_markdown_line("看这里 [GitHub](https://github.com) 和 <https://example.com>");
+        assert!(
+            output.contains("\x1b]8;;https://github.com\x1b\\GitHub\x1b]8;;\x1b\\"),
+            "markdown link should be an OSC 8 hyperlink: {output:?}"
+        );
+        assert!(
+            output.contains("\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"),
+            "bare URL should be an OSC 8 hyperlink: {output:?}"
+        );
+        // 月夜主题：标题冷蓝、列表淡紫
+        let header = render_markdown_line("## 标题");
+        assert!(header.contains("\x1b[1m\x1b[38;2;59;130;246m"), "header should be cold blue: {header:?}");
+        let list = render_markdown_line("- 列表项");
+        assert!(list.contains("\x1b[38;2;167;139;250m"), "list marker should be lavender: {list:?}");
+    }
 
     fn visible_command_lines(lines: Vec<String>) -> Vec<String> {
         lines
@@ -4354,9 +4374,11 @@ mod tests {
         assert!(output.contains(&format!("{ITALIC_STYLE}i{RESET}")));
         assert!(output.contains(&format!("{STRIKE_STYLE}gone{RESET}")));
         assert!(output.contains(&format!("<{URL_STYLE}https://example.com{RESET}>")));
-        assert!(output.contains(&format!(
-            "\x1b[4m<{URL_STYLE}https://example.org{RESET}>{RESET}"
-        )));
+        // 链接与裸 URL 都是 OSC 8 超链接（终端可点击）
+        assert!(output.contains("\x1b]8;;https://example.com\x1b\\site\x1b]8;;\x1b\\"));
+        assert!(output.contains(
+            "\x1b]8;;https://example.org\x1b\\https://example.org\x1b]8;;\x1b\\"
+        ));
         assert!(output.contains(&format!(
             "{IMAGE_STYLE}[image: pic]{RESET}({URL_STYLE}https://img{RESET})"
         )));

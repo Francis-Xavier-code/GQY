@@ -323,10 +323,20 @@ for line in sys.stdin:
         result = {}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
 "#;
+        // macOS 无 `python` 别名，自适应选择解释器
+        let command = if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            "python3"
+        } else {
+            "python"
+        };
         let server = McpServerConfig {
             id: "mock".to_string(),
             display_name: String::new(),
-            command: "python".to_string(),
+            command: command.to_string(),
             args: vec!["-c".to_string(), script.to_string()],
             env: HashMap::new(),
             timeout_seconds: 5,

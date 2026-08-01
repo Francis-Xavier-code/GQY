@@ -811,6 +811,8 @@ pub enum Command {
     AlarmWorker(AlarmWorkerArgs),
     #[command(name = "__tool", hide = true)]
     Tool(ToolArgs),
+    #[command(name = "__preview", hide = true)]
+    Preview,
     Ask(MessageArgs),
     Init,
     Paths,
@@ -1233,6 +1235,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
                 | Some(Command::Backup(_))
+                | Some(Command::Preview)
         )
     {
         run_init(&paths, InitKind::FirstRun)?;
@@ -1241,6 +1244,20 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
     match cli.command {
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
+        Some(Command::Preview) => {
+            crate::repl_avatar::print_if_supported(&mut io::stdout());
+            render::print_markdown(
+                "# 月夜清影\n\n你好呀，我是**顾清影** —— 活在终端里的二次元少女。\n\
+                 \n\
+                 ## 今天的待办\n\n\
+                 - 修好 [GQY 的 GitHub](https://github.com/Francis-Xavier-code/GQY)\n\
+                 - 学习 `Rust` 与 `OSC 8` 超链接\n\
+                 - 官方文档见 <https://www.rust-lang.org>\n\n\
+                 ```rust\nfn greet() -> &'static str {\n    \"清影陪你写代码\"\n}\n```\n\n\
+                 | 项目 | 状态 |\n| --- | --- |\n| 月夜主题 | ✅ 完成 |\n| 可点击链接 | ✅ 完成 |\n",
+            );
+            Ok(())
+        }
         Some(Command::Ask(args)) => {
             run_chat_with_options(&paths, join_message(args.message), None, cli.stdout, mode).await
         }
@@ -6337,12 +6354,12 @@ fn submitted_echo_lines(mode: AgentMode, input: &str, cols: usize) -> Vec<String
 }
 
 fn submitted_echo_bar(mode: AgentMode) -> String {
-    // GQY 紫色主题的用户消息条
-    let purple = "\x1b[1m\x1b[38;2;168;85;247m";
+    // 月夜清影主题的用户消息条：月光银白 ❯
+    let moon = "\x1b[1m\x1b[38;2;203;213;225m";
     match mode {
-        AgentMode::Normal => format!("{purple}❯\x1b[0m"),
-        AgentMode::Plan => "\x1b[1m\x1b[38;2;56;189;248m❯\x1b[0m".to_string(),
-        AgentMode::Chat => "\x1b[1m\x1b[38;2;52;211;153m❯\x1b[0m".to_string(),
+        AgentMode::Normal => format!("{moon}❯\x1b[0m"),
+        AgentMode::Plan => "\x1b[1m\x1b[38;2;147;197;253m❯\x1b[0m".to_string(),
+        AgentMode::Chat => "\x1b[1m\x1b[38;2;167;139;250m❯\x1b[0m".to_string(),
     }
 }
 
