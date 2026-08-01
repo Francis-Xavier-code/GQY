@@ -6,7 +6,7 @@
 
 一个活在 `MAC终端/菜单栏` 里的二次元少女。
 
-macOS 独立主目录、菜单栏壳与私有 Git 记忆备份的当前用法见 [macOS、独立主目录与记忆备份](docs/macos-portable-home-and-backup.md)。
+macOS 独立主目录、菜单栏壳与私有 Git 记忆备份的当前用法见 [macOS、独立主目录与记忆备份](docs/01-指南/macos-portable-home-and-backup.md)。
 
 
 ## 谁是 GQY？
@@ -25,7 +25,7 @@ GQY 是从我的想法中诞生出来的人格，从 [shorin-miyu](https://githu
 gqy config
 ```
 
-她的所有配置、记忆和对话状态都收拢在独立主目录 `GQY_HOME`（建议 `~/Library/Application Support/GQY`）中，与宿主机其他配置隔离；每一轮对话后还会自动生成 Git 快照保存记忆，绑定私有远程仓库后自动推送，换机器一键恢复。详见 [macOS、独立主目录与记忆备份](docs/macos-portable-home-and-backup.md)。
+她的所有配置、记忆和对话状态都收拢在独立主目录 `GQY_HOME`（建议 `~/Library/Application Support/GQY`）中，与宿主机其他配置隔离；每一轮对话后还会自动生成 Git 快照保存记忆，绑定私有远程仓库后自动推送，换机器一键恢复。详见 [macOS、独立主目录与记忆备份](docs/01-指南/macos-portable-home-and-backup.md)。
 
 ## 如何安装？
 
@@ -72,7 +72,7 @@ zsh macos/GQYMenuBar/build.sh
 open "macos/GQYMenuBar/.build/顾清影.app"
 ```
 
-菜单提供终端对话、本地 Web 面板、立即备份、打开独立主目录、开机自启与退出。详细说明见 [macOS、独立主目录与记忆备份](docs/macos-portable-home-and-backup.md)。
+菜单提供终端对话、本地 Web 面板、立即备份、打开独立主目录、开机自启与退出。详细说明见 [macOS、独立主目录与记忆备份](docs/01-指南/macos-portable-home-and-backup.md)。
 
 ### 界面语言
 
@@ -204,7 +204,7 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
   A：所有状态都在 `GQY_HOME`（建议 `~/Library/Application Support/GQY`）。配好远程仓库后，新机器上 `gqy backup restore --remote <url> --ssh-key <key>` 一条命令恢复人格、记忆、对话和知识库。
 
 - **Q：远程仓库会不会泄露 API key？**
-  A：不会。快照里的 `config.jsonc` 会自动清空所有 api_key/token/password 等字段；私钥、`.env`、缓存、日志都不会进入提交。详见 [隔离与安全边界](docs/macos-portable-home-and-backup.md)。
+  A：不会。快照里的 `config.jsonc` 会自动清空所有 api_key/token/password 等字段；私钥、`.env`、缓存、日志都不会进入提交。详见 [隔离与安全边界](docs/01-指南/macos-portable-home-and-backup.md)。
 
 - **Q：默认模型服务是什么？要钱吗？**
   A：默认接入 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务（`big-pickle` 等），开箱即用；也可以 `gqy config` 里配置自己的 API（支持 OpenAI 兼容接口，key 支持 `$env:变量名` 引用）。
