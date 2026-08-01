@@ -2,7 +2,7 @@
 name = "gqy"
 version = "0.3.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0"
 repository = "https://github.com/Francis-Xavier-code/GQY"
 description = "Command-line AI assistant"
 
