@@ -1,10 +1,12 @@
 #import <AppKit/AppKit.h>
+#import <unistd.h>
 
-@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate>
+@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSTask *webTask;
 @property(nonatomic, strong) NSTask *backupTask;
 @property(nonatomic, strong) NSMenuItem *backupItem;
+@property(nonatomic, strong) NSMenuItem *loginItemMenu;
 @end
 
 @implementation GQYMenuBarDelegate
@@ -32,9 +34,15 @@
     [menu addItem:[self itemWithTitle:@"打开独立主目录"
                               action:@selector(openAssistantHome:)]];
     [menu addItem:[NSMenuItem separatorItem]];
+    self.loginItemMenu = [self itemWithTitle:@"开机自启"
+                                      action:@selector(toggleLoginItem:)];
+    [menu addItem:self.loginItemMenu];
+    [menu addItem:[NSMenuItem separatorItem]];
     [menu addItem:[self itemWithTitle:@"退出顾清影"
                               action:@selector(quit:)]];
     self.statusItem.menu = menu;
+    menu.delegate = self;
+    [self refreshLoginItemState];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
@@ -222,9 +230,108 @@
     [NSApp terminate:nil];
 }
 
+- (NSURL *)loginAgentPlist {
+    NSURL *launchAgents = [[NSFileManager.defaultManager
+        URLForDirectory:NSLibraryDirectory
+               inDomain:NSUserDomainMask
+      appropriateForURL:nil
+                 create:YES
+                  error:nil]
+        URLByAppendingPathComponent:@"LaunchAgents" isDirectory:YES];
+    return [launchAgents URLByAppendingPathComponent:@"dev.gqy.menubar.plist"];
+}
+
+- (BOOL)loginItemEnabled {
+    return [NSFileManager.defaultManager
+        fileExistsAtPath:self.loginAgentPlist.path];
+}
+
+- (void)refreshLoginItemState {
+    self.loginItemMenu.state =
+        self.loginItemEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (void)menuWillOpen:(NSMenu *)menu {
+    (void)menu;
+    [self refreshLoginItemState];
+}
+
+- (void)toggleLoginItem:(id)sender {
+    (void)sender;
+    if (self.loginItemEnabled) {
+        [self removeLoginItem];
+    } else {
+        [self installLoginItem];
+    }
+}
+
+- (void)installLoginItem {
+    NSURL *plist = self.loginAgentPlist;
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager
+            createDirectoryAtURL:plist.URLByDeletingLastPathComponent
+        withIntermediateDirectories:YES
+                         attributes:nil
+                              error:&error]) {
+        [self showError:error];
+        return;
+    }
+    NSDictionary *configuration = @{
+        @"Label": @"dev.gqy.menubar",
+        @"ProgramArguments": @[@"/usr/bin/open", NSBundle.mainBundle.bundleURL.path],
+        @"RunAtLoad": @YES,
+        @"ProcessType": @"Interactive",
+        @"EnvironmentVariables": @{
+            @"GQY_HOME": self.assistantHome.path,
+        },
+    };
+    NSData *data = [NSPropertyListSerialization
+        dataWithPropertyList:configuration
+                      format:NSPropertyListXMLFormat_v1_0
+                     options:0
+                       error:&error];
+    if (!data ||
+        ![data writeToURL:plist options:NSDataWritingAtomic error:&error]) {
+        [self showError:error];
+        return;
+    }
+    [self refreshLoginItemState];
+    [self showInfo:@"已开启开机自启"
+               detail:@"顾清影将在下次登录时自动启动。"];
+}
+
+- (void)removeLoginItem {
+    [self runLaunchCtl:@[@"bootout", [self launchctlTarget], @"dev.gqy.menubar"]];
+    NSError *error = nil;
+    [NSFileManager.defaultManager removeItemAtURL:self.loginAgentPlist
+                                            error:&error];
+    [self refreshLoginItemState];
+    [self showInfo:@"已关闭开机自启" detail:@"下次登录将不再自动启动。"];
+}
+
+- (NSString *)launchctlTarget {
+    return [NSString stringWithFormat:@"gui/%d", (int)getuid()];
+}
+
+- (void)runLaunchCtl:(NSArray<NSString *> *)arguments {
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/bin/launchctl"];
+    task.arguments = arguments;
+    [task launch];
+    [task waitUntilExit];
+}
+
 - (NSString *)shellQuote:(NSString *)value {
     return [NSString stringWithFormat:@"'%@'",
         [value stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
+}
+
+- (void)showInfo:(NSString *)title detail:(NSString *)detail {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = title;
+    alert.informativeText = detail;
+    [alert addButtonWithTitle:@"知道了"];
+    [alert runModal];
 }
 
 - (void)showError:(NSError *)error {
