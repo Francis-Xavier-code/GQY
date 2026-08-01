@@ -3,7 +3,7 @@ use crate::cli::{build_tool_registry, WebArgs};
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::llm::{ChatResult, ChatStreamKind, OpenAiCompatibleClient, Usage};
 use crate::memory::MemoryStore;
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use crate::question::{self, QuestionAnswers, QuestionRequest, QuestionResponse};
 use crate::state::{
     ImageAsset, QueuedPrompt, StateStore, Turn, TurnFollowup, TurnStatus, UsageSnapshot,
@@ -61,7 +61,7 @@ const GQY_WALLPAPER: &[u8] = include_bytes!("../pics/GQY-image.png");
 struct WebState {
     auth: WebAuth,
     boot_id: Arc<str>,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     manager: Arc<Mutex<ManagerState>>,
     state_store: StateStore,
     events: EventHub,
@@ -873,7 +873,7 @@ struct ModelResponse {
     context: ContextSnapshot,
 }
 
-pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
+pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
     let password = resolve_web_password(&args)?;
     AppConfig::init_files(&paths)?;
     let config = AppConfig::load_or_default(&paths)?;
@@ -1784,7 +1784,7 @@ async fn reset_conversation(
 fn spawn_actor(
     agent: Agent,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     state_store: StateStore,
     manager: Arc<Mutex<ManagerState>>,
     events: EventHub,
@@ -1818,7 +1818,7 @@ fn spawn_actor(
 async fn actor_loop(
     mut agent: Agent,
     mut config: AppConfig,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     state_store: StateStore,
     manager: Arc<Mutex<ManagerState>>,
     events: EventHub,
@@ -1904,7 +1904,7 @@ async fn actor_loop(
 async fn run_agent_turn(
     agent: &mut Agent,
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     events: &EventHub,
@@ -2124,7 +2124,7 @@ fn active_directive(
 fn rebuild_for_models(
     agent: &mut Agent,
     config: &mut AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     models: &[ActiveProviderModelConfig],
@@ -2166,7 +2166,7 @@ fn rebuild_for_models(
 fn rebuild_for_config(
     agent: &mut Agent,
     config: &mut AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     events: &EventHub,
@@ -2277,7 +2277,7 @@ fn rebuild_for_config(
 fn reset_actor_conversation(
     agent: &mut Agent,
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     events: &EventHub,
@@ -2416,7 +2416,7 @@ fn release_admin(manager: &Arc<Mutex<ManagerState>>) {
 fn config_response(
     config: &AppConfig,
     context: ContextSnapshot,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
 ) -> std::result::Result<ConfigResponse, ApiError> {
     let mut redacted = config.clone();
     let mut secret_states = HashMap::new();
@@ -2750,7 +2750,7 @@ fn validate_prompt_document_name(name: &str, kind: &str) -> std::result::Result<
     Ok(())
 }
 
-fn read_prompt_documents(config: &AppConfig, paths: &MiyuPaths) -> Result<PromptDocuments> {
+fn read_prompt_documents(config: &AppConfig, paths: &GqyPaths) -> Result<PromptDocuments> {
     Ok(PromptDocuments {
         personas: read_prompt_document_dir(&config.prompts_dir_path(paths))?,
         identities: read_prompt_document_dir(&config.identities_dir_path(paths))?,
@@ -2819,7 +2819,7 @@ fn apply_prompt_documents(
     next_config: &AppConfig,
     current: &PromptDocuments,
     next: &PromptDocuments,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
 ) -> Result<Vec<FileBackup>> {
     let mut mutations = HashMap::<PathBuf, Option<Vec<u8>>>::new();
     collect_prompt_file_mutations(
@@ -2867,7 +2867,7 @@ fn apply_persona_scope_changes(
     next_config: &AppConfig,
     current: &PromptDocuments,
     next: &PromptDocuments,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
 ) -> Result<Vec<PersonaScopeBackup>> {
     let mut changes = Vec::<(String, Option<String>)>::new();
     for document in &current.personas {
@@ -3561,7 +3561,7 @@ mod tests {
         config.plugins.exchange_rate.api_key = "exchange-secret".to_string();
         config.plugins.image_generation.api_keys = vec!["image-secret".to_string()];
         let paths = tempfile::tempdir().unwrap();
-        let paths = MiyuPaths {
+        let paths = GqyPaths {
             config_dir: paths.path().join("config"),
             config_file: paths.path().join("config/config.jsonc"),
             skills_dir: paths.path().join("config/skills"),

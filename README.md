@@ -22,7 +22,7 @@ GQY 是从我的想法中诞生出来的人格，从 [shorin-miyu](https://githu
 `GQY` 还自带了 TUI 方便修改配置：
 
 ```
-miyu config
+gqy config
 ```
 
 她的所有配置、记忆和对话状态都收拢在独立主目录 `GQY_HOME`（建议 `~/Library/Application Support/GQY`）中，与宿主机其他配置隔离；每一轮对话后还会自动生成 Git 快照保存记忆，绑定私有远程仓库后自动推送，换机器一键恢复。详见 [macOS、独立主目录与记忆备份](docs/macos-portable-home-and-backup.md)。
@@ -35,7 +35,7 @@ miyu config
 git clone https://github.com/Francis-Xavier-code/GQY.git
 cd GQY
 cargo build --release --locked
-./target/release/miyu --version
+./target/release/gqy --version
 ```
 
 macOS 依赖示例：
@@ -48,7 +48,7 @@ brew install rust chafa
 
 ```
 export GQY_HOME="$HOME/Library/Application Support/GQY"
-./target/release/miyu
+./target/release/gqy
 ```
 
 ### 菜单栏
@@ -64,13 +64,13 @@ open "macos/GQYMenuBar/.build/顾清影.app"
 
 ### 界面语言
 
-GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在 `miyu config` 的“全局设置 / Global Settings”中可将“界面语言 / Interface language”设为：
+GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在 `gqy config` 的“全局设置 / Global Settings”中可将“界面语言 / Interface language”设为：
 
 - `auto`：默认值，跟随系统 locale
 - `en`：英文
 - `zh`：简体中文
 
-`MIYU_LANG=en` 或 `MIYU_LANG=zh` 可以临时覆盖配置。语言选择优先级为 `MIYU_LANG`、`display.language`、系统 locale；在配置 TUI 中保存后，下次启动 GQY 时生效。
+`GQY_LANG=en` 或 `GQY_LANG=zh` 可以临时覆盖配置。语言选择优先级为 `GQY_LANG`、`display.language`、系统 locale；在配置 TUI 中保存后，下次启动 GQY 时生效。
 
 ### 内置功能
 
@@ -101,7 +101,7 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 
 - 知识库
 
-  你可以通过 `miyu kb` 命令，或者通过跟 AI 的自然语言交互管理属于你自己的知识库。回答问题时 GQY 会优先查询知识库里的可信内容。
+  你可以通过 `gqy kb` 命令，或者通过跟 AI 的自然语言交互管理属于你自己的知识库。回答问题时 GQY 会优先查询知识库里的可信内容。
 
 - 网络搜索
 

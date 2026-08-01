@@ -3,7 +3,7 @@ mod usage;
 
 use crate::llm::Usage;
 use crate::memory::EvictedTurn;
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,7 +35,7 @@ pub struct StateStore {
 }
 
 impl StateStore {
-    pub fn new(paths: &MiyuPaths) -> Result<Self> {
+    pub fn new(paths: &GqyPaths) -> Result<Self> {
         let state_dir = paths.state_dir.clone();
         let conv_db = Arc::new(ConversationDb::open(&state_dir)?);
         let queue_owner_pid = std::process::id();
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn turn_lifecycle() {
         let temp = tempfile::tempdir().unwrap();
-        let store = StateStore::new(&MiyuPaths {
+        let store = StateStore::new(&GqyPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             skills_dir: temp.path().join("config/skills"),
@@ -686,7 +686,7 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            fish_hook_file: temp.path().join("fish/gqy.fish"),
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
@@ -695,7 +695,7 @@ mod tests {
         .unwrap();
 
         store.init_files().unwrap();
-        assert!(!temp.path().join("state/miyu.log").exists());
+        assert!(!temp.path().join("state/gqy.log").exists());
 
         store.start_turn("turn_1", "hello", 999999).unwrap();
         let turns = store.load_turns().unwrap();
@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn question_exchange_persists_with_user_role_history() {
         let temp = tempfile::tempdir().unwrap();
-        let store = StateStore::new(&MiyuPaths {
+        let store = StateStore::new(&GqyPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             skills_dir: temp.path().join("config/skills"),
@@ -720,7 +720,7 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            fish_hook_file: temp.path().join("fish/gqy.fish"),
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
@@ -757,7 +757,7 @@ mod tests {
     #[test]
     fn interrupt_turn() {
         let temp = tempfile::tempdir().unwrap();
-        let store = StateStore::new(&MiyuPaths {
+        let store = StateStore::new(&GqyPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             skills_dir: temp.path().join("config/skills"),
@@ -765,7 +765,7 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            fish_hook_file: temp.path().join("fish/gqy.fish"),
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn recover_stale_running() {
         let temp = tempfile::tempdir().unwrap();
-        let store = StateStore::new(&MiyuPaths {
+        let store = StateStore::new(&GqyPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             skills_dir: temp.path().join("config/skills"),
@@ -791,7 +791,7 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            fish_hook_file: temp.path().join("fish/gqy.fish"),
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
@@ -884,7 +884,7 @@ mod tests {
     #[test]
     fn undo_removes_last_turn() {
         let temp = tempfile::tempdir().unwrap();
-        let store = StateStore::new(&MiyuPaths {
+        let store = StateStore::new(&GqyPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             skills_dir: temp.path().join("config/skills"),
@@ -892,7 +892,7 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            fish_hook_file: temp.path().join("fish/gqy.fish"),
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
@@ -914,8 +914,8 @@ mod tests {
         assert_eq!(turns[0].turn_id, "turn_1");
     }
 
-    fn test_paths(root: &Path) -> MiyuPaths {
-        MiyuPaths {
+    fn test_paths(root: &Path) -> GqyPaths {
+        GqyPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
             skills_dir: root.join("config/skills"),
@@ -923,7 +923,7 @@ mod tests {
             cache_dir: root.join("cache"),
             state_dir: root.join("state"),
             pictures_dir: root.join("pictures"),
-            fish_hook_file: root.join("fish/miyu.fish"),
+            fish_hook_file: root.join("fish/gqy.fish"),
             bash_hook_file: root.join("shell/bash-hook.sh"),
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
@@ -1074,7 +1074,7 @@ mod tests {
         assert_eq!(store.load_queued_prompts().unwrap().len(), 1);
         drop(store);
 
-        let paths = MiyuPaths {
+        let paths = GqyPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             skills_dir: temp.path().join("config/skills"),
@@ -1082,7 +1082,7 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            fish_hook_file: temp.path().join("fish/gqy.fish"),
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),

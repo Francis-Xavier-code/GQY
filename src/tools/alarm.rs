@@ -1,7 +1,7 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::alarm::{self, AlarmRecord, AlarmStatus};
 use crate::i18n::agent_text as t;
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use chrono::Local;
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 
-pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
+pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
     let set_paths = paths.clone();
     registry.register(ToolSpec::new(
         "set_alarm",
@@ -60,7 +60,7 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     ).writes());
 }
 
-async fn set_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
+async fn set_alarm(args: Value, paths: GqyPaths) -> Result<String> {
     let time = args
         .get("time")
         .and_then(Value::as_str)
@@ -134,7 +134,7 @@ async fn set_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
     .to_string())
 }
 
-async fn list_alarms(paths: MiyuPaths) -> Result<String> {
+async fn list_alarms(paths: GqyPaths) -> Result<String> {
     let records = alarm::cleanup_dead(&paths)?;
     let alarms = records
         .into_iter()
@@ -154,7 +154,7 @@ async fn list_alarms(paths: MiyuPaths) -> Result<String> {
     Ok(json!({"ok": true, "alarms": alarms}).to_string())
 }
 
-async fn cancel_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
+async fn cancel_alarm(args: Value, paths: GqyPaths) -> Result<String> {
     let id = args
         .get("id")
         .and_then(Value::as_str)

@@ -1,5 +1,5 @@
 use crate::config::{AppConfig, KnowledgeBasePluginConfig, MemoryConfig};
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
@@ -40,7 +40,7 @@ pub struct MemoryHit {
 }
 
 impl MemoryStore {
-    pub fn new(config: &AppConfig, paths: &MiyuPaths) -> Self {
+    pub fn new(config: &AppConfig, paths: &GqyPaths) -> Self {
         let data_dir = config.active_persona_memory_data_dir(paths).join("memory");
         let state_dir = config.active_persona_memory_state_dir(paths).join("memory");
         Self {
@@ -242,8 +242,8 @@ impl MemoryStore {
             let skill_file = entry.path().join("SKILL.md");
             let raw = std::fs::read_to_string(&skill_file).unwrap_or_default();
             if raw.contains("Auto-learned method from assistant conversation")
-                || raw.contains("Auto-learned method from Miyu conversation")
-                || raw.contains("generated_by: miyu")
+                || raw.contains("Auto-learned method from GQY conversation")
+                || raw.contains("generated_by: gqy")
             {
                 std::fs::remove_dir_all(entry.path())?;
             }
@@ -752,10 +752,10 @@ fn now() -> String {
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::paths::MiyuPaths;
+    use crate::paths::GqyPaths;
 
-    fn test_paths(temp: &tempfile::TempDir) -> MiyuPaths {
-        MiyuPaths {
+    fn test_paths(temp: &tempfile::TempDir) -> GqyPaths {
+        GqyPaths {
             config_dir: temp.path().join("config"),
             config_file: temp.path().join("config/config.jsonc"),
             skills_dir: temp.path().join("config/skills"),
@@ -763,7 +763,7 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            fish_hook_file: temp.path().join("fish/gqy.fish"),
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),

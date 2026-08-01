@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub const GQY_HOME_ENV: &str = "GQY_HOME";
 
 #[derive(Debug, Clone)]
-pub struct MiyuPaths {
+pub struct GqyPaths {
     pub config_dir: PathBuf,
     pub config_file: PathBuf,
     pub skills_dir: PathBuf,
@@ -22,7 +22,7 @@ pub struct MiyuPaths {
     pub system_scripts_dir: PathBuf,
 }
 
-impl MiyuPaths {
+impl GqyPaths {
     pub fn new() -> Result<Self> {
         if let Some(home) = isolated_home_from_env()? {
             return Ok(Self::from_isolated_home(home));
@@ -32,23 +32,23 @@ impl MiyuPaths {
             "could not determine XDG base directories",
             "无法确定 XDG 基础目录",
         ))?;
-        let config_dir = base.config_dir().join("miyu");
-        let data_dir = base.data_dir().join("miyu");
-        let cache_dir = base.cache_dir().join("miyu");
+        let config_dir = base.config_dir().join("gqy");
+        let data_dir = base.data_dir().join("gqy");
+        let cache_dir = base.cache_dir().join("gqy");
         let state_dir = base
             .state_dir()
             .unwrap_or_else(|| base.data_dir())
-            .join("miyu");
+            .join("gqy");
         let pictures_dir = std::env::var_os("XDG_PICTURES_DIR")
             .map(PathBuf::from)
             .or_else(|| UserDirs::new().and_then(|dirs| dirs.picture_dir().map(PathBuf::from)))
             .unwrap_or_else(|| base.home_dir().join("Pictures"))
-            .join("miyu");
-        let fish_hook_file = base.config_dir().join("fish/conf.d/miyu.fish");
+            .join("gqy");
+        let fish_hook_file = base.config_dir().join("fish/conf.d/gqy.fish");
         let bash_hook_file = config_dir.join("shell/bash-hook.sh");
         let zsh_hook_file = config_dir.join("shell/zsh-hook.zsh");
         let scripts_dir = config_dir.join("scripts");
-        let system_scripts_dir = PathBuf::from("/usr/share/miyu/scripts");
+        let system_scripts_dir = PathBuf::from("/usr/share/gqy/scripts");
 
         Ok(Self {
             config_file: config_dir.join("config.jsonc"),
@@ -75,11 +75,11 @@ impl MiyuPaths {
         Self {
             config_file: config_dir.join("config.jsonc"),
             skills_dir: config_dir.join("skills"),
-            fish_hook_file: config_dir.join("shell/miyu.fish"),
+            fish_hook_file: config_dir.join("shell/gqy.fish"),
             bash_hook_file: config_dir.join("shell/bash-hook.sh"),
             zsh_hook_file: config_dir.join("shell/zsh-hook.zsh"),
             scripts_dir: config_dir.join("scripts"),
-            system_scripts_dir: PathBuf::from("/usr/share/miyu/scripts"),
+            system_scripts_dir: PathBuf::from("/usr/share/gqy/scripts"),
             pictures_dir: home.join("pictures"),
             config_dir,
             data_dir,
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn isolated_layout_stays_under_one_home() {
         let home = PathBuf::from("/tmp/gqy-test-home");
-        let paths = MiyuPaths::from_isolated_home(home.clone());
+        let paths = GqyPaths::from_isolated_home(home.clone());
 
         for path in [
             &paths.config_dir,

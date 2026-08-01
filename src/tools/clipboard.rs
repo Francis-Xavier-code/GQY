@@ -1,7 +1,7 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::clipboard::ClipboardContent;
 use crate::i18n::agent_text as t;
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::env;
@@ -14,7 +14,7 @@ enum PreferredType {
     Image,
 }
 
-pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
+pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
     registry.register(ToolSpec::new(
         "read_clipboard",
         t(
@@ -40,7 +40,7 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     ));
 }
 
-fn read_clipboard_tool(args: Value, paths: MiyuPaths) -> Result<String> {
+fn read_clipboard_tool(args: Value, paths: GqyPaths) -> Result<String> {
     if std::env::consts::OS != "linux" {
         return Ok(serde_json::to_string_pretty(&json!({
             "ok": false,
@@ -85,11 +85,11 @@ impl PreferredType {
     }
 }
 
-fn auto_result(paths: MiyuPaths) -> Result<String> {
+fn auto_result(paths: GqyPaths) -> Result<String> {
     detected_text_result(paths)
 }
 
-fn detected_text_result(paths: MiyuPaths) -> Result<String> {
+fn detected_text_result(paths: GqyPaths) -> Result<String> {
     match crate::clipboard::read_clipboard()? {
         ClipboardContent::Image(img) => image_binary_result(img, &paths),
         ClipboardContent::ImagePath(path) => image_path_result(path),
@@ -122,7 +122,7 @@ fn text_result() -> Result<String> {
     empty_result()
 }
 
-fn image_binary_result(img: crate::clipboard::ClipboardImage, paths: &MiyuPaths) -> Result<String> {
+fn image_binary_result(img: crate::clipboard::ClipboardImage, paths: &GqyPaths) -> Result<String> {
     let mime = img.mime.clone();
     let bytes = img.data.len();
     let path = img.write_temp_file(&paths.cache_dir, 0)?;

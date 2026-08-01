@@ -1,6 +1,6 @@
-# Miyu WebUI assets
+# GQY WebUI assets
 
-These static assets are embedded into the Miyu Rust binary at build time. Run the local WebUI with:
+These static assets are embedded into the GQY Rust binary at build time. Run the local WebUI with:
 
 ```sh
 cargo run -- web

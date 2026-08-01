@@ -28,16 +28,16 @@ export GQY_HOME="$HOME/Library/Application Support/GQY"
 构建后可直接进入 REPL：
 
 ```zsh
-GQY_HOME="$HOME/Library/Application Support/GQY" ./target/release/miyu
+GQY_HOME="$HOME/Library/Application Support/GQY" ./target/release/gqy
 ```
 
 安装 zsh 自然语言 hook：
 
 ```zsh
-GQY_HOME="$HOME/Library/Application Support/GQY" ./target/release/miyu zsh-init
+GQY_HOME="$HOME/Library/Application Support/GQY" ./target/release/gqy zsh-init
 ```
 
-hook 本体位于 `GQY_HOME/config/shell/`。安装动作只会在宿主机 `~/.zshrc` 中加入一个带边界标记的 `source` 块，`miyu remove-shell-hook` 可以移除它。
+hook 本体位于 `GQY_HOME/config/shell/`。安装动作只会在宿主机 `~/.zshrc` 中加入一个带边界标记的 `source` 块，`gqy remove-shell-hook` 可以移除它。
 
 ## 菜单栏入口
 
@@ -56,7 +56,7 @@ open "macos/GQYMenuBar/.build/顾清影.app"
 
 有两种起步方式：
 
-- **本地模式**（不需要任何账号）：`miyu backup init` 不带 `--remote`，先启用本地自动快照，之后随时用 `miyu backup remote <url>` 绑定远程。
+- **本地模式**（不需要任何账号）：`gqy backup init` 不带 `--remote`，先启用本地自动快照，之后随时用 `gqy backup remote <url>` 绑定远程。
 - **直接配置远程**：创建 private 仓库后按下面的流程一次到位。
 
 推荐为她单独创建 SSH key：
@@ -69,7 +69,7 @@ ssh-keygen -t ed25519 -f "$GQY_HOME/secrets/ssh/id_ed25519" -C "gqy-memory-backu
 把公钥添加为远程私有仓库的 deploy key，然后初始化：
 
 ```zsh
-miyu backup init \
+gqy backup init \
   --remote git@github.com:YOUR_NAME/gqy-memory.git \
   --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519" \
   --name "GQY Memory" \
@@ -79,7 +79,7 @@ miyu backup init \
 本地模式起步后再绑定远程：
 
 ```zsh
-miyu backup remote git@github.com:YOUR_NAME/gqy-memory.git \
+gqy backup remote git@github.com:YOUR_NAME/gqy-memory.git \
   --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519" \
   --auto-push
 ```
@@ -87,15 +87,15 @@ miyu backup remote git@github.com:YOUR_NAME/gqy-memory.git \
 手动检查和备份：
 
 ```zsh
-miyu backup status
-miyu backup now
+gqy backup status
+gqy backup now
 ```
 
 在另一台机器上从远程恢复（还原人格、记忆、对话状态和图片）：
 
 ```zsh
 export GQY_HOME="$HOME/Library/Application Support/GQY"
-miyu backup restore \
+gqy backup restore \
   --remote git@github.com:YOUR_NAME/gqy-memory.git \
   --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519"
 ```

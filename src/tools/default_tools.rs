@@ -1057,7 +1057,7 @@ mod tests {
     #[test]
     fn readonly_command_allows_inspection() {
         assert!(ensure_readonly_command("git status --short").is_ok());
-        assert!(ensure_readonly_command("pacman -Q miyu").is_ok());
+        assert!(ensure_readonly_command("pacman -Q gqy").is_ok());
     }
 
     #[test]

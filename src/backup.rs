@@ -1,4 +1,4 @@
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OpenFlags};
@@ -51,7 +51,7 @@ pub struct RestoreOptions {
     pub force: bool,
 }
 
-pub fn init(paths: &MiyuPaths, options: BackupInitOptions) -> Result<()> {
+pub fn init(paths: &GqyPaths, options: BackupInitOptions) -> Result<()> {
     let home = required_isolated_home(paths)?;
     validate_init_options(&home, &options)?;
 
@@ -125,13 +125,13 @@ pub fn init(paths: &MiyuPaths, options: BackupInitOptions) -> Result<()> {
     Ok(())
 }
 
-pub fn backup_now(paths: &MiyuPaths, push: bool) -> Result<BackupOutcome> {
+pub fn backup_now(paths: &GqyPaths, push: bool) -> Result<BackupOutcome> {
     let home = required_isolated_home(paths)?;
     let backup_dir = home.join("backup");
     let settings = load_settings(&backup_dir)?;
     let repo = backup_dir.join("repository");
     if !repo.join(".git").is_dir() {
-        bail!("backup repository is not initialized; run `miyu backup init` first");
+        bail!("backup repository is not initialized; run `gqy backup init` first");
     }
 
     snapshot(paths, &repo)?;
@@ -164,7 +164,7 @@ pub fn backup_now(paths: &MiyuPaths, push: bool) -> Result<BackupOutcome> {
     })
 }
 
-pub fn maybe_auto_backup(paths: &MiyuPaths) -> Result<Option<BackupOutcome>> {
+pub fn maybe_auto_backup(paths: &GqyPaths) -> Result<Option<BackupOutcome>> {
     let Some(home) = paths.isolated_home()? else {
         return Ok(None);
     };
@@ -179,7 +179,7 @@ pub fn maybe_auto_backup(paths: &MiyuPaths) -> Result<Option<BackupOutcome>> {
     backup_now(paths, true).map(Some)
 }
 
-pub fn status(paths: &MiyuPaths) -> Result<String> {
+pub fn status(paths: &GqyPaths) -> Result<String> {
     let home = required_isolated_home(paths)?;
     let backup_dir = home.join("backup");
     let settings = load_settings(&backup_dir)?;
@@ -207,10 +207,10 @@ pub fn status(paths: &MiyuPaths) -> Result<String> {
 }
 
 fn t_local_mode() -> String {
-    "(none — local mode; run `miyu backup remote <url>` to attach one)".to_string()
+    "(none — local mode; run `gqy backup remote <url>` to attach one)".to_string()
 }
 
-pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
+pub fn restore(paths: &GqyPaths, options: RestoreOptions) -> Result<()> {
     let home = required_isolated_home(paths)?;
     validate_init_options(
         &home,
@@ -309,7 +309,7 @@ pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
 }
 
 pub fn set_remote(
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     url: String,
     ssh_key: Option<PathBuf>,
     auto_push: Option<bool>,
@@ -410,7 +410,7 @@ fn copy_tree_plain(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn required_isolated_home(paths: &MiyuPaths) -> Result<PathBuf> {
+fn required_isolated_home(paths: &GqyPaths) -> Result<PathBuf> {
     paths
         .isolated_home()?
         .context("Git backup requires an isolated GQY_HOME; set it to an absolute directory first")
@@ -535,7 +535,7 @@ fn write_repository_files(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-fn snapshot(paths: &MiyuPaths, repo: &Path) -> Result<()> {
+fn snapshot(paths: &GqyPaths, repo: &Path) -> Result<()> {
     for name in SNAPSHOT_DIRS {
         let destination = repo.join(name);
         if destination.exists() {
@@ -833,8 +833,8 @@ mod tests {
         assert!(!is_obvious_secret_file(Path::new("persona.md")));
     }
 
-    fn test_paths(root: &Path) -> MiyuPaths {
-        MiyuPaths {
+    fn test_paths(root: &Path) -> GqyPaths {
+        GqyPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
             skills_dir: root.join("config/skills"),
@@ -842,7 +842,7 @@ mod tests {
             cache_dir: root.join("cache"),
             state_dir: root.join("state"),
             pictures_dir: root.join("pictures"),
-            fish_hook_file: root.join("fish/conf.d/miyu.fish"),
+            fish_hook_file: root.join("fish/conf.d/gqy.fish"),
             bash_hook_file: root.join("config/shell/bash-hook.sh"),
             zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),

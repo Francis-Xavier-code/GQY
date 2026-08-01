@@ -34,7 +34,7 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let paths = paths::MiyuPaths::new()?;
+    let paths = paths::GqyPaths::new()?;
     let language = config::AppConfig::display_language_hint(&paths);
     i18n::init(language.as_deref().unwrap_or("auto"));
     let cli = cli::parse();
