@@ -50,6 +50,15 @@
 - `gqy memes list` / `gqy memes stats`：查看表情库数量与格式分布
 - 情绪感知：系统提示新增情绪规则——感知用户情绪变化时用 `log_mood` 记心情日志，
   情感场景允许自然道歉（代码场景保持克制不道歉）
+- 语音能力（本地、零 API 成本）：
+  - `gqy tts "文字"` / `speak` 工具：macOS `say` 朗读（`--voice` 选音色、`-o` 存文件、`--list` 列语音）
+  - `gqy stt <音频>` / `listen_audio` 工具：speech-tool.swift 本地离线识别
+    （注意：macOS 语音识别是 TCC 敏感权限，裸脚本无法自动授权——CLI 场景会给出指引，
+    真正启用需集成进带 bundle 的菜单栏 App）
+- 记忆定期归档：`gqy archive [--keep-days N]` 把超过保留期的轮次归档到
+  evicted_context（不占对话上下文，`history --search` 可检索）；对话开始前自动触发
+  （默认保留 7 天，节流静默）
+- 修复：`gqy history --search` 检索归档轮次时读错字段（snippet），现在可搜到归档内容
 
 ### 变更
 - 菜单栏面板改为独立 App 窗口（可拖动缩放，不再依赖浏览器）；窗口 720px 宽，
