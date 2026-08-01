@@ -108,4 +108,23 @@ mod tests {
         let temp = std::env::temp_dir().join("gqy-writable-test.txt");
         ensure_writable(&temp).unwrap();
     }
+
+    #[test]
+    fn writable_inside_project_is_rejected() {
+        // 用环境变量指向一个临时项目目录，验证护栏本身（不依赖真实仓库位置）
+        let temp = std::env::temp_dir().join("gqy-guard-project-test");
+        std::fs::create_dir_all(&temp).unwrap();
+        let guarded_file = temp.join("src/main.rs");
+        std::fs::create_dir_all(guarded_file.parent().unwrap()).unwrap();
+        std::fs::write(&guarded_file, "").unwrap();
+
+        unsafe { std::env::set_var("GQY_PROJECT_DIR", &temp) };
+        let result = ensure_writable(&guarded_file);
+        unsafe { std::env::remove_var("GQY_PROJECT_DIR") };
+        assert!(result.is_err());
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("受保护"));
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
 }

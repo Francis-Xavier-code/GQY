@@ -166,7 +166,8 @@ async fn cancel_alarm(args: Value, paths: GqyPaths) -> Result<String> {
     let removed = alarm::remove(&paths, id)?;
     if let Some(record) = &removed {
         if let Some(pid) = record.pid {
-            if alarm::process_exists(pid) {
+            // flock 判定存活：锁被占用 = worker 还在（PID 复用安全）
+            if alarm::worker_alive(&paths, id, pid) {
                 alarm::stop_process(pid)?;
             }
         }

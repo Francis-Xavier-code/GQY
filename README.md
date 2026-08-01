@@ -64,6 +64,22 @@ export GQY_HOME="$HOME/Library/Application Support/gqy"
 ./target/release/gqy
 ```
 
+### 安装的资源放在哪？
+
+GQY 的只读资源（内置脚本、表情库、知识库源）统一放在**一个文件夹**里，三种安装方式布局一致：
+
+| 安装方式 | 资源目录 |
+|---|---|
+| Homebrew CLI | `$(brew --prefix)/share/gqy`（scripts/、memes/、kb/） |
+| 菜单栏 App | `顾清影.app/Contents/Resources/share/gqy`（自包含） |
+| 源码构建 | 仓库内 `src/scripts`、`src/memes`、`kb` 自动识别 |
+
+运行时按 `GQY_SHARE_DIR` 环境变量 → 可执行文件位置自动向上查找 → 源码树 → `/usr/share/gqy` 的顺序解析，`gqy paths` 可查看当前生效的目录。随包的知识库可用一条命令导入：
+
+```
+gqy kb add "$(brew --prefix)/share/gqy/kb"
+```
+
 ### 菜单栏
 
 轻量 AppKit 菜单栏壳位于 `macos/GQYMenuBar`，不需要完整 Xcode：
@@ -219,6 +235,9 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 - **Q：菜单栏里「开机自启」是干什么的？**
   A：注册/移除 LaunchAgent（`~/Library/LaunchAgents/dev.gqy.menubar.plist`），让她下次登录自动出现在菜单栏。只有你主动点击才会修改。
 
+- **Q：卸载 GQY 会删掉我的记忆吗？**
+  A：不会。`brew uninstall --cask gqy` / `brew uninstall gqy` 只移除程序和自启项；GQY_HOME（对话、记忆、知识库、备份仓库）是用户数据，卸载不会触碰。想彻底清除请手动删除 `~/Library/Application Support/gqy`。
+
 - **Q：GQY 和 Miyu 是什么关系？**
   A：GQY 是从 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) fork 出来的，Miyu 的代码是 MIT 授权，本项目新增部分按 GPL-3.0 授权。
 
@@ -228,16 +247,17 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 ## 发布新版本
 
 1. bump `Cargo.toml` 版本号（菜单栏 Info.plist 由 `build.sh` 自动跟随）；
-2. `git tag v0.4.0 && git push origin v0.4.0`；
+2. `git tag v0.4.2 && git push origin v0.4.2`；
 3. 构建并上传发布资产：
    ```zsh
    cargo build --release --locked
    zsh macos/GQYMenuBar/build.sh
-   zsh macos/GQYMenuBar/make-dmg.sh   # 产出 .build/GQY-0.4.0.dmg
+   zsh macos/GQYMenuBar/make-dmg.sh   # 产出 .build/GQY-0.4.2.dmg
+   gh release create v0.4.2 macos/GQYMenuBar/.build/GQY-0.4.2.dmg --generate-notes
    ```
-   把 `GQY-0.4.0.dmg` 上传到 GitHub Release v0.4.0；
-4. 计算 `Formula/gqy.rb` 与 `Cask/gqy.rb` 里两个 `sha256`（源码 tarball 与 dmg）并提交；
-5. 用户即可 `brew install gqy` / `brew install --cask gqy`。
+4. 计算 `Formula/gqy.rb` 与 `Casks/gqy.rb` 里两个 `sha256`（源码 tarball 与 dmg）并提交；
+5. 同步到 Homebrew tap 仓库（`Francis-Xavier-code/homebrew-GQY`）里的同名文件并推送；
+6. 用户即可 `brew install gqy` / `brew install --cask gqy`。
 
 ## 做出贡献
 
@@ -264,9 +284,7 @@ GQY 的定位是桌面助手，不是 Coding Agent，她更注重拟真、系统
 
 - 提高和系统的无缝集成
 
-  不使用任何命令作为触发器，能够直接使用自然语言开启对话。目前是通过 Command Not Found 内容交给 GQY 的方式做到和终端的无缝集成，但是逐行解释命令的特点导致提示词包含多行内容时每一行都会调用一次，如何支持多行无缝对话是一个需要研究的点。
-
-  终端以外的集成也值得研究，例如做成守护进程，拥有持续运行的能力，监听系统事件，在特定事件发生时做出特定反应等。
+  不使用任何命令作为触发器，能够直接使用自然语言开启对话。目前是通过 Command Not Found 内容交给 GQY 的方式做到和终端的无缝集成（zsh/fish 已支持多行自然语言整块拦截；bash 的多行拦截仍在实验）。终端以外的集成也值得研究，例如做成守护进程，拥有持续运行的能力，监听系统事件，在特定事件发生时做出特定反应等。
 
 - 优化功能和修复 BUG
 

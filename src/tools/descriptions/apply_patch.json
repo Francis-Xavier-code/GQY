@@ -1,7 +1,7 @@
 {
   "name": "apply_patch",
   "display_name": "应用补丁",
-  "description": "批量编辑文件。适合复杂修改、多处修改、同一文件多处修改和需要避免并行编辑竞争的场景。使用 *** Begin Patch / *** End Patch 包裹补丁，支持 Add File、Update File、Delete File。复杂编辑优先使用本工具，不要并行调用多个 edit_string 修改同一文件。",
+  "description": "批量编辑文件。适合复杂修改、多处修改、同一文件多处修改和需要避免并行编辑竞争的场景。使用 *** Begin Patch / *** End Patch 包裹补丁，支持 Add File、Update File、Delete File（Delete File 会把文件移入系统回收站，不会物理删除）。复杂编辑优先使用本工具，不要并行调用多个 edit_string 修改同一文件。",
   "parameters": {
     "type": "object",
     "properties": {

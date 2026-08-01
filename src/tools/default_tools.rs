@@ -300,6 +300,7 @@ fn read_file(args: Value) -> Result<String> {
 fn edit_file(args: Value, progress: ToolProgress) -> Result<String> {
     let path = path_arg(&args, "path")?;
     ensure_editable_file_path(&path)?;
+    crate::tools::path_guard::ensure_writable(&path)?;
     let start_line = args
         .get("start_line")
         .and_then(Value::as_u64)
@@ -364,6 +365,7 @@ fn trash_path_with(
     let input = path_arg(&args, "path")?;
     let resolved = resolve_existing_path_without_following_leaf(&input)?;
     ensure_safe_trash_target(&resolved)?;
+    crate::tools::path_guard::ensure_writable(&resolved)?;
     let metadata = std::fs::symlink_metadata(&resolved)?;
     let kind = path_kind(&metadata);
     let existed_before = true;

@@ -502,12 +502,23 @@ impl MemoryStore {
     }
 
     fn data_conn(&self) -> Result<Connection> {
-        Ok(Connection::open(&self.data_db)?)
+        let conn = Connection::open(&self.data_db)?;
+        sqlite_concurrency_pragmas(&conn)?;
+        Ok(conn)
     }
 
     fn state_conn(&self) -> Result<Connection> {
-        Ok(Connection::open(&self.state_db)?)
+        let conn = Connection::open(&self.state_db)?;
+        sqlite_concurrency_pragmas(&conn)?;
+        Ok(conn)
     }
+}
+
+/// 与 conversation.db 对齐的并发设置：WebUI 与主进程并发读写时避免 `database is locked`。
+fn sqlite_concurrency_pragmas(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    Ok(())
 }
 
 fn init_data_db(conn: &Connection) -> Result<()> {
@@ -768,6 +779,8 @@ mod tests {
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
             system_scripts_dir: PathBuf::new(),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 

@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::SystemTime;
 
-const BUILTIN_MEMES_DIR: &str = "/usr/share/gqy/memes";
 const MIN_SHORT_MEME_ID_LEN: usize = 7;
 
 static MEME_LIBRARY_CACHE: OnceLock<RwLock<Option<MemeLibraryCache>>> = OnceLock::new();
@@ -542,7 +541,7 @@ async fn describe_meme_image(config: &AppConfig, paths: &GqyPaths, image: &Path)
 }
 
 fn load_library(paths: &GqyPaths, library: &str) -> Result<Vec<LoadedMeme>> {
-    let builtin_dir = builtin_library_dir(library);
+    let builtin_dir = builtin_library_dir(paths, library);
     let user_dir = user_library_dir(paths, library);
     let builtin_index = builtin_dir.join("index.json");
     let user_index = user_dir.join("index.json");
@@ -711,15 +710,21 @@ fn sanitize_library(value: &str) -> String {
     }
 }
 
-fn builtin_library_dir(library: &str) -> PathBuf {
+fn builtin_library_dir(paths: &GqyPaths, library: &str) -> PathBuf {
     if let Some(path) = std::env::var_os("GQY_MEMES_DIR") {
         return PathBuf::from(path).join(library);
     }
-    let dev = PathBuf::from("src/memes").join(library);
-    if dev.is_dir() {
-        return dev;
+    // share 基目录统一布局：brew/app 为 <share>/memes，源码树为 <share>/src/memes
+    let base = &paths.share_dir;
+    let primary = base.join("memes").join(library);
+    let source = base.join("src/memes").join(library);
+    if primary.join("index.json").is_file() {
+        return primary;
     }
-    PathBuf::from(BUILTIN_MEMES_DIR).join(library)
+    if source.is_dir() {
+        return source;
+    }
+    primary
 }
 
 fn user_library_dir(paths: &GqyPaths, library: &str) -> PathBuf {

@@ -64,7 +64,9 @@ fn apply_patch(args: Value, progress: ToolProgress) -> Result<String> {
     for change in changes {
         match change.kind {
             ChangeKind::Delete => {
-                std::fs::remove_file(&change.path)?;
+                // 与 trash_path 的契约一致：删除一律进回收站，绝不物理删除
+                trash::delete(&change.path)
+                    .map_err(|err| anyhow::anyhow!("failed to move to trash: {err}"))?;
                 report_delete_preview(&progress, &change.path, &change.before)?;
             }
             ChangeKind::Add | ChangeKind::Update => {

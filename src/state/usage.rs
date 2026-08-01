@@ -66,7 +66,22 @@ fn add_usage_with_scope(path: &Path, usage: &Usage, is_conversation: bool) -> Re
     if is_conversation {
         state.last_conversation_usage = Some(usage.clone());
     }
-    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&state)?))?;
+    atomic_write(path, &state)?;
+    Ok(())
+}
+
+/// 临时文件 + rename 原子落盘：避免 CLI 与 WebUI 并发读改写时留下半截文件。
+fn atomic_write(path: &Path, state: &UsageState) -> Result<()> {
+    let content = format!("{}\n", serde_json::to_string_pretty(state)?);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = tempfile::NamedTempFile::new_in(
+        path.parent()
+            .ok_or_else(|| anyhow::anyhow!("usage path has no parent: {}", path.display()))?,
+    )?;
+    std::fs::write(temp.path(), content)?;
+    temp.persist(path)?;
     Ok(())
 }
 
@@ -87,7 +102,7 @@ pub fn clear_last_usage(path: &Path) -> Result<()> {
     let mut state = serde_json::from_str::<UsageState>(&raw).unwrap_or_default();
     state.last_usage = None;
     state.last_conversation_usage = None;
-    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&state)?))?;
+    atomic_write(path, &state)?;
     Ok(())
 }
 

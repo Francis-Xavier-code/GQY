@@ -8,16 +8,70 @@ const BEGIN_MARKER: &str = "# >>> gqy bash hook >>>";
 const END_MARKER: &str = "# <<< gqy bash hook <<<";
 
 pub fn hook() -> &'static str {
-    r#"command_not_found_handle() {
+    r#"# 拦截「命令未找到」：明显是命令/拼写错误 → 交给系统报错；自然语言 → 交给 GQY。
+command_not_found_handle() {
     [[ $- == *i* ]] || return 127
 
     local text="$*"
     [[ -n "$text" ]] || return 127
     [[ "$text" != *$'\n'* && "$text" != *$'\r'* ]] || return 127
 
+    # 明显是命令（含路径/内置命令/环境变量前缀）→ 系统报错，不打扰 GQY
+    gqy --shell-classify --shell bash -- "$@" 2>/dev/null && return 127
+
     gqy --shell-intercept --shell bash -- "$@" 2>/dev/null
     return 127
 }
+
+# ---- 多行自然语言：Enter 时整块交给 GQY（bind -x 读取 READLINE_LINE） ----
+__gqy_pending_buffer=""
+
+# 缓冲内是否含「未知命令」行：有则视为自然语言块，交给 GQY
+__gqy_multiline_has_unknown() {
+    local buffer="$1" line token
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -n "$line" ]] || continue
+        [[ "$line" != \#* ]] || continue
+        # 跳过 env 赋值前缀（VAR=... cmd）
+        while [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+            line="${line#*=}"
+            line="${line#"${line%%[![:space:]]*}"}"
+        done
+        token="${line%%[[:space:]]*}"
+        [[ -n "$token" ]] || continue
+        if ! command -v "$token" >/dev/null 2>&1 && ! type -t "$token" >/dev/null 2>&1; then
+            return 0
+        fi
+    done <<< "$buffer"
+    return 1
+}
+
+__gqy_enter() {
+    local buffer="${READLINE_LINE:-}"
+    if [[ -n "$buffer" && "$buffer" == *$'\n'* ]] && __gqy_multiline_has_unknown "$buffer"; then
+        # 整块交给 GQY：清空行缓冲，下一提示符发送
+        __gqy_pending_buffer="$buffer"
+        READLINE_LINE=""
+        READLINE_POINT=0
+    fi
+}
+if [[ $- == *i* ]]; then
+    bind -x '"\C-m": __gqy_enter' 2>/dev/null || true
+fi
+
+__gqy_prompt() {
+    if [[ -n "$__gqy_pending_buffer" ]]; then
+        local buffer="$__gqy_pending_buffer"
+        __gqy_pending_buffer=""
+        printf '\033[31m%s\033[0m\n' "$buffer"
+        printf '%s' "$buffer" | gqy --shell-intercept --shell bash --stdin 2>/dev/null
+    fi
+}
+if [[ -z "${__gqy_prompt_hooked:-}" ]]; then
+    __gqy_prompt_hooked=1
+    PROMPT_COMMAND="__gqy_prompt${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+fi
 "#
 }
 
@@ -121,6 +175,15 @@ mod tests {
         assert!(hook.contains("command_not_found_handle"));
         assert!(hook.contains("--shell bash"));
         assert!(hook.contains("return 127"));
+    }
+
+    #[test]
+    fn bash_hook_wires_classifier_and_multiline_intercept() {
+        let hook = hook();
+        assert!(hook.contains("--shell-classify"));
+        assert!(hook.contains("__gqy_enter"));
+        assert!(hook.contains("bind -x"));
+        assert!(hook.contains("--stdin"));
     }
 
     #[test]

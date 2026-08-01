@@ -21,8 +21,8 @@ cask "gqy" do
 
   app "顾清影.app"
 
+  # 卸载只清自启项；GQY_HOME（对话/记忆/知识库/备份仓库）是用户数据，绝不随卸载删除
   zap trash: [
-    "~/Library/Application Support/gqy",
     "~/Library/LaunchAgents/dev.gqy.menubar.plist",
   ]
 end

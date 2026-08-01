@@ -2,6 +2,8 @@ use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,10 +116,77 @@ pub fn cleanup_dead(paths: &GqyPaths) -> Result<Vec<AlarmRecord>> {
     let records = load(paths)?;
     let active = records
         .into_iter()
-        .filter(|record| record.pid.is_none_or(process_exists))
+        .filter(|record| record.pid.is_none_or(|pid| worker_alive(paths, &record.id, pid)))
         .collect::<Vec<_>>();
     save(paths, &active)?;
     Ok(active)
+}
+
+/// 每个闹钟 worker 在 `state/alarms/<id>.lock` 上持有独占 flock，
+/// 进程退出（或被杀死）时内核自动释放锁。
+/// 判定 worker 是否存活 = 尝试非阻塞加锁：能加上说明已死；
+/// 锁被占用说明 worker 还在。锁与进程绑定而非 PID，天然免疫 PID 复用误判。
+pub fn lock_file(paths: &GqyPaths, id: &str) -> PathBuf {
+    paths.state_dir.join("alarms").join(format!("{id}.lock"))
+}
+
+/// worker 启动时调用，进程生命周期内持有该锁。
+pub struct WorkerLock {
+    _file: File,
+}
+
+impl WorkerLock {
+    pub fn acquire(paths: &GqyPaths, id: &str) -> Result<Self> {
+        let path = lock_file(paths, id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&path)?;
+        // 阻塞加锁：正常情况锁空闲，立即成功
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if result != 0 {
+            bail!(
+                "failed to lock alarm worker file {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            )
+        }
+        Ok(Self { _file: file })
+    }
+}
+
+/// worker 是否存活：flock 空闲 → 已死；被占用 → 存活。
+/// 锁被占用时占用者只能是本闹钟 id 的 worker（锁文件按 id 隔离），
+/// 因此不需要再核对 PID 是否被系统复用。
+pub fn worker_alive(paths: &GqyPaths, id: &str, pid: u32) -> bool {
+    let path = lock_file(paths, id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&path)
+    else {
+        return process_exists(pid);
+    };
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        // 加锁成功：锁空闲，worker 已退出
+        false
+    } else {
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        if errno == Some(libc::EWOULDBLOCK) {
+            // 锁被 worker 持有
+            true
+        } else {
+            // 其他错误（如文件系统不支持）：退回 PID 判断
+            process_exists(pid)
+        }
+    }
 }
 
 pub fn stop_process(pid: u32) -> Result<()> {
@@ -195,6 +264,8 @@ mod tests {
             zsh_hook_file: PathBuf::new(),
             scripts_dir: PathBuf::new(),
             system_scripts_dir: PathBuf::new(),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 
@@ -236,5 +307,55 @@ mod tests {
         assert_eq!(load(&paths).unwrap()[0].status, AlarmStatus::Ringing);
         assert!(remove(&paths, "alarm-test").unwrap().is_some());
         assert!(load(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn worker_lock_is_held_while_alive_and_released_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path().to_path_buf());
+        let id = "alarm-lock-test";
+
+        // 无锁时：worker_alive 应为 false（worker 不存在）
+        assert!(!worker_alive(&paths, id, std::process::id()));
+
+        // 持锁后：应判定为存活
+        let _lock = WorkerLock::acquire(&paths, id).unwrap();
+        assert!(worker_alive(&paths, id, std::process::id()));
+
+        // 释放后：恢复为已死
+        drop(_lock);
+        assert!(!worker_alive(&paths, id, std::process::id()));
+    }
+
+    #[test]
+    fn cleanup_dead_keeps_records_with_live_workers_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path().to_path_buf());
+
+        let dead = AlarmRecord {
+            id: "alarm-dead".to_string(),
+            label: "dead".to_string(),
+            time: "30s".to_string(),
+            audio_file: None,
+            due_at: 123,
+            pid: Some(999999),
+            status: AlarmStatus::Scheduled,
+        };
+        let live = AlarmRecord {
+            id: "alarm-live".to_string(),
+            label: "live".to_string(),
+            time: "30s".to_string(),
+            audio_file: None,
+            due_at: 123,
+            pid: Some(999998),
+            status: AlarmStatus::Scheduled,
+        };
+        let _lock = WorkerLock::acquire(&paths, &live.id).unwrap();
+        upsert(&paths, dead).unwrap();
+        upsert(&paths, live).unwrap();
+
+        let active = cleanup_dead(&paths).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "alarm-live");
     }
 }
