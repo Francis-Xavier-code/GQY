@@ -136,6 +136,7 @@
     drawerScrim: document.getElementById("drawerScrim"),
     settingsDrawer: document.getElementById("settingsDrawer"),
     settingsClose: document.getElementById("settingsClose"),
+    miniExpandButton: document.getElementById("miniExpandButton"),
     settingsNav: document.querySelector(".settings-nav"),
     settingsPanels: Array.from(document.querySelectorAll("[data-settings-panel]")),
     settingsModelMark: document.getElementById("settingsModelMark"),
@@ -2885,7 +2886,12 @@
     const mode = reasoningDisplayMode();
     const reasoning = createReasoningBlock("", "正在思考", true, mode === "summary");
     reasoning.pendingTitle = normalizeReasoningTitle(live.reasoningTitle);
-    if (mode !== "hidden") live.blocks.appendChild(reasoning.element);
+    if (mode !== "hidden") {
+      live.blocks.appendChild(reasoning.element);
+      // 思考中：头像呼吸动画（顾清影「带着头像思考」）
+      const article = live.blocks.closest(".assistant-message");
+      if (article) article.classList.add("is-thinking");
+    }
     live.reasoning = reasoning;
     live.reasoningParts.push(reasoning);
     if (live.reasoningTimer) window.clearInterval(live.reasoningTimer);
@@ -2909,6 +2915,8 @@
   function finalizeLiveReasoning(live) {
     const reasoning = live.reasoning;
     if (!reasoning) return;
+    const article = live.blocks?.closest(".assistant-message");
+    if (article) article.classList.remove("is-thinking");
     if (live.reasoningTimer) {
       window.clearInterval(live.reasoningTimer);
       live.reasoningTimer = null;
@@ -4387,7 +4395,8 @@
       return;
     }
     if (conversationRunning() || state.adminBusy || state.submitting) return;
-    if (typeof elements.resetDialog.showModal === "function") elements.resetDialog.showModal();
+    handleMiniMode();
+  if (typeof elements.resetDialog.showModal === "function") elements.resetDialog.showModal();
     else elements.resetDialog.setAttribute("open", "");
     window.requestAnimationFrame(() => elements.resetCancelButton.focus());
   }
@@ -4401,6 +4410,30 @@
       const url = new URL(location.href);
       url.searchParams.delete("open");
       history.replaceState(null, "", url);
+    }
+  }
+
+  // 迷你对话模式（?mini=1，菜单栏 ⌥G 打开的窄窗口）：隐藏侧栏/顶栏，
+  // 放大按钮通知原生 App 切换成完整面板
+  function handleMiniMode() {
+    const params = new URLSearchParams(location.search);
+    if (params.get("mini") === "1") {
+      document.body.dataset.mini = "1";
+      // 迷你模式下优先显示最近内容，输入框聚焦
+      window.requestAnimationFrame(() => {
+        scrollToBottom();
+        elements.composerInput?.focus();
+      });
+      elements.miniExpandButton?.addEventListener("click", () => {
+        try {
+          window.webkit.messageHandlers.gqyExpand.postMessage("expand");
+        } catch (_) {
+          // 浏览器环境（非 App）：直接去掉 mini 参数重载
+          const url = new URL(location.href);
+          url.searchParams.delete("mini");
+          location.href = url.toString();
+        }
+      });
     }
   }
 

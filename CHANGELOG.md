@@ -3,6 +3,18 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+- 菜单栏「迷你对话」窗口（Gemini 式）：⌥G 或菜单项打开 480×340 圆角小窗，
+  只显示对话区+输入框，右上角 ⤢ 放大按钮一键切换成完整面板；⌥G 再按关闭
+  （App 支持 `GQYMenuBar --mini` 启动即开迷你窗，便于自测）
+- WebUI `?mini=1` 迷你模式：隐藏侧栏/顶栏，窄布局对话；放大按钮经原生桥
+  （WKScriptMessageHandler gqyExpand）通知 App 切面板
+- 思考动画修复/增强：思考中顾清影头像呼吸 + 月青光晕脉冲（live reasoning 期间）
+- 菜单栏状态显示增强：模型/记忆/备份 状态项带彩色圆点（月青=就绪、淡紫=记忆、
+  绿=备份已同步、灰=未配置）；备份中状态栏图标旋转动画
+
 ## [0.5.0] - 2026-08-02
 
 ### 新增
