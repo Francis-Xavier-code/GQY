@@ -12,8 +12,8 @@
 #   4. 把结果填入下面 sha256 并提交本文件
 #   5. 同步到 homebrew-GQY tap 仓库
 cask "gqy" do
-  version "0.4.3"
-  sha256 "b7f03e30eae3e226dcaa115241d65bcb89a51b7a5f25a5173ffacc7eb0108ed5"
+  version "0.4.4"
+  sha256 "c614651ed2b960096dc1939664b548892f6dd1c0968f1bedc4d18b2d42744ec5"
 
   url "https://github.com/Francis-Xavier-code/GQY/releases/download/v#{version}/GQY-#{version}.dmg"
   name "顾清影"
