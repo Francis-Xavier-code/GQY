@@ -16,6 +16,7 @@ pub mod import;
 pub mod knowledge_base;
 mod load_tools;
 mod local_vision;
+mod speech;
 mod man;
 mod mcp;
 pub(crate) mod memes;
@@ -261,6 +262,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     }
     // 本地视觉（Apple Vision）不依赖插件开关：模型超额时兜底看图
     local_vision::register(&mut registry, paths.clone());
+    speech::register(&mut registry, paths.clone());
     if config.plugins.image_generation.enabled {
         image_generation::register(&mut registry, config.clone());
     }

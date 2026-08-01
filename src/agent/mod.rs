@@ -558,6 +558,8 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         self.state.recover_stale_turns()?;
+        // 定期归档：对话开始前检查（默认保留 7 天，节流静默）
+        crate::cli::maybe_auto_archive(&self.paths, 7);
         self.trim_visible_context()?;
         let prepared = self.prepare_user_input(input, images).await?;
         let input = prepared.content.clone();
@@ -1757,6 +1759,12 @@ fn chat_result_replay_content(result: &ChatResult) -> &str {
         .as_deref()
         .filter(|reasoning| !reasoning.trim().is_empty())
         .unwrap_or(&result.content)
+}
+
+pub fn evicted_turn_entries_for_archive(
+    turns: &[crate::state::Turn],
+) -> (Vec<crate::state::StoredConversationEntry>, Vec<EvictedTurn>) {
+    evicted_turn_entries(turns)
 }
 
 fn evicted_turn_entries(

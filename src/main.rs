@@ -22,6 +22,7 @@ mod question_tui;
 mod render;
 mod repl_avatar;
 mod shell;
+mod speech;
 mod state;
 mod token_counter;
 mod token_estimate;
