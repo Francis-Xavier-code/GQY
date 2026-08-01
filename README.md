@@ -72,6 +72,22 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 
 `GQY_LANG=en` 或 `GQY_LANG=zh` 可以临时覆盖配置。语言选择优先级为 `GQY_LANG`、`display.language`、系统 locale；在配置 TUI 中保存后，下次启动 GQY 时生效。
 
+### 命令速查
+
+| 命令 | 作用 |
+|---|---|
+| `gqy` | 进入 REPL 对话（无参数） |
+| `gqy "问题"` | 直接问一句 |
+| `gqy config` | 配置 TUI |
+| `gqy kb add <目录>` / `gqy kb search <词>` | 知识库导入 / 检索 |
+| `gqy memory stats` / `gqy memory remember <内容>` | 记忆查看 / 手动记忆 |
+| `gqy zsh-init` / `gqy remove-shell-hook` | 安装 / 移除终端自然语言 hook |
+| `gqy web` | 启动本地 Web 面板 |
+| `gqy backup init` / `gqy backup now` / `gqy backup status` | 备份初始化 / 立即备份 / 状态 |
+| `gqy backup remote <url>` | 绑定远程仓库 |
+| `gqy backup restore --remote <url>` | 从远程恢复 |
+| `gqy reset --all` | 清空对话与记忆 |
+
 ### 内置功能
 
 <details><summary>[展开/收起] 具体介绍</summary>
@@ -101,7 +117,16 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 
 - 知识库
 
-  你可以通过 `gqy kb` 命令，或者通过跟 AI 的自然语言交互管理属于你自己的知识库。回答问题时 GQY 会优先查询知识库里的可信内容。
+  GQY 自带一套 [macOS 知识库](kb/)，覆盖 Homebrew、磁盘清理、开机自启、终端代理、网络排障、系统权限、快捷键等 16 个日常主题，回答问题时优先以知识库为准。
+
+  首次使用导入：
+
+  ```
+  export GQY_HOME="$HOME/Library/Application Support/GQY"
+  ./target/release/gqy kb add kb/
+  ```
+
+  你也可以通过 `gqy kb` 命令，或者通过跟 AI 的自然语言交互管理属于你自己的知识库（`gqy kb add <目录>` 批量导入、`gqy kb search <关键词>` 检索、`gqy kb list` 列出）。知识库随 Git 备份一起快照，换机器恢复后重新 `kb add` 即可。
 
 - 网络搜索
 
@@ -155,6 +180,38 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 
 </details>
 
+## 常见问题
+
+<details><summary>[展开/收起] FAQ</summary>
+<br>
+
+- **Q：她为什么叫顾清影？**
+  A：清影——清冷的影子，是我给她的名字。她平时清冷，聊熟了又活泼，像量子叠加态。
+
+- **Q：换电脑/重装系统怎么把她带走？**
+  A：所有状态都在 `GQY_HOME`（建议 `~/Library/Application Support/GQY`）。配好远程仓库后，新机器上 `gqy backup restore --remote <url> --ssh-key <key>` 一条命令恢复人格、记忆、对话和知识库。
+
+- **Q：远程仓库会不会泄露 API key？**
+  A：不会。快照里的 `config.jsonc` 会自动清空所有 api_key/token/password 等字段；私钥、`.env`、缓存、日志都不会进入提交。详见 [隔离与安全边界](docs/macos-portable-home-and-backup.md)。
+
+- **Q：默认模型服务是什么？要钱吗？**
+  A：默认接入 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务（`big-pickle` 等），开箱即用；也可以 `gqy config` 里配置自己的 API（支持 OpenAI 兼容接口，key 支持 `$env:变量名` 引用）。
+
+- **Q：为什么她有时回答「把握不高」？**
+  A：她对自己的回答有把握程度判断，低于九成会明确说不确定的地方，避免不懂装懂。
+
+- **Q：怎么让她记住特定的事？**
+  A：直接说「记住：xxx」她会调用记忆工具；每轮对话结束也会自动写日记。`gqy memory search <词>` 可以查她记得什么。
+
+- **Q：菜单栏里「开机自启」是干什么的？**
+  A：注册/移除 LaunchAgent（`~/Library/LaunchAgents/dev.gqy.menubar.plist`），让她下次登录自动出现在菜单栏。只有你主动点击才会修改。
+
+- **Q：GQY 和 Miyu 是什么关系？**
+  A：GQY 是从 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) fork 出来的，Miyu 的代码是 MIT 授权，本项目新增部分按 GPL-3.0 授权。
+
+</details>
+
+
 ## 做出贡献
 
 <details><summary>[展开/收起] 如果你想要一同开发 GQY 请先阅读下面的内容</summary>
@@ -201,4 +258,4 @@ PR时必须提供功能的设计理念，作用场景和实际意义。一个 PR
 
 ## 许可
 
-GQY 使用 MIT License 发布，见 `LICENSE`。
+GQY 使用 GPL-3.0 License 发布，见 `LICENSE`。本项目 fork 自 [Miyu](https://github.com/SHORiN-KiWATA/Miyu)（MIT License），上游 MIT 部分仍按 MIT 授权，新增代码与修改部分按 GPL-3.0 授权。
