@@ -29,6 +29,18 @@ gqy config
 
 ## 如何安装？
 
+### Homebrew（推荐）
+
+CLI 与菜单栏 App 都通过 GQY 官方 tap 安装（需要先发布 GitHub Release，见下方「发布新版本」）：
+
+```zsh
+brew tap Francis-Xavier-code/GQY
+brew install gqy            # 终端 CLI
+brew install --cask gqy     # 菜单栏 App（顾清影.app）
+```
+
+### 从源码构建
+
 需要安装 Rust 1.96 或更新版本、C 编译工具链，图片显示功能依赖 `chafa`（`brew install chafa`）。
 
 ```
@@ -211,6 +223,20 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 
 </details>
 
+
+## 发布新版本
+
+1. bump `Cargo.toml` 版本号（菜单栏 Info.plist 由 `build.sh` 自动跟随）；
+2. `git tag v0.4.0 && git push origin v0.4.0`；
+3. 构建并上传发布资产：
+   ```zsh
+   cargo build --release --locked
+   zsh macos/GQYMenuBar/build.sh
+   zsh macos/GQYMenuBar/make-dmg.sh   # 产出 .build/GQY-0.4.0.dmg
+   ```
+   把 `GQY-0.4.0.dmg` 上传到 GitHub Release v0.4.0；
+4. 计算 `Formula/gqy.rb` 与 `Cask/gqy.rb` 里两个 `sha256`（源码 tarball 与 dmg）并提交；
+5. 用户即可 `brew install gqy` / `brew install --cask gqy`。
 
 ## 做出贡献
 

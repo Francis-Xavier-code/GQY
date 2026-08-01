@@ -5,12 +5,14 @@ set -euo pipefail
 # 用法：先运行 build.sh 产出 .app，再运行本脚本：
 #   zsh macos/GQYMenuBar/build.sh
 #   zsh macos/GQYMenuBar/make-dmg.sh
-# 产物：macos/GQYMenuBar/.build/顾清影.dmg
+# 产物：macos/GQYMenuBar/.build/GQY-<版本>.dmg
 
 project_dir="${0:A:h}"
 app_dir="$project_dir/.build/顾清影.app"
 staging_dir="$project_dir/.build/dmg-staging"
-dmg_path="$project_dir/.build/顾清影.dmg"
+repo_dir="${project_dir:h:h}"
+app_version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"/\1/p' "$repo_dir/Cargo.toml" | head -1)"
+dmg_path="$project_dir/.build/GQY-${app_version:-0.0.0}.dmg"
 
 if [[ ! -d "$app_dir" ]]; then
   echo "找不到 $app_dir，请先运行 build.sh" >&2

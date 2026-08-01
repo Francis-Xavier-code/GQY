@@ -26,7 +26,7 @@ zsh macos/GQYMenuBar/build.sh
 zsh macos/GQYMenuBar/make-dmg.sh
 ```
 
-产物为 `macos/GQYMenuBar/.build/顾清影.dmg`，内含 `顾清影.app` 与 `Applications` 快捷方式，挂载后拖入 Applications 即可安装。
+产物为 `macos/GQYMenuBar/.build/GQY-<版本>.dmg`（如 `GQY-0.4.0.dmg`），内含 `顾清影.app` 与 `Applications` 快捷方式，挂载后拖入 Applications 即可安装。
 
 ## 开机自启（登录项）
 
