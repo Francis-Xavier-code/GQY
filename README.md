@@ -35,6 +35,7 @@ CLI 与菜单栏 App 都通过 GQY 官方 tap 安装（需要先发布 GitHub Re
 
 ```zsh
 brew tap Francis-Xavier-code/GQY
+brew trust Francis-Xavier-code/GQY   # Homebrew 新版要求信任非官方 tap
 brew install gqy            # 终端 CLI
 brew install --cask gqy     # 菜单栏 App（顾清影.app）
 ```
