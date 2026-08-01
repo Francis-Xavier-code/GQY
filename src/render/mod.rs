@@ -609,8 +609,25 @@ pub fn print_assistant_response(response: &ChatResult, show_reasoning: bool) -> 
 }
 
 pub fn print_markdown(markdown: &str) {
-    let skin = termimad::MadSkin::default();
-    println!("{}", skin.term_text(markdown.trim_end()));
+    println!("{}", gqy_skin().term_text(markdown.trim_end()));
+}
+
+/// GQY 紫色主题的 markdown 渲染皮肤（标题/列表/代码/引用统一紫系）。
+fn gqy_skin() -> termimad::MadSkin {
+    use termimad::crossterm::style::Color;
+    let mut skin = termimad::MadSkin::default();
+    skin.set_headers_fg(Color::Rgb { r: 168, g: 85, b: 247 });
+    skin.bold.set_fg(Color::Rgb { r: 196, g: 181, b: 253 });
+    skin.italic.set_fg(Color::Rgb { r: 148, g: 163, b: 184 });
+    skin.quote_mark.set_fg(Color::Rgb { r: 129, g: 140, b: 248 });
+    skin.bullet.set_fg(Color::Rgb { r: 168, g: 85, b: 247 });
+    skin.code_block.set_fg(Color::Rgb { r: 226, g: 232, b: 240 });
+    skin.code_block.set_bg(Color::Rgb { r: 26, g: 24, b: 40 });
+    skin.inline_code.set_fg(Color::Rgb { r: 232, g: 121, b: 249 });
+    skin.inline_code.set_bg(Color::Rgb { r: 26, g: 24, b: 40 });
+    skin.table.set_fg(Color::Rgb { r: 148, g: 163, b: 184 });
+    skin.ellipsis.set_fg(Color::Rgb { r: 148, g: 163, b: 184 });
+    skin
 }
 
 pub fn print_token_usage(
@@ -915,6 +932,32 @@ impl StreamRenderer {
             self.reasoning_started_at = Some(received_at);
             self.reasoning_elapsed = None;
         }
+        Ok(())
+    }
+
+    /// Ctrl+O：运行时切换思考显示模式（摘要 ↔ 完整），立即生效。
+    pub fn toggle_reasoning_mode(&mut self) -> Result<ReasoningDisplayMode> {
+        let next = match self.reasoning_mode {
+            ReasoningDisplayMode::Summary => ReasoningDisplayMode::Full,
+            ReasoningDisplayMode::Full => ReasoningDisplayMode::Summary,
+            ReasoningDisplayMode::Hidden => ReasoningDisplayMode::Summary,
+        };
+        self.set_reasoning_mode(next)?;
+        Ok(next)
+    }
+
+    pub fn set_reasoning_mode(&mut self, mode: ReasoningDisplayMode) -> Result<()> {
+        if self.reasoning_mode == mode {
+            return Ok(());
+        }
+        // 离开摘要模式前，把正在进行的思考摘要落定，避免残留临时行
+        if self.reasoning_mode == ReasoningDisplayMode::Summary {
+            self.finalize_reasoning_summary()?;
+            if self.summary_line_active {
+                self.clear_summary_lines()?;
+            }
+        }
+        self.reasoning_mode = mode;
         Ok(())
     }
 
@@ -3610,7 +3653,8 @@ fn write_full_reasoning_chunk(writer: &mut impl Write, text: &str) -> Result<()>
 
 fn print_reasoning(reasoning: &str) -> Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, SetForegroundColor(Color::Green))?;
+    // 思考详情：紫色小字（区别于回复正文）
+    execute!(stdout, SetForegroundColor(Color::Rgb { r: 167, g: 139, b: 250 }))?;
     for line in reasoning.trim().lines() {
         writeln!(stdout, "  {line}")?;
     }

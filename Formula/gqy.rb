@@ -25,11 +25,13 @@ class Gqy < Formula
   def install
     system "cargo", "install", *std_cargo_args
     # 只读共享资源统一装进 $(brew --prefix)/share/gqy 一个目录：
-    # scripts（脚本工具）、memes（内置表情库）、kb（知识库源）。
+    # scripts（脚本工具）、memes（内置表情库）、kb（知识库源）、
+    # bridges（napcat/tg 桥接脚本，gqy napcat / gqy tg 管理）。
     # 运行时从可执行文件位置自动解析该目录。
     pkgshare.install "src/scripts"
     pkgshare.install "src/memes"
     pkgshare.install "kb"
+    pkgshare.install "communication" => "bridges"
   end
 
   test do

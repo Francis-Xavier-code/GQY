@@ -763,6 +763,26 @@ textarea:disabled {
   min-height: 100%;
   margin: 0 auto;
   padding: 28px 26px 42px;
+  position: relative;
+}
+
+/* 对话背景：顾清影壁纸淡显在右下角（新对话/有对话都可见） */
+.timeline::before {
+  content: "";
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: min(46vw, 520px);
+  height: min(62vh, 500px);
+  background: url("/assets/gqy-wallpaper.png") no-repeat right bottom / contain;
+  opacity: 0.1;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.timeline > * {
+  position: relative;
+  z-index: 1;
 }
 
 .day-divider {
