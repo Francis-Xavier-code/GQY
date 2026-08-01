@@ -1163,8 +1163,8 @@ async fn cancel_alarm_web(
     Path(alarm_id): Path<String>,
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
-    let removed = crate::alarm::remove(&state.paths, &alarm_id).map_err(ApiError::internal)?;
-    if removed.is_none() {
+    let cancelled = crate::alarm::cancel(&state.paths, &alarm_id).map_err(ApiError::internal)?;
+    if !cancelled {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "alarm not found"));
     }
     Ok(Json(json!({ "ok": true, "id": alarm_id })).into_response())

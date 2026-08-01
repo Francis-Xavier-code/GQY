@@ -55,6 +55,12 @@
 - 桥接脚本随 brew 打包（`share/gqy/bridges`），`gqy napcat/tg` 开箱即用
 
 ### 修复
+- 闹钟 worker 孤儿/无限响铃问题（三重防护）：
+  - 周期闹钟响铃上限（max_rings，默认 20 次）自动停止
+  - 孤儿检测：周期闹钟的父进程退出后 worker 自动退出（一次性闹钟不受影响）
+  - `gqy alarm stop --all` 全局停止：按 pid 文件扫描所有 worker 并终止，
+    即使记录丢失也能兜底；`gqy alarm list` / `gqy alarm cancel <id>` 同步提供
+  - cancel 统一走 `alarm::cancel`（删记录 + kill + pid 文件兜底）
 - 内置脚本 procusage / battery-care 的 `mapfile`（bash 4+ 特性）改为 while-read 循环，
   macOS 自带 bash 3.2 下可正常使用
 - 备份快照排除 macOS `._*` AppleDouble 文件（从备份 tar 恢复后快照不再卡死）
