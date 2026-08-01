@@ -927,6 +927,12 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
         events.clone(),
         questions.clone(),
     )?;
+
+    // 配置文件热重载：检测 GQY_HOME/config/config.jsonc 被外部修改
+    // （CLI `gqy config set`、直接编辑等），自动重建 agent 并通知前端，
+    // 让菜单栏 / CLI / 面板三端配置始终同步。
+    spawn_config_watcher(paths.clone(), actor_tx.clone(), events.clone());
+
     let state = WebState {
         auth: WebAuth::new(password.as_deref()),
         boot_id,
@@ -1790,6 +1796,51 @@ async fn reset_conversation(
             ))
         }
     }
+}
+
+/// 配置文件热重载：每 2 秒检查 config.jsonc 的修改时间，
+/// 变化时重新加载配置并重建 agent（不重置会话），同时发布事件让前端刷新。
+fn spawn_config_watcher(paths: GqyPaths, actor_tx: mpsc::UnboundedSender<ActorCommand>, events: EventHub) {
+    let mut last_mtime = std::fs::metadata(&paths.config_file)
+        .and_then(|meta| meta.modified())
+        .ok();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            let mtime = std::fs::metadata(&paths.config_file)
+                .and_then(|meta| meta.modified())
+                .ok();
+            if mtime.is_none() {
+                continue;
+            }
+            if mtime == last_mtime {
+                continue;
+            }
+            let Some(mtime) = mtime else { continue };
+            last_mtime = Some(mtime);
+            let Ok(config) = AppConfig::load(&paths) else {
+                tracing::warn!("config watcher: failed to reload configuration");
+                continue;
+            };
+            let Ok(prompts) = read_prompt_documents(&config, &paths) else {
+                continue;
+            };
+            let (reply, _receiver) = tokio::sync::oneshot::channel();
+            if actor_tx
+                .send(ActorCommand::ApplyConfig {
+                    config,
+                    prompts,
+                    reset_conversation: false,
+                    reply,
+                })
+                .is_ok()
+            {
+                tracing::info!("config watcher: configuration reloaded from file");
+                events.publish("config.reloaded", serde_json::json!({}));
+            }
+        }
+    });
 }
 
 fn spawn_actor(

@@ -12,8 +12,10 @@ mod exchange_rate;
 mod hash_codec;
 mod image_generation;
 mod kitty_image;
+pub mod import;
 pub mod knowledge_base;
 mod load_tools;
+mod local_vision;
 mod man;
 mod mcp;
 pub(crate) mod memes;
@@ -257,6 +259,8 @@ pub fn builtin_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     if config.plugins.vision.enabled {
         vision::register(&mut registry, config.clone(), paths.clone(), true);
     }
+    // 本地视觉（Apple Vision）不依赖插件开关：模型超额时兜底看图
+    local_vision::register(&mut registry, paths.clone());
     if config.plugins.image_generation.enabled {
         image_generation::register(&mut registry, config.clone());
     }

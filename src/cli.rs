@@ -827,6 +827,7 @@ pub enum Command {
     Memory(MemoryArgs),
     Backup(BackupArgs),
     Skills(SkillsArgs),
+    Tools(ToolsArgs),
     Reset(ResetArgs),
     Web(WebArgs),
     Balance,
@@ -1047,6 +1048,24 @@ pub struct SkillsArgs {
     #[command(subcommand)]
     pub command: SkillsCommand,
 }
+#[derive(Debug, Args)]
+pub struct ToolsArgs {
+    #[command(subcommand)]
+    pub command: Option<ToolsCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ToolsCommand {
+    /// 导入工具包：本地目录或 Git 仓库 URL（自动扫描或按清单）
+    Import {
+        source: String,
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// 列出已导入的用户工具包
+    List,
+}
+
 
 #[derive(Debug, Subcommand)]
 pub enum SkillsCommand {
@@ -1236,6 +1255,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Backup(args)) => run_backup(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
+        Some(Command::Tools(args)) => run_tools(&paths, args),
         Some(Command::Reset(args)) => run_reset(&paths, args.scope.as_deref()),
         Some(Command::Web(args)) => crate::web::run(paths, args).await,
         Some(Command::Balance) => run_balance(&paths),
@@ -8337,6 +8357,30 @@ fn print_backup_outcome(outcome: &BackupOutcome) {
         t("pushed", "已推送"),
         outcome.pushed
     );
+}
+
+fn run_tools(paths: &GqyPaths, args: ToolsArgs) -> Result<()> {
+    match args.command.unwrap_or(ToolsCommand::List) {
+        ToolsCommand::Import { source, name } => {
+            let installed = crate::tools::import::import_tools(paths, &source, name.as_deref())?;
+            println!("已导入 {} 个工具：{}", installed.len(), installed.join(", "));
+            println!(
+                "工具已安装到 {}，下轮对话即可使用，长期有效。",
+                paths.config_dir.join("scripts").display()
+            );
+            Ok(())
+        }
+        ToolsCommand::List => {
+            let packages = crate::tools::import::list_tools(paths)?;
+            if packages.is_empty() {
+                println!("暂无已导入的用户工具包（gqy tools import <目录或仓库>）");
+            }
+            for (name, count) in packages {
+                println!("{name}: {count} 个工具");
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_skills(paths: &GqyPaths, args: SkillsArgs) -> Result<()> {
