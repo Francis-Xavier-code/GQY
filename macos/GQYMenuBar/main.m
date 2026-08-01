@@ -459,7 +459,7 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         NSView *container = [[NSView alloc] initWithFrame:self.miniWindow.contentView.bounds];
         container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         container.wantsLayer = YES;
-        container.layer.cornerRadius = 16;
+        container.layer.cornerRadius = 20;
         container.layer.masksToBounds = YES;
         self.miniWindow.contentView = container;
 
@@ -473,10 +473,11 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         self.miniWebView = webView;
         [container addSubview:webView];
 
-        // 屏幕右上角附近（避开菜单栏）
+        // 默认位置：Dock 上方（visibleFrame 已排除 Dock 区域），
+        // 屏幕底部中央偏右，贴近 Dock 但浮在其上
         NSRect screen = [NSScreen mainScreen].visibleFrame;
-        CGFloat x = NSMaxX(screen) - frame.size.width - 20;
-        CGFloat y = NSMaxY(screen) - frame.size.height - 8;
+        CGFloat x = NSMidX(screen) - frame.size.width / 2 + 80;
+        CGFloat y = NSMinY(screen) + 12;
         [self.miniWindow setFrameOrigin:NSMakePoint(x, y)];
     }
     NSString *urlString = [NSString stringWithFormat:@"%@?mini=1", self.panelURL.absoluteString];

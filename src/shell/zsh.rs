@@ -64,6 +64,18 @@ __gqy_zsh_accept_line() {
             zle accept-line
             return
         fi
+    elif [[ "$trimmed" == https://* || "$trimmed" == http://* || "$trimmed" == *://* ]]; then
+        # URL 开头的单行输入：zsh 对含 / 的命令不触发 command_not_found_handler
+        # （按路径查找直接报错），这里提前交给 GQY；纯 URL 命令如 curl 不受影响
+        # （它们是已知命令，不会走到这里；这里只接 URL 开头的未知命令）
+        print -s -- "$buffer"
+        print -rn -- '\e[?25l'
+        print -rn -- $'\e[36m'"${buffer}"$'\e[0m\n'
+        printf '%s' "$buffer" | gqy --shell-intercept --shell zsh --stdin 2>/dev/null
+        print -rn -- '\e[?25h'
+        BUFFER=""
+        zle accept-line
+        return
     fi
     zle accept-line
 }

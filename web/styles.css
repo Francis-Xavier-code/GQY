@@ -4054,8 +4054,47 @@ body[data-mini] .composer-dock {
   background: var(--app-bg);
 }
 body[data-mini] .timeline {
-  padding: 10px 14px 12px;
+  padding: 12px 16px 14px;
   max-width: 100%;
+}
+/* 迷你模式专属：卡片感 + 大圆角输入框（与面板不同的视觉） */
+body[data-mini] .composer {
+  border-radius: 18px;
+  margin: 0 10px 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+}
+body[data-mini] .composer textarea {
+  border-radius: 14px;
+  background: var(--surface-1);
+  margin: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+body[data-mini] .composer-footer {
+  padding: 0 8px 8px;
+}
+body[data-mini] .composer-dock {
+  background: transparent;
+  border-top: none;
+}
+body[data-mini] .composer-context,
+body[data-mini] .character-count {
+  display: none;
+}
+body[data-mini] .mode-switch {
+  display: none;
+}
+body[data-mini] .assistant-message {
+  background: var(--surface-1);
+  border-radius: 16px;
+  padding: 10px 14px;
+  margin: 0 4px 12px;
+  border: 1px solid var(--line);
+}
+body[data-mini] .user-message .message-content {
+  background: var(--user-bg);
+  border-radius: 14px;
+  padding: 8px 12px;
 }
 body[data-mini] .assistant-content {
   padding-left: 24px;
