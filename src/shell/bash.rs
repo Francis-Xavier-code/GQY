@@ -46,7 +46,7 @@ pub fn uninstall(paths: &MiyuPaths) -> Result<bool> {
     if removed {
         println!(
             "{}: bash",
-            t("removed Miyu shell hook", "已移除 Miyu shell hook")
+            t("removed GQY shell hook", "已移除 GQY shell hook")
         );
     }
     Ok(removed)

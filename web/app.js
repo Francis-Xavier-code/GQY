@@ -300,7 +300,7 @@
     }
     const themeColor = document.querySelector('meta[name="theme-color"]');
     if (themeColor) themeColor.content = selected === "graphite" ? "#111512" : "#f2f5f3";
-    if (persist) safeStorageSet("miyu.web.theme", selected);
+    if (persist) safeStorageSet("gqy.web.theme", selected);
   }
 
   function setMode(mode, persist = true) {
@@ -311,7 +311,7 @@
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", String(active));
     });
-    if (persist) safeStorageSet("miyu.web.mode", selected);
+    if (persist) safeStorageSet("gqy.web.mode", selected);
   }
 
   function closeSidebar() {
@@ -1098,7 +1098,7 @@
     active.className = "config-input";
     const defaultOption = document.createElement("option");
     defaultOption.value = "";
-    defaultOption.textContent = kind === "personas" ? "Miyu 默认人格" : "不使用用户身份";
+    defaultOption.textContent = kind === "personas" ? "顾清影 默认人格" : "不使用用户身份";
     active.appendChild(defaultOption);
     for (const promptDocument of documents) {
       const option = document.createElement("option");
@@ -1301,7 +1301,7 @@
     try {
       response = await fetch(path, { ...options, headers, credentials: "same-origin" });
     } catch (_) {
-      throw new ApiError("无法连接 Miyu WebUI", 0);
+      throw new ApiError("无法连接顾清影 WebUI", 0);
     }
     if (!response.ok) throw new ApiError(await readErrorMessage(response), response.status);
     return response;
@@ -1716,8 +1716,8 @@
     else if (inputCount > MAX_CONTENT_CHARS) elements.composerState.textContent = "消息不能超过 20,000 个字符";
     else if (running && !queueAvailable) elements.composerState.textContent = "另一会话正在运行";
     else if (running) elements.composerState.textContent = state.queuedPrompts.length
-      ? `Miyu 正在回复 · ${state.queuedPrompts.length} 条排队`
-      : "Miyu 正在回复";
+      ? `顾清影正在回复 · ${state.queuedPrompts.length} 条排队`
+      : "顾清影正在回复";
     else elements.composerState.textContent = "";
     elements.composerState.classList.toggle("is-error", inputCount > MAX_CONTENT_CHARS);
     updateSettingsControls();
@@ -2218,7 +2218,7 @@
     const imageMime = !mime || mime.startsWith("image/");
     const width = validAssetDimension(source.width);
     const height = validAssetDimension(source.height);
-    const alt = String(source.alt || "").trim() || "Miyu 生成的图片";
+    const alt = String(source.alt || "").trim() || "顾清影生成的图片";
     const hideCaption = Boolean(source.hide_caption);
 
     const figure = document.createElement("figure");
@@ -2385,12 +2385,12 @@
     const header = document.createElement("header");
     header.className = "assistant-label";
     const avatar = document.createElement("img");
-    avatar.src = "/assets/miyu-logo.png";
+    avatar.src = "/assets/gqy-logo.png";
     avatar.alt = "";
     avatar.setAttribute("aria-hidden", "true");
     const identity = document.createElement("div");
     const name = document.createElement("strong");
-    name.textContent = "Miyu";
+    name.textContent = "顾清影";
     const time = document.createElement("span");
     time.textContent = formatTime(timestamp) || "";
     time.title = formatDateTime(timestamp);
@@ -2738,12 +2738,12 @@
     const header = document.createElement("header");
     header.className = "assistant-label";
     const avatar = document.createElement("img");
-    avatar.src = "/assets/miyu-logo.png";
+    avatar.src = "/assets/gqy-logo.png";
     avatar.alt = "";
     avatar.setAttribute("aria-hidden", "true");
     const identity = document.createElement("div");
     const name = document.createElement("strong");
-    name.textContent = "Miyu";
+    name.textContent = "顾清影";
     const status = document.createElement("span");
     status.className = "live-indicator";
     status.textContent = "正在回复";
@@ -4016,7 +4016,7 @@
     elements.timeline.hidden = true;
     elements.emptyState.hidden = true;
     elements.blockedState.hidden = false;
-    elements.blockedTitle.textContent = unauthorized ? "登录 Miyu" : "无法载入 Miyu WebUI";
+    elements.blockedTitle.textContent = unauthorized ? "登录顾清影" : "无法载入顾清影 WebUI";
     elements.blockedMessage.textContent = unauthorized ? "输入访问密码以继续。" : message || "本地服务暂时无法访问";
     elements.loginForm.hidden = !unauthorized;
     elements.retryBootstrapButton.hidden = unauthorized;
@@ -4501,8 +4501,8 @@
 
   function initialize() {
     renderIconSlots();
-    setTheme(safeStorageGet("miyu.web.theme") || "graphite", false);
-    setMode(safeStorageGet("miyu.web.mode") || "normal", false);
+    setTheme(safeStorageGet("gqy.web.theme") || safeStorageGet("miyu.web.theme") || "graphite", false);
+    setMode(safeStorageGet("gqy.web.mode") || safeStorageGet("miyu.web.mode") || "normal", false);
     setSettingsView("interface");
     bindEvents();
     resizeComposer();

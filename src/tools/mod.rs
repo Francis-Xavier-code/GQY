@@ -1,32 +1,25 @@
 mod alarm;
 mod apply_patch;
-mod archlinux;
 mod ask_question;
 mod calculator;
-mod caniplayonlinux_query;
 mod clipboard;
-mod deep_diagnose;
 mod deep_research;
 mod deepseek_status;
 mod default_tools;
 mod diagnostics;
 mod edit_replace;
 mod exchange_rate;
-mod fcitx_wiki;
 mod hash_codec;
 mod image_generation;
 mod kitty_image;
 pub mod knowledge_base;
-mod linux_game;
 mod load_tools;
 mod man;
 mod mcp;
 pub(crate) mod memes;
 mod memory;
 mod moegirl;
-mod package_advisor;
 mod patch_preview;
-mod protondb_query;
 mod registry;
 mod scripts;
 mod skills;
@@ -140,7 +133,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "read_clipboard" => t("Read clipboard", "读取剪贴板"),
         "web_search" => t("Web search", "网页搜索"),
         "web_fetch" => t("Fetch webpage", "读取网页"),
-        "fcitx5_input_method_wiki_qurey" => t("Query Fcitx5 Wiki", "查询 Fcitx5 Wiki"),
         "search_web_images" => t("Search images", "搜索图片"),
         "analyze_image" | "vision_analyze" => t("Analyze image", "分析图片"),
         "print_image" => t("Display image", "显示图片"),
@@ -151,9 +143,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "update_meme" => t("Update meme", "更新表情包"),
         "delete_meme" => t("Delete meme", "删除表情包"),
         "deep_research" => t("Deep research", "深度研究"),
-        "deep_diagnose" | "linux_input_method_diagnose" => {
-            t("Input method diagnosis", "输入法诊断")
-        }
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {
             t("Import knowledge base", "导入知识库")
         }
@@ -172,14 +161,7 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "recall_memory" | "recall_memories" => t("Recall memories", "召回记忆"),
         "forget_memory" | "forget_memories" => t("Forget memories", "删除记忆"),
         "list_memory" | "list_memories" => t("List memories", "列出记忆"),
-        "aur_search_packages" => t("Search AUR", "搜索 AUR"),
-        "aur_get_package_info" => t("View AUR package", "查看 AUR 包"),
-        "aur_check_status" => t("Check AUR status", "查询 AUR 状态"),
-        "archlinux_official_package_query" => t("Query Arch package", "查询 Arch 官方包"),
         "query_deepseek_status" => t("Check DeepSeek status", "查询 DeepSeek 状态"),
-        "pacman_search" => t("Search packages", "搜索软件包"),
-        "archwiki_query" => t("Query ArchWiki", "查询 ArchWiki"),
-        "archlinux_news" => t("Arch news", "Arch 新闻"),
         "online_man_search" | "man_search" => t("Search online manuals", "搜索在线手册"),
         "online_man_get_page" | "man_read" => t("Read online manual", "读取在线手册"),
         "moegirl_query" | "query_moegirl" => t("Query Moegirlpedia", "查询萌娘百科"),
@@ -190,8 +172,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "decode_encoded_text" => t("Decode text", "解码文本"),
         "exchange_rate" | "get_exchange_rate" => t("Exchange rates", "汇率查询"),
         "weather" | "get_weather" => t("Weather", "天气查询"),
-        "query_caniplayonlinux" => t("Check Linux compatibility", "查询是否能在Linux上玩"),
-        "protondb_query" => t("Query ProtonDB", "查询 ProtonDB"),
         "xuanxue_pick" => t("Divination choice", "玄学选择"),
         "xuanxue_divine" => t("Divination", "玄学占卜"),
         "draw_zhouyi_hexagram" => t("Draw I Ching hexagram", "周易起卦"),
@@ -204,13 +184,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "unregister_script" => t("Unregister script", "注销脚本"),
         "todowrite" => t("Todo list", "任务列表"),
         "todoupdate" => t("Update todos", "更新任务"),
-        "review_aur_package" => t("Review AUR package", "审查 AUR 包"),
-        "install_aur_package" => t("Install AUR package", "安装 AUR 包"),
-        "review_pkgbuild_directory" => t("Review PKGBUILD directory", "审查 PKGBUILD 目录"),
-        "deep_research_linux_game_compatibility" => {
-            t("Linux game compatibility research", "Linux 游戏兼容性调查")
-        }
-        "register_linux_game_evidence" => t("Register compatibility evidence", "登记兼容性证据"),
         "register_deep_research_topic_title" => t("Register research title", "注册研究标题"),
         "register_deep_research_reference" => t("Register reference", "注册引用来源"),
         "remove_deep_research_reference" => t("Remove reference", "移除引用来源"),
@@ -223,12 +196,10 @@ fn builtin_readable_group_name(group: &str) -> Option<&'static str> {
         "acg" => t("ACG tools", "ACG 工具组"),
         "agent" => t("Subagent tools", "子代理工具组"),
         "alarms" => t("Alarm tools", "闹钟工具组"),
-        "arch" => t("Arch / AUR tools", "Arch / AUR 工具组"),
         "dev" => t("Development tools", "开发修改工具组"),
         "dev-read" => t("Code search tools", "代码检索工具组"),
         "diagnostics" => t("Diagnostic tools", "诊断工具组"),
         "divination" => t("Divination tools", "玄学工具组"),
-        "gaming" => t("Gaming tools", "游戏工具组"),
         "images" => t("Image tools", "图片工具组"),
         "knowledge" => t("Knowledge base tools", "知识库工具组"),
         "knowledge-admin" => t("Knowledge base management", "知识库管理工具组"),
@@ -248,10 +219,6 @@ fn builtin_readable_group_name(group: &str) -> Option<&'static str> {
     })
 }
 
-pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
-    package_advisor::clear_aur_review_state(paths)
-}
-
 pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     default_tools::register(&mut registry, true);
@@ -262,15 +229,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     alarm::register(&mut registry, paths.clone());
     clipboard::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
-    fcitx_wiki::register(&mut registry);
     weather::register(&mut registry);
-    caniplayonlinux_query::register(&mut registry);
-    protondb_query::register(&mut registry);
     exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     xuanxue::register(&mut registry);
-    if config.plugins.archlinux.enabled {
-        archlinux::register(&mut registry, paths);
-    }
     if config.plugins.man.enabled {
         man::register(&mut registry);
     }
@@ -292,15 +253,6 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
         let research_tools = registry.clone();
         deep_research::register(&mut registry, config.clone(), paths.clone(), research_tools);
     }
-    if config.plugins.deep_diagnose.enabled {
-        let diagnosis_tools = registry.clone();
-        deep_diagnose::register(
-            &mut registry,
-            config.clone(),
-            paths.clone(),
-            diagnosis_tools,
-        );
-    }
     if config.plugins.vision.enabled {
         vision::register(&mut registry, config.clone(), paths.clone(), true);
     }
@@ -309,17 +261,6 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     }
     if config.plugins.knowledge_base.enabled {
         knowledge_base::register(&mut registry, config.clone(), paths.clone());
-    }
-    if config.plugins.package_advisor.enabled {
-        package_advisor::register(&mut registry, paths.clone());
-    }
-    if config
-        .plugins
-        .deep_research_linux_game_compatibility
-        .enabled
-    {
-        let game_tools = registry.clone();
-        linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }
     if config.plugins.diagnostics.enabled {
         diagnostics::register(&mut registry, config.clone());
@@ -344,12 +285,6 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     default_tools::register_readonly(&mut registry);
     clipboard::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
-    fcitx_wiki::register(&mut registry);
-    caniplayonlinux_query::register(&mut registry);
-    protondb_query::register(&mut registry);
-    if config.plugins.archlinux.enabled {
-        archlinux::register(&mut registry, paths);
-    }
     if config.plugins.man.enabled {
         man::register(&mut registry);
     }
@@ -364,17 +299,6 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     }
     if config.plugins.knowledge_base.enabled {
         knowledge_base::register_readonly(&mut registry, config.clone(), paths.clone());
-    }
-    if config.plugins.package_advisor.enabled {
-        package_advisor::register(&mut registry, paths.clone());
-    }
-    if config
-        .plugins
-        .deep_research_linux_game_compatibility
-        .enabled
-    {
-        let game_tools = registry.clone();
-        linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }
     if config.plugins.diagnostics.enabled {
         diagnostics::register(&mut registry, config.clone());
