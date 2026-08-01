@@ -47,15 +47,15 @@ const MAX_PROMPT_DOCUMENT_CHARS: usize = 200_000;
 const MAX_PROMPT_DOCUMENTS: usize = 128;
 const MAX_SECRET_CHARS: usize = 100_000;
 const EVENT_CAPACITY: usize = 4096;
-const AUTH_COOKIE: &str = "miyu_session";
+const AUTH_COOKIE: &str = "gqy_session";
 const LOGIN_WINDOW: Duration = Duration::from_secs(60);
 const LOGIN_ATTEMPT_LIMIT: u8 = 5;
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const STYLES_CSS: &str = include_str!("../web/styles.css");
 const APP_JS: &str = include_str!("../web/app.js");
-const MIYU_LOGO: &[u8] = include_bytes!("../pics/GQY-icon.png");
-const MIYU_WALLPAPER: &[u8] = include_bytes!("../pics/GQY-image.png");
+const GQY_LOGO: &[u8] = include_bytes!("../pics/GQY-icon.png");
+const GQY_WALLPAPER: &[u8] = include_bytes!("../pics/GQY-image.png");
 
 #[derive(Clone)]
 struct WebState {
@@ -899,7 +899,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         args.port,
     ))
     .await
-    .with_context(|| format!("binding Miyu WebUI to 0.0.0.0:{}", args.port))?;
+    .with_context(|| format!("binding 顾清影 WebUI to 0.0.0.0:{}", args.port))?;
     let port = listener.local_addr()?.port();
     let boot_id: Arc<str> = random_id("boot", 18).into();
     let events = EventHub::new();
@@ -932,7 +932,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     let app = router(state);
     let urls = web_access_urls(port);
     for url in &urls {
-        println!("Miyu WebUI: {url}");
+        println!("顾清影 WebUI: {url}");
     }
     std::io::stdout().flush().ok();
     if !args.no_open {
@@ -954,7 +954,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         .await
         .context("joining WebUI actor task")?
         .map_err(|_| anyhow::anyhow!("WebUI actor thread panicked"))?;
-    serve_result.context("serving Miyu WebUI")?;
+    serve_result.context("serving 顾清影 WebUI")?;
     actor_result
 }
 
@@ -963,8 +963,8 @@ fn router(state: WebState) -> Router {
         .route("/", get(index_asset))
         .route("/styles.css", get(styles_asset))
         .route("/app.js", get(app_asset))
-        .route("/assets/miyu-logo.png", get(logo_asset))
-        .route("/assets/miyuwallpaper.png", get(wallpaper_asset))
+        .route("/assets/gqy-logo.png", get(logo_asset))
+        .route("/assets/gqy-wallpaper.png", get(wallpaper_asset))
         .route("/api/health", get(health))
         .route("/api/auth/login", post(auth_login))
         .route("/api/bootstrap", get(bootstrap))
@@ -995,11 +995,11 @@ async fn app_asset() -> Response {
 }
 
 async fn logo_asset() -> Response {
-    binary_asset(MIYU_LOGO, "image/png")
+    binary_asset(GQY_LOGO, "image/png")
 }
 
 async fn wallpaper_asset() -> Response {
-    binary_asset(MIYU_WALLPAPER, "image/png")
+    binary_asset(GQY_WALLPAPER, "image/png")
 }
 
 fn text_asset(content: &'static str, content_type: &'static str) -> Response {
@@ -1443,7 +1443,7 @@ fn enqueue_running_prompt(
         if manager.admin_busy {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
-                "Miyu is busy with another operation",
+                "GQY is busy with another operation",
             ));
         }
         manager.active_run_id.clone()
@@ -1532,7 +1532,7 @@ async fn create_turn(
         if manager.active_run_id.is_some() || manager.admin_busy {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
-                "Miyu is busy with another operation",
+                "GQY is busy with another operation",
             ));
         }
         manager.active_run_id = Some(run_id.clone());
@@ -1792,7 +1792,7 @@ fn spawn_actor(
 ) -> Result<(mpsc::UnboundedSender<ActorCommand>, JoinHandle<Result<()>>)> {
     let (sender, receiver) = mpsc::unbounded_channel();
     let join = std::thread::Builder::new()
-        .name("miyu-web-agent".to_string())
+        .name("gqy-web-agent".to_string())
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2245,7 +2245,6 @@ fn rebuild_for_config(
             let memory = MemoryStore::new(&next_config, paths);
             memory.clear_evicted_context()?;
             memory.clear_pending_events()?;
-            tools::clear_aur_review_state(paths)?;
             next_agent.reset_memory()?;
             next_agent.prepare_for_turn()?;
             context = current_context(&next_agent)?;
@@ -2288,7 +2287,6 @@ fn reset_actor_conversation(
         let memory = MemoryStore::new(config, paths);
         memory.clear_evicted_context()?;
         memory.clear_pending_events()?;
-        tools::clear_aur_review_state(paths)?;
         agent.reset_memory()?;
         agent.prepare_for_turn()?;
         current_context(agent)
@@ -2390,7 +2388,7 @@ fn reserve_admin(manager: &Arc<Mutex<ManagerState>>) -> std::result::Result<(), 
     if manager.active_run_id.is_some() || manager.admin_busy {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            "Miyu is busy with another operation",
+            "GQY is busy with another operation",
         ));
     }
     manager.admin_busy = true;
@@ -2909,7 +2907,7 @@ fn apply_persona_scope_changes(
                     .parent()
                     .context("persona scope path has no parent")?;
                 let staged = parent.join(format!(
-                    ".miyu-web-scope-{}-{change_index}-{scope_index}",
+                    ".gqy-web-scope-{}-{change_index}-{scope_index}",
                     random_token(10)
                 ));
                 std::fs::rename(&original, &staged)?;
@@ -3497,7 +3495,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             COOKIE,
-            HeaderValue::from_static("other=1; miyu_session=secret-token; suffix=2"),
+            HeaderValue::from_static("other=1; gqy_session=secret-token; suffix=2"),
         );
         assert_eq!(cookie_value(&headers, AUTH_COOKIE), Some("secret-token"));
         assert_eq!(cookie_value(&headers, "session"), None);

@@ -1,5 +1,4 @@
 use crate::config::{AppConfig, ProviderConfig, MAX_COMMAND_OUTPUT_LINES};
-use crate::default_kb;
 use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
 use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
@@ -79,22 +78,12 @@ fn run_main_menu(
             t("Global settings", "全局参数设置").to_string(),
             t("Save and exit", "保存并退出").to_string(),
         ];
-        let status = default_kb::status(paths)
-            .ok()
-            .filter(|status| status.has_update_notice)
-            .map(|_| {
-                t(
-                    "The default knowledge base needs an update; run miyu update-default-kb",
-                    "默认知识库需要更新，运行 miyu update-default-kb",
-                )
-            })
-            .unwrap_or("");
         draw_menu(
             stdout,
-            t(" MIYU CONFIG ", " MIYU 配置 "),
+            t(" GQY 配置 ", " GQY 配置 "),
             &options,
             selected,
-            status,
+            "",
         )?;
 
         match read_key()? {
@@ -203,7 +192,7 @@ fn plugin_row(state: &str, name: &str, description: &str, width: usize) -> Strin
     fixed + &truncate(description, remaining)
 }
 
-fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
+fn plugin_names() -> [(&'static str, &'static str, &'static str); 10] {
     [
         (
             "web",
@@ -261,11 +250,6 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
             ),
         ),
         (
-            "archlinux",
-            "Arch Linux",
-            t("AUR status and ArchWiki lookup", "AUR 状态与 ArchWiki 查询"),
-        ),
-        (
             "man",
             t("Online manuals", "在线手册"),
             t(
@@ -277,19 +261,6 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
             "memory",
             t("Memory", "记忆"),
             t("Long-term memory and association", "长期记忆与联想"),
-        ),
-        (
-            "package_advisor",
-            t("AUR review", "AUR 审查"),
-            t("PKGBUILD/AUR security review", "PKGBUILD/AUR 安全审查"),
-        ),
-        (
-            "deep_research_linux_game_compatibility",
-            t("Linux game compatibility", "Linux 游戏兼容"),
-            t(
-                "Proton/anti-cheat/compatibility lookup",
-                "Proton/反作弊/兼容性查询",
-            ),
         ),
     ]
 }
@@ -304,16 +275,8 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
         5 => config.plugins.print_image.enabled,
         6 => config.plugins.memes.enabled,
         7 => config.plugins.knowledge_base.enabled,
-        8 => config.plugins.archlinux.enabled,
-        9 => config.plugins.man.enabled,
-        10 => config.plugins.memory.enabled,
-        11 => config.plugins.package_advisor.enabled,
-        12 => {
-            config
-                .plugins
-                .deep_research_linux_game_compatibility
-                .enabled
-        }
+        8 => config.plugins.man.enabled,
+        9 => config.plugins.memory.enabled,
         _ => false,
     }
 }
@@ -329,16 +292,8 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
         5 => config.plugins.print_image.enabled = value,
         6 => config.plugins.memes.enabled = value,
         7 => config.plugins.knowledge_base.enabled = value,
-        8 => config.plugins.archlinux.enabled = value,
-        9 => config.plugins.man.enabled = value,
-        10 => config.plugins.memory.enabled = value,
-        11 => config.plugins.package_advisor.enabled = value,
-        12 => {
-            config
-                .plugins
-                .deep_research_linux_game_compatibility
-                .enabled = value
-        }
+        8 => config.plugins.man.enabled = value,
+        9 => config.plugins.memory.enabled = value,
         _ => {}
     }
 }
@@ -654,13 +609,9 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
         ],
         8 => vec![Field::boolean(
             t("Enabled", "启用"),
-            config.plugins.archlinux.enabled,
-        )],
-        9 => vec![Field::boolean(
-            t("Enabled", "启用"),
             config.plugins.man.enabled,
         )],
-        10 => vec![
+        9 => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.memory.enabled),
             Field::boolean(
                 t("Evicted context cache", "上下文弹出缓存"),
@@ -705,27 +656,6 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             Field::new(
                 t("Recall boost strength", "回忆增强强度"),
                 config.plugins.memory.forgetting_review_boost.to_string(),
-            ),
-        ],
-        11 => vec![Field::boolean(
-            t("Enabled", "启用"),
-            config.plugins.package_advisor.enabled,
-        )],
-        12 => vec![
-            Field::boolean(
-                t("Enabled", "启用"),
-                config
-                    .plugins
-                    .deep_research_linux_game_compatibility
-                    .enabled,
-            ),
-            Field::new(
-                t("Maximum subagent tool steps", "子代理最大工具次数"),
-                config
-                    .plugins
-                    .deep_research_linux_game_compatibility
-                    .max_tool_steps
-                    .to_string(),
             ),
         ],
         _ => vec![Field::boolean(
@@ -850,12 +780,9 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[15].value.trim().parse()?;
         }
         8 => {
-            config.plugins.archlinux.enabled = parse_bool_field(&fields[0].value)?;
-        }
-        9 => {
             config.plugins.man.enabled = parse_bool_field(&fields[0].value)?;
         }
-        10 => {
+        9 => {
             config.plugins.memory.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memory.evicted_context_enabled = parse_bool_field(&fields[1].value)?;
             config.plugins.memory.association_enabled = parse_bool_field(&fields[2].value)?;
@@ -873,19 +800,6 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[10].value.trim().parse::<f64>()?;
             config.plugins.memory.forgetting_review_boost =
                 fields[11].value.trim().parse::<f64>()?;
-        }
-        11 => {
-            config.plugins.package_advisor.enabled = parse_bool_field(&fields[0].value)?;
-        }
-        12 => {
-            config
-                .plugins
-                .deep_research_linux_game_compatibility
-                .enabled = parse_bool_field(&fields[0].value)?;
-            config
-                .plugins
-                .deep_research_linux_game_compatibility
-                .max_tool_steps = fields[1].value.trim().parse::<usize>()?.clamp(1, 500);
         }
         _ => {
             let value = parse_bool_field(&fields[0].value)?;
@@ -905,7 +819,7 @@ fn edit_custom_prompts(
     let mut selected = 0usize;
     loop {
         let persona = if config.prompt.active_persona.trim().is_empty() {
-            "Miyu".to_string()
+            "顾清影".to_string()
         } else {
             persona_display_name(&config.prompt.active_persona).to_string()
         };
@@ -946,7 +860,7 @@ fn edit_personas(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppCon
         } else {
             "  "
         };
-        options.push(format!("{default_marker}Miyu"));
+        options.push(format!("{default_marker}顾清影"));
         options.extend(personas.iter().map(|name| {
             let display = persona_display_name(name);
             if *name == config.prompt.active_persona {
@@ -2308,43 +2222,9 @@ fn parse_bool_field(value: &str) -> Result<bool> {
     }
 }
 
-struct FcitxState {
-    last_state: Option<char>,
-}
-
-impl FcitxState {
-    fn new() -> Self {
-        run_fcitx5_remote("-c");
-        Self {
-            last_state: Some('1'),
-        }
-    }
-
-    fn enter_editing(&mut self) {
-        if self.last_state == Some('2') {
-            run_fcitx5_remote("-o");
-        }
-    }
-
-    fn leave_editing(&mut self) {
-        self.last_state = fcitx5_state();
-        run_fcitx5_remote("-c");
-    }
-}
-
-fn fcitx5_state() -> Option<char> {
-    let output = Command::new("fcitx5-remote").output().ok()?;
-    output.stdout.first().copied().map(char::from)
-}
-
-fn run_fcitx5_remote(arg: &str) {
-    let _ = Command::new("fcitx5-remote").arg(arg).spawn();
-}
-
 fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Result<bool> {
     let mut selected = 0usize;
     let mut editing = false;
-    let mut fcitx = FcitxState::new();
     let mut cursors = fields
         .iter()
         .map(|field| field.value.chars().count())
@@ -2353,12 +2233,10 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
         draw_form(stdout, title, fields, selected, editing, &cursors, true)?;
         match read_key()? {
             KeyCode::Esc if editing => {
-                fcitx.leave_editing();
                 editing = false;
             }
             KeyCode::Esc | KeyCode::Char('q') if !editing => return Ok(false),
             KeyCode::Enter if editing => {
-                fcitx.leave_editing();
                 editing = false;
             }
             KeyCode::Enter if !editing && selected == fields.len() => return Ok(true),
@@ -2403,7 +2281,6 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
             }
             KeyCode::Enter if !editing => {
                 if !fields[selected].boolean {
-                    fcitx.enter_editing();
                     editing = true;
                 }
             }
@@ -2448,7 +2325,6 @@ fn run_form_without_buttons(
 ) -> Result<()> {
     let mut selected = 0usize;
     let mut editing = false;
-    let mut fcitx = FcitxState::new();
     let mut cursors = fields
         .iter()
         .map(|field| field.value.chars().count())
@@ -2457,12 +2333,10 @@ fn run_form_without_buttons(
         draw_form(stdout, title, fields, selected, editing, &cursors, false)?;
         match read_key()? {
             KeyCode::Esc if editing => {
-                fcitx.leave_editing();
                 editing = false;
             }
             KeyCode::Esc | KeyCode::Char('q') if !editing => return Ok(()),
             KeyCode::Enter if editing => {
-                fcitx.leave_editing();
                 editing = false;
             }
             KeyCode::Enter if !editing && fields[selected].boolean => {
@@ -2505,7 +2379,6 @@ fn run_form_without_buttons(
             }
             KeyCode::Enter if !editing => {
                 if !fields[selected].boolean {
-                    fcitx.enter_editing();
                     editing = true;
                 }
             }

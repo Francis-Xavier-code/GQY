@@ -496,11 +496,6 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         ),
         ("kb", "Manage local knowledge base", "管理本地知识库"),
         (
-            "update-default-kb",
-            "Update Miyu default knowledge base",
-            "更新 Miyu 默认知识库",
-        ),
-        (
             "memory",
             "Inspect or edit assistant memory",
             "查看或编辑助手记忆",
@@ -787,7 +782,6 @@ pub enum Command {
     History(HistoryArgs),
     Pop(PopArgs),
     Kb(KbArgs),
-    UpdateDefaultKb,
     Memory(MemoryArgs),
     Backup(BackupArgs),
     Skills(SkillsArgs),
@@ -1171,7 +1165,6 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::History(args)) => run_history(&paths, args),
         Some(Command::Pop(args)) => run_pop(&paths, args),
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
-        Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Backup(args)) => run_backup(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
@@ -1232,25 +1225,6 @@ fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
         &paths.state_dir.display().to_string(),
     )?;
     StateStore::new(paths)?.init_files()?;
-    let config = AppConfig::load_or_default(paths)?;
-    if crate::default_kb::bundled_available() {
-        print_init_step(
-            interactive,
-            t("Importing default knowledge base", "正在导入默认知识库"),
-            &paths.data_dir.join("kb").display().to_string(),
-        )?;
-        if let Err(err) = crate::default_kb::ensure_initialized(paths, &config) {
-            if interactive {
-                eprintln!(
-                    "{}: {err}",
-                    t(
-                        "default knowledge base import skipped",
-                        "默认知识库导入已跳过"
-                    )
-                );
-            }
-        }
-    }
     print_init_step(
         interactive,
         t("Preparing data directory", "正在准备数据目录"),
@@ -1263,7 +1237,7 @@ fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
     } else {
         println!(
             "{} {}",
-            t("initialized Miyu at", "Miyu 已初始化于"),
+            t("initialized GQY at", "GQY 已初始化于"),
             paths.config_dir.display()
         );
     }
@@ -2923,10 +2897,6 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     let mut prefill = None::<String>;
     let mut live_repl = None::<LiveReplTail>;
 
-    crate::default_kb::check_update_if_due(paths).ok();
-    if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
-        println!("\x1b[2m{message}\x1b[0m");
-    }
     let mut cumulative_tokens = 0u64;
     let mut show_shortcut_hint = true;
     let initial_registry =
@@ -7990,15 +7960,7 @@ async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()> {
             );
         }
         KbCommand::Stats => {
-            let mut stats = kb.stats()?;
-            if let Some(object) = stats.as_object_mut() {
-                if let Ok(status) = crate::default_kb::status(paths) {
-                    object.insert(
-                        "default_kb_update_available".to_string(),
-                        serde_json::json!(status.has_update_notice),
-                    );
-                }
-            }
+            let stats = kb.stats()?;
             println!("{}", stats);
         }
         KbCommand::Embed(args) => match args.command {
@@ -8007,17 +7969,6 @@ async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()> {
             }
         },
     }
-    Ok(())
-}
-
-async fn run_update_default_kb(paths: &MiyuPaths) -> Result<()> {
-    let config = AppConfig::load_or_default(paths)?;
-    let state = crate::default_kb::update(paths, &config)?;
-    println!(
-        "{}: {}",
-        t("updated default knowledge base", "已更新默认知识库"),
-        state.shorin_wiki_commit
-    );
     Ok(())
 }
 
@@ -8257,7 +8208,6 @@ fn run_reset(paths: &MiyuPaths, scope: Option<&str>) -> Result<()> {
         memory.clear_evicted_context()?;
         memory.clear_pending_events()?;
     }
-    tools::clear_aur_review_state(paths)?;
     let message = if all {
         t(
             "cleared current conversation history and all memory",

@@ -2,7 +2,7 @@ use crate::i18n::text as t;
 use crate::paths::MiyuPaths;
 use anyhow::Result;
 
-fn completion_entries() -> [(&'static str, &'static str); 15] {
+fn completion_entries() -> [(&'static str, &'static str); 14] {
     [
         (
             "ask",
@@ -48,16 +48,12 @@ fn completion_entries() -> [(&'static str, &'static str); 15] {
         (
             "remove-shell-hook",
             t(
-                "Remove installed Miyu shell hooks",
-                "安全删除已安装的 Miyu shell hook",
+                "Remove installed GQY shell hooks",
+                "安全删除已安装的 GQY shell hook",
             ),
         ),
         ("history", t("Show conversation history", "显示会话历史")),
         ("kb", t("Manage the local knowledge base", "管理本地知识库")),
-        (
-            "update-default-kb",
-            t("Update the default knowledge base", "更新 Miyu 默认知识库"),
-        ),
         (
             "memory",
             t("Inspect or edit assistant memory", "查看或编辑助手记忆"),
@@ -281,7 +277,7 @@ pub fn uninstall(paths: &MiyuPaths) -> Result<bool> {
     if removed {
         println!(
             "{}: fish",
-            t("removed Miyu shell hook", "已移除 Miyu shell hook")
+            t("removed GQY shell hook", "已移除 GQY shell hook")
         );
     }
     Ok(removed)

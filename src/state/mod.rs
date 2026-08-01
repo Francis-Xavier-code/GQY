@@ -64,7 +64,7 @@ impl StateStore {
             std::fs::write(self.usage_file(), "{\n  \"requests\": 0,\n  \"prompt_tokens\": 0,\n  \"completion_tokens\": 0,\n  \"total_tokens\": 0\n}\n")?;
         }
         if !self.profile_file().exists() {
-            std::fs::write(self.profile_file(), "# Miyu Profile\n\n")?;
+            std::fs::write(self.profile_file(), "# GQY Profile\n\n")?;
         }
         Ok(())
     }

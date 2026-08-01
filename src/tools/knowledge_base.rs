@@ -219,22 +219,6 @@ impl KnowledgeBase {
         Ok(added)
     }
 
-    pub fn replace_default_files(&self, source: &Path) -> Result<Vec<String>> {
-        self.init()?;
-        self.remove_prefix("default-kb/")?;
-        let mut added = Vec::new();
-        for file in collect_files(source)? {
-            let rel = file.strip_prefix(source).unwrap_or(&file);
-            let rel = rel.display().to_string().replace('\\', "/");
-            let name = normalize_relative_path(&format!("default-kb/{rel}"))?;
-            if let Ok(name) = self.import_file(&file, &name) {
-                added.push(name);
-            }
-        }
-        self.spawn_embedding_reindex()?;
-        Ok(added)
-    }
-
     pub fn list(&self) -> Result<Vec<FileRecord>> {
         self.init()?;
         self.list_existing()
@@ -487,26 +471,6 @@ impl KnowledgeBase {
             new_line_count: lines.len(),
             semantic_refreshed,
         })
-    }
-
-    fn remove_prefix(&self, prefix: &str) -> Result<()> {
-        let conn = self.meta_conn()?;
-        let mut stmt = conn.prepare("SELECT name FROM files WHERE name LIKE ?1")?;
-        let names = stmt
-            .query_map(params![format!("{prefix}%")], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for name in names {
-            let path = self.safe_file_path(&name)?;
-            if path.exists() {
-                std::fs::remove_file(path)?;
-            }
-            conn.execute("DELETE FROM files WHERE name=?1", params![name])?;
-            self.semantic_conn()?.execute(
-                "DELETE FROM semantic_chunks WHERE file_name=?1",
-                params![name],
-            )?;
-        }
-        Ok(())
     }
 
     pub async fn reindex_embeddings(&self, quiet: bool) -> Result<usize> {

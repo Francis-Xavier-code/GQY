@@ -240,7 +240,7 @@ fn fetch_and_cache(path: &PathBuf) -> Result<HashMap<String, HashMap<String, Mod
         .build()?;
     let text = client
         .get(API_URL)
-        .header("User-Agent", "Mozilla/5.0 Miyu/0.1")
+        .header("User-Agent", "Mozilla/5.0 GQY/0.1")
         .send()?
         .error_for_status()?
         .text()?;

@@ -2047,13 +2047,7 @@ fn is_silent_tool(name: &str) -> bool {
 }
 
 fn is_subagent_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "linux_input_method_diagnose"
-            | "deep_research_linux_game_compatibility"
-            | "deep_research"
-            | "task"
-    )
+    matches!(name, "deep_research" | "task")
 }
 
 fn tool_event_base_name(name: &str) -> &str {
@@ -2082,12 +2076,8 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         | "search_evicted_context"
         | "recall_memories"
         | "recall_past_events"
-        | "aur_search_packages"
-        | "online_man_search"
-        | "protondb_query"
-        | "query_caniplayonlinux"
-        | "fcitx5_input_method_wiki_qurey" => string_arg(&args, &["query", "topic"]),
-        "archwiki_query" | "query_moegirl" => string_arg(&args, &["title", "query"]),
+        | "online_man_search" => string_arg(&args, &["query", "topic"]),
+        "query_moegirl" => string_arg(&args, &["title", "query"]),
         "search_knowledge_base_by_name" => string_arg(&args, &["file_name_query"]),
         "read_file" | "write_file" | "edit_file" | "edit_string" | "trash_path"
         | "register_script" => string_arg(&args, &["path"]),
@@ -2123,8 +2113,7 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
                 .join(t(", ", "、"))
         }),
         "deep_research" => string_arg(&args, &["topic"]),
-        "deep_research_linux_game_compatibility" => string_arg(&args, &["game"]),
-        "linux_input_method_diagnose" | "check_issue" => {
+        "check_issue" => {
             string_arg(&args, &["target", "area", "issue", "symptom"])
         }
         "get_weather" => string_arg(&args, &["location"])
@@ -2141,10 +2130,6 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         "scientific_calculator" => string_arg(&args, &["expression", "operation"]),
         "set_alarm" => string_arg(&args, &["label", "time"]),
         "cancel_alarm" => string_arg(&args, &["id"]),
-        "aur_get_package_info"
-        | "archlinux_official_package_query"
-        | "review_aur_package"
-        | "install_aur_package" => string_arg(&args, &["package_name", "package"]),
         "online_man_get_page" => {
             let page = string_arg(&args, &["name"])?;
             let section = string_arg(&args, &["section"]);
@@ -4070,7 +4055,7 @@ mod tests {
         let output = render_table(&[
             "| 项目 | 内容 |".to_string(),
             "|---|---|".to_string(),
-            "| 名字 | 未有 / Miyu |".to_string(),
+            "| 名字 | 顾清影 / GQY |".to_string(),
             "| 年龄 | 18 |".to_string(),
         ]);
         let terminal_width = terminal::size()
@@ -4405,8 +4390,8 @@ mod tests {
             ..ToolStats::default()
         };
         assert_eq!(
-            tool_status_text("linux_input_method_diagnose", &stats, true),
-            format!("linux_input_method_diagnose×1 {}", t("running", "运行中"))
+            tool_status_text("check_issue", &stats, true),
+            format!("check_issue×1 {}", t("running", "运行中"))
         );
         let stats = ToolStats {
             calls: 1,
@@ -4520,7 +4505,7 @@ mod tests {
             10,
         );
         renderer.tool_stats.insert(
-            "deep_research_linux_game_compatibility".to_string(),
+            "deep_research".to_string(),
             ToolStats {
                 calls: 1,
                 ok: 1,
@@ -4536,7 +4521,7 @@ mod tests {
             renderer.tool_summary_text(),
             format!(
                 "~ {}×1 ok\n✓ 工具调用 1 次　消耗词元 2.3K",
-                t("Linux game compatibility research", "Linux 游戏兼容性调查")
+                t("Deep research", "深度研究")
             )
         );
     }
@@ -4573,12 +4558,7 @@ mod tests {
 
     #[test]
     fn all_subagent_summaries_use_activity_prefix() {
-        for name in [
-            "task",
-            "deep_research",
-            "deep_research_linux_game_compatibility",
-            "linux_input_method_diagnose",
-        ] {
+        for name in ["task", "deep_research"] {
             let mut renderer = StreamRenderer::new(
                 ReasoningDisplayMode::Summary,
                 ToolCallDisplayMode::Summary,
@@ -4769,11 +4749,6 @@ mod tests {
             ("deep_research", "Deep research", "深度研究"),
             ("read_file", "Read file", "读取文件"),
             ("check_issue", "Check issue", "检查问题"),
-            (
-                "linux_input_method_diagnose",
-                "Input method diagnosis",
-                "输入法诊断",
-            ),
             ("check_os_info", "System information", "查看系统信息"),
             ("get_weather", "Weather", "天气查询"),
             ("get_exchange_rate", "Exchange rates", "汇率查询"),
@@ -4796,15 +4771,8 @@ mod tests {
                 "搜索旧上下文",
             ),
             ("recall_past_events", "Recall past events", "回忆往事"),
-            ("aur_check_status", "Check AUR status", "查询 AUR 状态"),
             ("online_man_search", "Search online manuals", "搜索在线手册"),
             ("online_man_get_page", "Read online manual", "读取在线手册"),
-            (
-                "fcitx5_input_method_wiki_qurey",
-                "Query Fcitx5 Wiki",
-                "查询 Fcitx5 Wiki",
-            ),
-            ("install_aur_package", "Install AUR package", "安装 AUR 包"),
             (
                 "search_knowledge_base_by_name",
                 "Search knowledge base by name",
