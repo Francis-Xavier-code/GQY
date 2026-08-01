@@ -5,10 +5,11 @@
 /**
  * 顾清影 菜单栏 App
  * - 左键点击状态栏图标弹出菜单（保持习惯）
- * - 「面板」在 App 内置 WKWebView 中打开（NSPopover），不再唤起浏览器
- * - 菜单顶部有状态区：模型 / 记忆条数 / 上次备份时间（异步刷新，不卡菜单）
+ * - 「面板」是独立 App 窗口（NSPanel + WKWebView），可拖动缩放，不依赖浏览器
+ * - 状态栏图标随状态变化（空闲 sparkles / 备份中 clock）
+ * - 菜单含状态区（模型/记忆/备份时间，异步刷新）+ 常用功能
  */
-@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
+@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSTask *webTask;
 @property(nonatomic, strong) NSTask *backupTask;
@@ -17,8 +18,9 @@
 @property(nonatomic, strong) NSMenuItem *statusModelItem;
 @property(nonatomic, strong) NSMenuItem *statusMemoryItem;
 @property(nonatomic, strong) NSMenuItem *statusBackupItem;
-@property(nonatomic, strong) NSPopover *panelPopover;
+@property(nonatomic, strong) NSWindow *panelWindow;
 @property(nonatomic, strong) WKWebView *webView;
+@property(nonatomic, assign) BOOL backupInProgress;
 @end
 
 @implementation GQYMenuBarDelegate
@@ -77,13 +79,16 @@
                                symbol:@"terminal"
                                action:@selector(openTerminalChat:)]];
     [menu addItem:[NSMenuItem separatorItem]];
-    self.backupItem = [self itemWithTitle:@"立即备份记忆"
+    self.backupItem = [self itemWithTitle:@"立即备份并推送"
                                    symbol:@"externaldrive.fill.badge.checkmark"
                                    action:@selector(backupNow:)];
     [menu addItem:self.backupItem];
     [menu addItem:[self itemWithTitle:@"打开独立主目录"
                                symbol:@"folder"
                                action:@selector(openAssistantHome:)]];
+    [menu addItem:[self itemWithTitle:@"打开配置文件"
+                               symbol:@"doc.text"
+                               action:@selector(openConfigFile:)]];
     [menu addItem:[NSMenuItem separatorItem]];
     self.loginItemMenu = [self itemWithTitle:@"开机自启"
                                       symbol:@"power"
@@ -249,7 +254,7 @@
     [NSWorkspace.sharedWorkspace openURL:launcher];
 }
 
-// ─────────────────────────── 内置面板（WKWebView） ───────────────────────────
+// ─────────────────────────── 独立窗口面板（WKWebView） ───────────────────────────
 
 - (NSURL *)panelURL {
     return [NSURL URLWithString:@"http://127.0.0.1:4096"];
@@ -257,8 +262,11 @@
 
 - (void)openWebPanel:(id)sender {
     (void)sender;
-    // 先收起菜单，避免与 popover 冲突
-    [self.statusItem.menu cancelTracking];
+    if (self.panelWindow.isVisible) {
+        [self.panelWindow makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+        return;
+    }
     [self ensureWebServer:^(BOOL ready) {
         if (!ready) {
             [self showError:[NSError errorWithDomain:@"GQYMenuBar"
@@ -273,26 +281,43 @@
     }];
 }
 
+// 面板是独立 App 窗口：可拖动、可缩放、独立于状态栏存在
 - (void)showPanel {
-    if (!self.panelPopover) {
-        WKWebView *webView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 430, 640)];
+    if (!self.panelWindow) {
+        NSRect frame = NSMakeRect(0, 0, 460, 680);
+        self.panelWindow = [[NSPanel alloc]
+            initWithContentRect:frame
+                      styleMask:(NSWindowStyleMaskTitled |
+                                 NSWindowStyleMaskClosable |
+                                 NSWindowStyleMaskResizable |
+                                 NSWindowStyleMaskFullSizeContentView)
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        self.panelWindow.title = @"顾清影 · 面板";
+        self.panelWindow.minSize = NSMakeSize(360, 480);
+        self.panelWindow.delegate = self;
+        self.panelWindow.releasedWhenClosed = NO;
+
+        WKWebView *webView = [[WKWebView alloc] initWithFrame:self.panelWindow.contentView.bounds];
+        webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         webView.allowsMagnification = YES;
-        webView.allowsBackForwardNavigationGestures = NO;
-        NSViewController *controller = [[NSViewController alloc] init];
-        controller.view = webView;
         self.webView = webView;
-        self.panelPopover = [[NSPopover alloc] init];
-        self.panelPopover.contentViewController = controller;
-        self.panelPopover.behavior = NSPopoverBehaviorTransient;
+        self.panelWindow.contentView = webView;
+        // 记住上次窗口位置
+        [self.panelWindow center];
     }
-    [self.panelPopover showRelativeToRect:self.statusItem.button.bounds
-                                   ofView:self.statusItem.button
-                            preferredEdge:NSRectEdgeMinY];
+    [self.panelWindow makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
     if (![self.webView.URL.absoluteString hasPrefix:self.panelURL.absoluteString]) {
         [self.webView loadRequest:[NSURLRequest requestWithURL:self.panelURL]];
     } else {
         [self.webView reload];
     }
+}
+
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    (void)sender;
+    return YES; // 关窗口不杀 web 服务，下次打开秒开
 }
 
 // 确保 gqy web 已启动：轮询 /api/health 直到就绪（替代写死的 800ms 延迟）
@@ -355,6 +380,7 @@
     task.standardError = [NSPipe pipe];
     self.backupItem.title = @"正在备份…";
     self.backupItem.enabled = NO;
+    [self setStatusIconBackup:YES];
     __weak typeof(self) weakSelf = self;
     task.terminationHandler = ^(NSTask *finished) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -363,16 +389,28 @@
                 : @"备份失败（点此重试）";
             weakSelf.backupItem.enabled = YES;
             weakSelf.backupTask = nil;
+            [weakSelf setStatusIconBackup:NO];
             [weakSelf refreshStatus];
         });
     };
     if (![task launchAndReturnError:&error]) {
         self.backupItem.title = @"备份失败（点此重试）";
         self.backupItem.enabled = YES;
+        [self setStatusIconBackup:NO];
         [self showError:error];
         return;
     }
     self.backupTask = task;
+}
+
+// 状态栏图标随状态变化：空闲 sparkles，备份中 clock（用户可直接看到备份在跑）
+- (void)setStatusIconBackup:(BOOL)backup {
+    self.backupInProgress = backup;
+    NSString *symbol = backup ? @"externaldrive.fill.badge.clock" : @"sparkles";
+    self.statusItem.button.image = [NSImage
+        imageWithSystemSymbolName:symbol
+        accessibilityDescription:@"顾清影"];
+    self.statusItem.button.toolTip = backup ? @"顾清影 —— 正在备份…" : @"顾清影 —— 点开菜单";
 }
 
 // ─────────────────────────── 状态区（异步刷新） ───────────────────────────
@@ -509,6 +547,23 @@
         return;
     }
     [NSWorkspace.sharedWorkspace openURL:self.assistantHome];
+}
+
+- (void)openConfigFile:(id)sender {
+    (void)sender;
+    NSURL *config = [self.assistantHome URLByAppendingPathComponent:@"config/config.jsonc"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:config.path]) {
+        config = [self.assistantHome URLByAppendingPathComponent:@"config.jsonc"];
+    }
+    if (![NSFileManager.defaultManager fileExistsAtPath:config.path]) {
+        [self showError:[NSError errorWithDomain:@"GQYMenuBar"
+                                            code:3
+                                        userInfo:@{
+                                            NSLocalizedDescriptionKey: @"配置文件不存在。"
+                                        }]];
+        return;
+    }
+    [NSWorkspace.sharedWorkspace openURL:config];
 }
 
 - (void)quit:(id)sender {
