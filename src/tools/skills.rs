@@ -1,7 +1,7 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
 use crate::i18n::{agent_text as t, text as ui_text};
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -16,14 +16,14 @@ struct SkillEntry {
 pub fn register_skills(
     registry: &mut ToolRegistry,
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
 ) -> Result<()> {
     let entries = discover_skills(config, paths)?;
     register_load_skill(registry, config, paths, &entries);
     Ok(())
 }
 
-fn discover_skills(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<SkillEntry>> {
+fn discover_skills(config: &AppConfig, paths: &GqyPaths) -> Result<Vec<SkillEntry>> {
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
     for skills_dir in skill_search_dirs(config, paths) {
@@ -60,7 +60,7 @@ fn discover_skills(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<SkillEnt
 fn register_load_skill(
     registry: &mut ToolRegistry,
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     entries: &[SkillEntry],
 ) {
     let skill_dirs = skill_search_dirs(config, paths);
@@ -167,7 +167,7 @@ fn load_skill(args: Value, skill_dirs: &[PathBuf]) -> Result<String> {
     anyhow::bail!("skill not found: {name}");
 }
 
-fn skill_search_dirs(config: &AppConfig, paths: &MiyuPaths) -> Vec<PathBuf> {
+fn skill_search_dirs(config: &AppConfig, paths: &GqyPaths) -> Vec<PathBuf> {
     let mut dirs = vec![paths.skills_dir.clone()];
     let active = config.active_persona_skills_dir(paths);
     if active != paths.skills_dir {
@@ -294,8 +294,8 @@ fn strip_frontmatter(raw: &str) -> String {
 mod tests {
     use super::*;
 
-    fn test_paths(root: &std::path::Path) -> MiyuPaths {
-        MiyuPaths {
+    fn test_paths(root: &std::path::Path) -> GqyPaths {
+        GqyPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
             skills_dir: root.join("config/skills"),
@@ -303,7 +303,7 @@ mod tests {
             cache_dir: root.join("cache"),
             state_dir: root.join("state"),
             pictures_dir: root.join("pictures"),
-            fish_hook_file: root.join("fish/miyu.fish"),
+            fish_hook_file: root.join("fish/gqy.fish"),
             bash_hook_file: root.join("shell/bash-hook.sh"),
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),

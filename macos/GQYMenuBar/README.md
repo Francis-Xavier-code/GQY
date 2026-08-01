@@ -15,7 +15,7 @@ export GQY_HOME="$HOME/Library/Application Support/GQY"
 open "macos/GQYMenuBar/.build/顾清影.app"
 ```
 
-构建脚本会优先把 `target/release/miyu` 打进 `.app`，开发时则回退到 `target/debug/miyu`。也可以用 `GQY_BIN=/absolute/path/to/miyu` 显式指定后端。
+构建脚本会优先把 `target/release/gqy` 打进 `.app`，开发时则回退到 `target/debug/gqy`。也可以用 `GQY_BIN=/absolute/path/to/gqy` 显式指定后端。
 
 菜单栏提供终端对话、本地 Web 面板、立即备份、打开独立主目录和开机自启五个入口。
 

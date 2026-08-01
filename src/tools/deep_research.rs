@@ -5,7 +5,7 @@ use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, DeepResearchPluginConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::{ChatMessage, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage};
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use chrono::Local;
 use serde_json::{json, Value};
@@ -45,7 +45,7 @@ const REVIEWER_SYSTEM_PROMPT: &str = r#"你是深度研究系统中的“审视�
 #[derive(Clone)]
 struct DeepResearchContext {
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     tools: ToolRegistry,
 }
 
@@ -127,7 +127,7 @@ struct Reference {
 pub fn register(
     registry: &mut ToolRegistry,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     tools: ToolRegistry,
 ) {
     let context = DeepResearchContext {
@@ -627,7 +627,7 @@ fn strip_reference_section(value: &str) -> String {
 
 fn write_report(
     plugin: &DeepResearchPluginConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     topic: &str,
     final_answer: &str,
     state: &Arc<Mutex<ResearchState>>,
@@ -925,7 +925,7 @@ fn strip_leading_weekday(value: &str) -> String {
     title.to_string()
 }
 
-fn expand_output_dir(value: &str, paths: &MiyuPaths) -> PathBuf {
+fn expand_output_dir(value: &str, paths: &GqyPaths) -> PathBuf {
     let value = value.trim();
     if let Some(rest) = value.strip_prefix("~/") {
         if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {

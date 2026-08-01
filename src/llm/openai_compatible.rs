@@ -6,7 +6,7 @@ use crate::config::{AppConfig, ProviderConfig};
 use crate::default_models::OPENCODE_ZEN_BASE_URL;
 use crate::i18n::text as t;
 use crate::models_cache::{self, ModelReasoningInfo, ReasoningSetting, ReasoningVariant};
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -324,11 +324,11 @@ struct ThinkingVariantPreferences {
     selected: HashMap<String, String>,
 }
 
-fn thinking_variant_preferences_file(paths: &MiyuPaths) -> PathBuf {
+fn thinking_variant_preferences_file(paths: &GqyPaths) -> PathBuf {
     paths.state_dir.join("thinking-variants.json")
 }
 
-fn load_thinking_variant_preferences(paths: &MiyuPaths) -> ThinkingVariantPreferences {
+fn load_thinking_variant_preferences(paths: &GqyPaths) -> ThinkingVariantPreferences {
     let path = thinking_variant_preferences_file(paths);
     std::fs::read_to_string(path)
         .ok()
@@ -520,7 +520,7 @@ fn endpoint_client(provider: &ProviderConfig) -> Result<Client> {
         .with_context(|| format!("building HTTP client for provider {}", provider.id))
 }
 
-fn llm_endpoints(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<LlmEndpoint>> {
+fn llm_endpoints(config: &AppConfig, paths: &GqyPaths) -> Result<Vec<LlmEndpoint>> {
     let mut endpoints = Vec::new();
     let mut errors = Vec::new();
     for choice in config.active_provider_model_choices() {
@@ -554,7 +554,7 @@ fn llm_endpoints(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<LlmEndpoin
 }
 
 impl OpenAiCompatibleClient {
-    pub fn from_config(config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
+    pub fn from_config(config: &AppConfig, paths: &GqyPaths) -> Result<Self> {
         let endpoints = llm_endpoints(config, paths)?;
         let first = endpoints
             .first()
@@ -572,7 +572,7 @@ impl OpenAiCompatibleClient {
         Ok(client)
     }
 
-    pub fn new(provider: &ProviderConfig, config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
+    pub fn new(provider: &ProviderConfig, config: &AppConfig, paths: &GqyPaths) -> Result<Self> {
         if provider.default_model.trim().is_empty() {
             bail!(
                 "{}: {}",
@@ -726,7 +726,7 @@ impl OpenAiCompatibleClient {
         }
     }
 
-    fn restore_saved_thinking_variants(&mut self, paths: &MiyuPaths) {
+    fn restore_saved_thinking_variants(&mut self, paths: &GqyPaths) {
         let preferences = load_thinking_variant_preferences(paths);
         let selections = self
             .endpoint_model_preferences()
@@ -741,7 +741,7 @@ impl OpenAiCompatibleClient {
         self.restore_thinking_variants(&selections);
     }
 
-    pub fn save_thinking_variants(&self, paths: &MiyuPaths) -> Result<()> {
+    pub fn save_thinking_variants(&self, paths: &GqyPaths) -> Result<()> {
         let path = thinking_variant_preferences_file(paths);
         let mut preferences = load_thinking_variant_preferences(paths);
         for (provider_id, model) in self.endpoint_model_preferences() {
@@ -5055,8 +5055,8 @@ mod tests {
         }
     }
 
-    fn test_paths(root: &std::path::Path) -> MiyuPaths {
-        MiyuPaths {
+    fn test_paths(root: &std::path::Path) -> GqyPaths {
+        GqyPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
             skills_dir: root.join("config/skills"),
@@ -5064,7 +5064,7 @@ mod tests {
             cache_dir: root.join("cache"),
             state_dir: root.join("state"),
             pictures_dir: root.join("pictures"),
-            fish_hook_file: root.join("fish/miyu.fish"),
+            fish_hook_file: root.join("fish/gqy.fish"),
             bash_hook_file: root.join("shell/bash-hook.sh"),
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),

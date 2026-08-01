@@ -76,7 +76,7 @@
         NSProcessInfo.processInfo.environment;
     NSString *workingDirectory = environment[@"PWD"];
     NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-    NSString *bundled = [NSBundle.mainBundle pathForResource:@"miyu" ofType:nil];
+    NSString *bundled = [NSBundle.mainBundle pathForResource:@"gqy" ofType:nil];
     if (bundled.length > 0) {
         [candidates addObject:bundled];
     }
@@ -84,14 +84,14 @@
         [candidates addObject:environment[@"GQY_BIN"]];
     }
     [candidates addObjectsFromArray:@[
-        @"/opt/homebrew/bin/miyu",
-        @"/usr/local/bin/miyu",
+        @"/opt/homebrew/bin/gqy",
+        @"/usr/local/bin/gqy",
     ]];
     if (workingDirectory.length > 0) {
         [candidates addObject:[workingDirectory
-                                  stringByAppendingPathComponent:@"target/release/miyu"]];
+                                  stringByAppendingPathComponent:@"target/release/gqy"]];
         [candidates addObject:[workingDirectory
-                                  stringByAppendingPathComponent:@"target/debug/miyu"]];
+                                  stringByAppendingPathComponent:@"target/debug/gqy"]];
     }
     for (NSString *candidate in candidates) {
         if ([NSFileManager.defaultManager isExecutableFileAtPath:candidate]) {
@@ -103,7 +103,7 @@
                                      code:1
                                  userInfo:@{
                                      NSLocalizedDescriptionKey:
-                                         @"找不到 miyu 后端。请设置 GQY_BIN 为编译后的可执行文件绝对路径。"
+                                         @"找不到 gqy 后端。请设置 GQY_BIN 为编译后的可执行文件绝对路径。"
                                  }];
     }
     return nil;

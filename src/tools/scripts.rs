@@ -1,7 +1,7 @@
 use super::registry::UnregisteredScript;
 use super::{ToolRegistry, ToolSpec};
 use crate::i18n::{agent_is_zh, agent_text as t, is_zh};
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use crate::tools::tool_descriptions::LoadPolicy;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ struct ScriptDisplayNames {
     en: Option<String>,
 }
 
-pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
+pub fn register(registry: &mut ToolRegistry, paths: &GqyPaths) {
     let dirs = [
         paths.system_scripts_dir.as_path(),
         paths.scripts_dir.as_path(),
@@ -84,7 +84,7 @@ pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
     register_script_tools(registry, paths.scripts_dir.clone());
 }
 
-pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &MiyuPaths) {
+pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &GqyPaths) {
     let dirs = [
         paths.system_scripts_dir.as_path(),
         paths.scripts_dir.as_path(),

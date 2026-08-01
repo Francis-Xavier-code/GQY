@@ -115,7 +115,7 @@ pub fn is_loaded() -> bool {
     cache_lock().lock().unwrap().is_some()
 }
 
-fn cache_file(paths: &crate::paths::MiyuPaths) -> PathBuf {
+fn cache_file(paths: &crate::paths::GqyPaths) -> PathBuf {
     paths.cache_dir.join("models_cache.json")
 }
 
@@ -259,7 +259,7 @@ fn fetch_and_cache(path: &PathBuf) -> Result<HashMap<String, HashMap<String, Mod
     Ok(data)
 }
 
-pub fn try_load(paths: &crate::paths::MiyuPaths) {
+pub fn try_load(paths: &crate::paths::GqyPaths) {
     let path = cache_file(paths);
     let data = load_from_disk(&path).ok();
     if let Some(data) = data {
@@ -268,7 +268,7 @@ pub fn try_load(paths: &crate::paths::MiyuPaths) {
     }
 }
 
-pub fn spawn_background_refresh(paths: crate::paths::MiyuPaths) {
+pub fn spawn_background_refresh(paths: crate::paths::GqyPaths) {
     let path = cache_file(&paths);
     std::thread::spawn(move || {
         let _refresh = refresh_lock().lock().unwrap();
@@ -287,7 +287,7 @@ pub fn input_modalities(provider_id: &str, model_id: &str) -> Option<Vec<String>
 }
 
 pub fn input_modalities_blocking(
-    paths: &crate::paths::MiyuPaths,
+    paths: &crate::paths::GqyPaths,
     provider_id: &str,
     model_id: &str,
 ) -> Option<Vec<String>> {
@@ -459,7 +459,7 @@ fn lookup_context_window(
     (matches.len() == 1).then(|| matches[0])
 }
 
-pub fn refresh_blocking(paths: &crate::paths::MiyuPaths) -> Result<()> {
+pub fn refresh_blocking(paths: &crate::paths::GqyPaths) -> Result<()> {
     let _refresh = refresh_lock().lock().unwrap();
     if is_loaded() {
         return Ok(());

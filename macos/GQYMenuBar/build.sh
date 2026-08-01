@@ -22,14 +22,14 @@ xcrun clang \
 cp "$project_dir/Info.plist" "$contents_dir/Info.plist"
 
 backend_bin="${GQY_BIN:-}"
-if [[ -z "$backend_bin" && -x "$repo_dir/target/release/miyu" ]]; then
-  backend_bin="$repo_dir/target/release/miyu"
+if [[ -z "$backend_bin" && -x "$repo_dir/target/release/gqy" ]]; then
+  backend_bin="$repo_dir/target/release/gqy"
 fi
-if [[ -z "$backend_bin" && -x "$repo_dir/target/debug/miyu" ]]; then
-  backend_bin="$repo_dir/target/debug/miyu"
+if [[ -z "$backend_bin" && -x "$repo_dir/target/debug/gqy" ]]; then
+  backend_bin="$repo_dir/target/debug/gqy"
 fi
 if [[ -n "$backend_bin" ]]; then
-  cp "$backend_bin" "$resources_dir/miyu"
+  cp "$backend_bin" "$resources_dir/gqy"
 fi
 
 codesign --force --deep --sign - "$app_dir"

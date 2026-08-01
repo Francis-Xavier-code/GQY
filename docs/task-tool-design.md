@@ -1,4 +1,4 @@
-# Miyu `task` 工具设计方案
+# GQY `task` 工具设计方案
 
 ## 总览
 
@@ -76,7 +76,7 @@ draw_fortune_lot,, roll_dice
 
 ### 1.3 不需要的类型
 
-- **plan**：Miyu 已有 `AgentMode::Plan`，不需要在 task 里重复。
+- **plan**：GQY 已有 `AgentMode::Plan`，不需要在 task 里重复。
 - **专门的 code 子代理**：`general` 已覆盖代码编辑场景。
 - **专门的 web 子代理**：`explore` 已包含 `web_fetch` / `web_search`，且 `deep_research` 已有专门的网络研究子代理。
 
@@ -186,13 +186,13 @@ fn default_task_max_steps_general() -> usize { 50 }
 }
 ```
 
-**不实现 `task_id`**：Miyu 没有持久化 session 系统，子代理是一次性的。如果未来需要恢复，可以再扩展。
+**不实现 `task_id`**：GQY 没有持久化 session 系统，子代理是一次性的。如果未来需要恢复，可以再扩展。
 
 ---
 
 ## 5. 返回值格式
 
-采用 JSON 格式（与 Miyu 其他工具一致，如 `deep_research`、`linux_game_compatibility`）：
+采用 JSON 格式（与 GQY 其他工具一致，如 `deep_research`、`linux_game_compatibility`）：
 
 ```json
 {
@@ -219,7 +219,7 @@ fn default_task_max_steps_general() -> usize { 50 }
 - `error`：子代理运行出错
 
 **不使用 XML 格式的原因**：
-1. Miyu 所有其他工具返回 JSON（`deep_research`、`deep_diagnose`、`linux_game` 都是 `serde_json::to_string_pretty(&json!({...}))`）
+1. GQY 所有其他工具返回 JSON（`deep_research`、`deep_diagnose`、`linux_game` 都是 `serde_json::to_string_pretty(&json!({...}))`）
 2. 主 agent 的 `extract_persistable_tool_report` 已经按 JSON 字段提取 `final_answer` / `final_report`
 3. JSON 结构化字段（`stats`、`state`）比 XML 更容易让 LLM 理解和消费
 
@@ -350,7 +350,7 @@ use crate::i18n::{is_zh, text as t};
 use crate::llm::{
     ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage,
 };
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -419,7 +419,7 @@ const GENERAL_TOTAL_TIMEOUT: u64 = 600;
 pub fn register(
     registry: &mut ToolRegistry,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     tools: ToolRegistry,
 ) {
     let context = SubagentContext { config, paths, tools };
@@ -480,7 +480,7 @@ pub fn register(
 #[derive(Clone)]
 struct SubagentContext {
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     tools: ToolRegistry,
 }
 
@@ -862,7 +862,7 @@ mod subagent;
 在 `builtin_registry` 函数中，将 `task_agent` 替换为 `task`：
 
 ```rust
-pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+pub fn builtin_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     // 注意：不再调用 default_tools::register（它注册 task_agent）
     // 而是手动注册 default tools 除了 task_agent
@@ -881,7 +881,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
 - **方案 A**：从 `default_tools::register` 中移除 `task_agent` 注册，在 `builtin_registry` 中注册 `task`
 - **方案 B**：在 `default_tools::register` 中将 `task_agent` 替换为调用 `subagent::register`
 
-**推荐方案 A**，因为 `task` 需要访问 `AppConfig`、`MiyuPaths` 和 `ToolRegistry`，而 `default_tools::register` 签名只有 `&mut ToolRegistry` 和 `bool`。
+**推荐方案 A**，因为 `task` 需要访问 `AppConfig`、`GqyPaths` 和 `ToolRegistry`，而 `default_tools::register` 签名只有 `&mut ToolRegistry` 和 `bool`。
 
 具体修改 `default_tools.rs`：
 

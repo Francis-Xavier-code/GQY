@@ -12,3 +12,6 @@
 *.pkg.tar.zst
 *.part
 *.old
+
+# ZCode session artifacts
+/.zcode/

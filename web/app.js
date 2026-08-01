@@ -4501,8 +4501,8 @@
 
   function initialize() {
     renderIconSlots();
-    setTheme(safeStorageGet("gqy.web.theme") || safeStorageGet("miyu.web.theme") || "graphite", false);
-    setMode(safeStorageGet("gqy.web.mode") || safeStorageGet("miyu.web.mode") || "normal", false);
+    setTheme(safeStorageGet("gqy.web.theme") || "graphite", false);
+    setMode(safeStorageGet("gqy.web.mode") || "normal", false);
     setSettingsView("interface");
     bindEvents();
     resizeComposer();

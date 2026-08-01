@@ -2,7 +2,7 @@ use super::{ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, PrintImagePluginConfig, ProviderConfig, VisionPluginConfig};
 use crate::i18n::agent_text as t;
 use crate::llm::{ChatMessage, OpenAiCompatibleClient};
-use crate::paths::MiyuPaths;
+use crate::paths::GqyPaths;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use serde_json::{json, Value};
@@ -16,7 +16,7 @@ const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 pub fn register(
     registry: &mut ToolRegistry,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: GqyPaths,
     register_analyze: bool,
 ) {
     if !register_analyze {
@@ -179,7 +179,7 @@ fn print_size(args: &Value, print_config: &PrintImagePluginConfig) -> Option<Str
     }
 }
 
-async fn analyze_image(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
+async fn analyze_image(args: Value, config: AppConfig, paths: GqyPaths) -> Result<String> {
     let vision = &config.plugins.vision;
     if !vision.enabled {
         bail!("vision plugin is disabled")
@@ -208,7 +208,7 @@ async fn analyze_image(args: Value, config: AppConfig, paths: MiyuPaths) -> Resu
 
 pub async fn analyze_local_image_with_prompt(
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     image: &Path,
     prompt: &str,
 ) -> Result<String> {
@@ -218,7 +218,7 @@ pub async fn analyze_local_image_with_prompt(
 
 pub async fn analyze_image_url_with_prompt(
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &GqyPaths,
     image_url: &str,
     prompt: &str,
 ) -> Result<String> {
