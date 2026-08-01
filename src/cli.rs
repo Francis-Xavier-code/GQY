@@ -11,7 +11,7 @@ use crate::render;
 use crate::shell;
 use crate::state::{QueuedPrompt, QueuedPromptAttachment, StateStore, Turn, TurnStatus};
 use crate::tools;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Local};
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -588,6 +588,35 @@ fn localize_config_command(command: clap::Command) -> clap::Command {
         .mut_subcommand("paths", |subcommand| {
             subcommand.about(t("Show configuration paths", "显示配置路径"))
         })
+        .mut_subcommand("set", |subcommand| {
+            subcommand
+                .about(t(
+                    "Set a config value non-interactively",
+                    "免交互设置配置项",
+                ))
+                .mut_arg("key", |arg| {
+                    arg.help(t(
+                        "Dotted path, e.g. display.language",
+                        "点号路径，如 display.language",
+                    ))
+                })
+                .mut_arg("value", |arg| {
+                    arg.help(t(
+                        "Value; JSON types are auto-detected",
+                        "值；自动识别 JSON 类型",
+                    ))
+                })
+        })
+        .mut_subcommand("get", |subcommand| {
+            subcommand
+                .about(t("Read a config value (secrets redacted)", "读取配置项（密钥脱敏）"))
+                .mut_arg("key", |arg| {
+                    arg.help(t(
+                        "Dotted path; omit to dump everything",
+                        "点号路径；省略时输出全部",
+                    ))
+                })
+        })
 }
 
 fn localize_reset_command(command: clap::Command) -> clap::Command {
@@ -1103,8 +1132,26 @@ pub struct KbEmbedReindexArgs {
 pub enum ConfigCommand {
     Validate,
     Paths,
+    /// 免交互设置配置项（支持点号路径，如 display.language zh / active_provider deepseek）
+    Set(ConfigSetArgs),
+    /// 读取配置项（脱敏输出；不带 key 时输出全部）
+    Get(ConfigGetArgs),
     #[command(hide = true)]
     PromptSource,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigSetArgs {
+    /// 点号路径，如 display.language、tools.max_rounds
+    pub key: String,
+    /// 值：自动识别 JSON（true/数字/数组/对象），其余按字符串处理
+    pub value: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigGetArgs {
+    /// 点号路径；省略时输出全部配置（密钥已脱敏）
+    pub key: Option<String>,
 }
 
 pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
@@ -2235,6 +2282,35 @@ async fn run_config(paths: &GqyPaths, args: ConfigArgs) -> Result<()> {
             paths.print();
             Ok(())
         }
+        Some(ConfigCommand::Set(set)) => {
+            let mut config = AppConfig::load(paths)?;
+            let mut node = serde_json::to_value(&config).context("serializing config")?;
+            let value = parse_config_value(&set.value);
+            set_config_path(&mut node, &set.key, value)
+                .with_context(|| format!("setting config key: {}", set.key))?;
+            config = serde_json::from_value(node).context("deserializing config")?;
+            config.save(paths)?;
+            println!(
+                "{}: {} = {}",
+                t("config updated", "已更新配置"),
+                set.key,
+                set.value
+            );
+            Ok(())
+        }
+        Some(ConfigCommand::Get(get)) => {
+            let config = AppConfig::load(paths)?;
+            let node = serde_json::to_value(&config).context("serializing config")?;
+            if let Some(key) = get.key.as_deref() {
+                let value = get_config_path(&node, key)?;
+                let value = redact_config_value(value);
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else {
+                let redacted = redact_config_value(&node);
+                println!("{}", serde_json::to_string_pretty(&redacted)?);
+            }
+            Ok(())
+        }
         Some(ConfigCommand::PromptSource) => {
             let config = AppConfig::load(paths)?;
             let persona = config.prompt.active_persona.trim();
@@ -2285,6 +2361,77 @@ async fn run_config(paths: &GqyPaths, args: ConfigArgs) -> Result<()> {
         }
         None => crate::config_tui::run(paths),
     }
+}
+
+/// 值解析：先按 JSON 解析（true/数字/null/数组/对象），失败按字符串。
+fn parse_config_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+}
+
+/// 按点号路径写入配置（如 display.language、tools.max_rounds）。
+fn set_config_path(node: &mut serde_json::Value, key: &str, value: serde_json::Value) -> Result<()> {
+    let segments = key.split('.').collect::<Vec<_>>();
+    if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
+        anyhow::bail!("invalid config key: {key}");
+    }
+    let mut current = node;
+    for (index, segment) in segments.iter().enumerate() {
+        if index + 1 == segments.len() {
+            current[segment] = value;
+            return Ok(());
+        }
+        if !current.get(segment).is_some_and(serde_json::Value::is_object) {
+            anyhow::bail!("intermediate key is not an object: {segment}");
+        }
+        current = &mut current[segment];
+    }
+    Ok(())
+}
+
+/// 按点号路径读取配置。
+fn get_config_path<'a>(node: &'a serde_json::Value, key: &str) -> Result<&'a serde_json::Value> {
+    let mut current = node;
+    for segment in key.split('.') {
+        if segment.is_empty() {
+            anyhow::bail!("invalid config key: {key}");
+        }
+        current = current
+            .get(segment)
+            .ok_or_else(|| anyhow::anyhow!("config key not found: {segment}"))?;
+    }
+    Ok(current)
+}
+
+/// 递归脱敏 api_key/token/password 等敏感字段（config get 输出用）。
+fn redact_config_value(node: &serde_json::Value) -> serde_json::Value {
+    match node {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                let redacted = if regex_matches_secret_key(key)
+                    && value.is_string()
+                    && !value.as_str().is_some_and(|s| s.starts_with("$env:"))
+                {
+                    serde_json::Value::String("<redacted>".to_string())
+                } else {
+                    redact_config_value(value)
+                };
+                out.insert(key.clone(), redacted);
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redact_config_value).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn regex_matches_secret_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    ["api_key", "api-key", "token", "password", "secret", "credential"]
+        .iter()
+        .any(|pattern| lower.contains(pattern))
 }
 
 fn run_clipboard_paste(paths: &GqyPaths) -> Result<()> {

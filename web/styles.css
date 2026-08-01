@@ -3364,7 +3364,7 @@ textarea.config-input {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 640px) {
   .app-shell {
     display: block;
   }
