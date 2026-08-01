@@ -601,6 +601,7 @@ fn copy_tree(source: &Path, destination: &Path, skip_live_config: bool) -> Resul
         }
         if is_sqlite_sidecar(&source_path)
             || is_obvious_secret_file(&source_path)
+            || is_apple_double_file(&source_path)
             || file_type.is_symlink()
         {
             continue;
@@ -626,6 +627,14 @@ fn copy_tree(source: &Path, destination: &Path, skip_live_config: bool) -> Resul
 fn is_sqlite_sidecar(path: &Path) -> bool {
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
     name.ends_with(".db-wal") || name.ends_with(".db-shm")
+}
+
+/// macOS AppleDouble 元数据文件（tar 解压/网络下载产生，形如 ._name）。
+/// 会被误当成 SQLite 快照导致备份失败，一律排除。
+fn is_apple_double_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.starts_with("._") && name.len() > 2)
 }
 
 fn is_obvious_secret_file(path: &Path) -> bool {
@@ -854,6 +863,14 @@ mod tests {
         assert!(is_obvious_secret_file(Path::new("deploy-key.pem")));
         assert!(is_obvious_secret_file(Path::new("id_ed25519")));
         assert!(!is_obvious_secret_file(Path::new("persona.md")));
+    }
+
+    #[test]
+    fn excludes_apple_double_metadata_files() {
+        assert!(is_apple_double_file(Path::new("._config.jsonc")));
+        assert!(is_apple_double_file(Path::new("kb/._semantic_index.db")));
+        assert!(!is_apple_double_file(Path::new("config.jsonc")));
+        assert!(!is_apple_double_file(Path::new("._")));
     }
 
     fn test_paths(root: &Path) -> GqyPaths {
