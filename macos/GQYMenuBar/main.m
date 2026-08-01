@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <WebKit/WebKit.h>
 #import <Carbon/Carbon.h>
 #import <unistd.h>
@@ -10,7 +11,7 @@
  * - 状态栏图标随状态变化（空闲 sparkles / 备份中 clock）
  * - 菜单含状态区（模型/记忆/备份时间，异步刷新）+ 常用功能
  */
-@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate>
+@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate, WKScriptMessageHandler>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSTask *webTask;
 @property(nonatomic, strong) NSTask *backupTask;
@@ -21,6 +22,8 @@
 @property(nonatomic, strong) NSMenuItem *statusBackupItem;
 @property(nonatomic, strong) NSWindow *panelWindow;
 @property(nonatomic, strong) WKWebView *webView;
+@property(nonatomic, strong) NSPanel *miniWindow;
+@property(nonatomic, strong) WKWebView *miniWebView;
 @property(nonatomic, assign) BOOL backupInProgress;
 @end
 
@@ -79,7 +82,11 @@
     [menu addItem:[NSMenuItem separatorItem]];
 
     // ── 功能 ──
-    NSMenuItem *panelItem = [self itemWithTitle:@"打开面板（迷你对话 ⌥G）"
+    NSMenuItem *miniItem = [self itemWithTitle:@"迷你对话 ⌥G"
+                                      symbol:@"text.bubble"
+                                      action:@selector(toggleMiniWindow:)];
+    [menu addItem:miniItem];
+    NSMenuItem *panelItem = [self itemWithTitle:@"打开面板"
                                          symbol:@"square.grid.2x2"
                                          action:@selector(openWebPanel:)];
     [menu addItem:panelItem];
@@ -117,6 +124,15 @@
     [self refreshLoginItemState];
     [self refreshStatus];
     [self registerGlobalHotkey];
+
+    // 调试/自测：`GQYMenuBar --mini` 启动即开迷你对话窗口
+    NSArray *arguments = NSProcessInfo.processInfo.arguments;
+    if ([arguments containsObject:@"--mini"]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self toggleMiniWindow:nil];
+        });
+    }
 }
 
 // ⌥G 全局快捷键：任何应用里按下都弹出迷你对话（面板窗口）
@@ -127,7 +143,7 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     (void)nextHandler;
     (void)event;
     GQYMenuBarDelegate *delegate = (__bridge GQYMenuBarDelegate *)userData;
-    [delegate openWebPanel:nil];
+    [delegate toggleMiniWindow:nil];
     return noErr;
 }
 
@@ -195,16 +211,25 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     return item;
 }
 
-- (void)setStatusItem:(NSMenuItem *)item title:(NSString *)title {
+// 状态项：月青 ● = 正常就绪，淡紫 ● = 记忆/特殊，绿 ● = 备份已同步，灰 ● = 未知
+- (void)setStatusItem:(NSMenuItem *)item title:(NSString *)title color:(NSColor *)color {
     NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
     paragraph.headIndent = 18;
-    item.attributedTitle = [[NSAttributedString alloc]
+    NSMutableAttributedString *attributed = [[NSMutableAttributedString alloc] init];
+    [attributed appendAttributedString:[[NSAttributedString alloc]
+        initWithString:@"● "
+        attributes:@{
+            NSFontAttributeName: [NSFont systemFontOfSize:9],
+            NSForegroundColorAttributeName: color,
+        }]];
+    [attributed appendAttributedString:[[NSAttributedString alloc]
         initWithString:title
         attributes:@{
             NSFontAttributeName: [NSFont systemFontOfSize:11],
             NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
             NSParagraphStyleAttributeName: paragraph,
-        }];
+        }]];
+    item.attributedTitle = attributed;
 }
 
 - (NSURL *)assistantHome {
@@ -384,8 +409,99 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     }
 }
 
+// ─────────────────────────── 迷你对话窗口（Gemini 式） ───────────────────────────
+// 小圆角窗口内嵌同源 WebView（?mini=1）：隐藏侧栏/顶栏，只留对话区+输入框。
+// 输入后走 WebUI 自己的 SSE 流，回答、头像思考动画全部复用。
+// 放大按钮（⤢）→ WKScriptMessageHandler 收到 gqyExpand → 切换成完整面板。
+
+- (void)toggleMiniWindow:(id)sender {
+    (void)sender;
+    if (self.miniWindow.isVisible) {
+        [self.miniWindow orderOut:nil];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        return;
+    }
+    [self ensureWebServer:^(BOOL ready) {
+        if (!ready) {
+            [self showError:[NSError errorWithDomain:@"GQYMenuBar"
+                                                code:2
+                                            userInfo:@{
+                                                NSLocalizedDescriptionKey:
+                                                    @"面板服务启动超时，请稍后重试。"
+                                            }]];
+            return;
+        }
+        [self showMiniWindow];
+    }];
+}
+
+- (void)showMiniWindow {
+    if (!self.miniWindow) {
+        NSRect frame = NSMakeRect(0, 0, 480, 340);
+        self.miniWindow = [[NSPanel alloc]
+            initWithContentRect:frame
+                      styleMask:(NSWindowStyleMaskNonactivatingPanel |
+                                 NSWindowStyleMaskFullSizeContentView)
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        self.miniWindow.title = @"顾清影 · 迷你对话";
+        self.miniWindow.level = NSFloatingWindowLevel;
+        self.miniWindow.hidesOnDeactivate = NO;
+        self.miniWindow.releasedWhenClosed = NO;
+        self.miniWindow.delegate = self;
+        // 圆角 + 无标题栏
+        self.miniWindow.titleVisibility = NSWindowTitleHidden;
+        self.miniWindow.titlebarAppearsTransparent = YES;
+        self.miniWindow.backgroundColor = [NSColor clearColor];
+        [self.miniWindow setMovableByWindowBackground:YES];
+
+        // 内容容器：圆角裁剪
+        NSView *container = [[NSView alloc] initWithFrame:self.miniWindow.contentView.bounds];
+        container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        container.wantsLayer = YES;
+        container.layer.cornerRadius = 16;
+        container.layer.masksToBounds = YES;
+        self.miniWindow.contentView = container;
+
+        WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+        [config.userContentController addScriptMessageHandler:self name:@"gqyExpand"];
+
+        WKWebView *webView = [[WKWebView alloc] initWithFrame:container.bounds
+                                                configuration:config];
+        webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        webView.allowsMagnification = NO;
+        self.miniWebView = webView;
+        [container addSubview:webView];
+
+        // 屏幕右上角附近（避开菜单栏）
+        NSRect screen = [NSScreen mainScreen].visibleFrame;
+        CGFloat x = NSMaxX(screen) - frame.size.width - 20;
+        CGFloat y = NSMaxY(screen) - frame.size.height - 8;
+        [self.miniWindow setFrameOrigin:NSMakePoint(x, y)];
+    }
+    NSString *urlString = [NSString stringWithFormat:@"%@?mini=1", self.panelURL.absoluteString];
+    if (![self.miniWebView.URL.absoluteString hasPrefix:urlString]) {
+        [self.miniWebView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:urlString]]];
+    } else {
+        [self.miniWebView reload];
+    }
+    [self.miniWindow makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+// 迷你窗口放大按钮 → 切换成完整面板（关迷你，开面板）
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    (void)userContentController;
+    if ([message.name isEqualToString:@"gqyExpand"]) {
+        [self.miniWindow orderOut:nil];
+        [self openWebPanel:nil];
+    }
+}
+
 - (void)windowWillClose:(NSNotification *)notification {
-    if (notification.object == self.panelWindow) {
+    if (notification.object == self.panelWindow ||
+        notification.object == self.miniWindow) {
         // 关窗口不杀 web 服务（下次秒开），同时 Dock 图标收回
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     }
@@ -479,7 +595,7 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     self.backupTask = task;
 }
 
-// 状态栏图标随状态变化：空闲 sparkles，备份中 clock（用户可直接看到备份在跑）
+// 状态栏图标随状态变化：空闲 sparkles，备份中 clock 旋转动画（用户可直接看到备份在跑）
 - (void)setStatusIconBackup:(BOOL)backup {
     self.backupInProgress = backup;
     NSString *symbol = backup ? @"externaldrive.fill.badge.clock" : @"sparkles";
@@ -487,6 +603,18 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         imageWithSystemSymbolName:symbol
         accessibilityDescription:@"顾清影"];
     self.statusItem.button.toolTip = backup ? @"顾清影 —— 正在备份…" : @"顾清影 —— 点开菜单";
+    CALayer *layer = self.statusItem.button.layer;
+    if (backup) {
+        [layer removeAnimationForKey:@"gqyBackupSpin"];
+        CABasicAnimation *spin = [CABasicAnimation animationWithKeyPath:@"transform.rotation"];
+        spin.fromValue = @(0);
+        spin.toValue = @(2 * M_PI);
+        spin.duration = 1.2;
+        spin.repeatCount = HUGE_VALF;
+        [layer addAnimation:spin forKey:@"gqyBackupSpin"];
+    } else {
+        [layer removeAnimationForKey:@"gqyBackupSpin"];
+    }
 }
 
 // ─────────────────────────── 状态区（异步刷新） ───────────────────────────
@@ -498,13 +626,22 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         NSString *backup = [self readBackupStatus];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (model.length > 0) {
-                [self setStatusItem:self.statusModelItem title:model];
+                BOOL modelReady = [model containsString:@"未配置"] == NO;
+                [self setStatusItem:self.statusModelItem
+                              title:model
+                              color:modelReady ? [NSColor systemCyanColor] : [NSColor systemGrayColor]];
             }
             if (memory.length > 0) {
-                [self setStatusItem:self.statusMemoryItem title:memory];
+                BOOL memoryReady = [memory containsString:@"不可用"] == NO;
+                [self setStatusItem:self.statusMemoryItem
+                              title:memory
+                              color:memoryReady ? [NSColor systemPurpleColor] : [NSColor systemGrayColor]];
             }
             if (backup.length > 0) {
-                [self setStatusItem:self.statusBackupItem title:backup];
+                BOOL backupOK = [backup containsString:@"未设置"] == NO;
+                [self setStatusItem:self.statusBackupItem
+                              title:backup
+                              color:backupOK ? [NSColor systemGreenColor] : [NSColor systemGrayColor]];
             }
         });
     });
