@@ -187,7 +187,12 @@ fn repl_footer_left(mode: AgentMode, footer: &ReplFooterStatus, width: usize) ->
     let thinking = footer.thinking.as_deref().unwrap_or_default();
     let colored_thinking = (!thinking.is_empty()).then(|| primary_footer_text(thinking));
     let colored_thinking = colored_thinking.as_deref().unwrap_or_default();
-    let provider = format!("\x1b[2m{}\x1b[0m", footer.provider);
+    // 默认 opencode 公共服务不显示，自定义供应商才显示（更清爽）
+    let provider = if footer.provider.is_empty() || footer.provider == "opencode" {
+        String::new()
+    } else {
+        format!("\x1b[2m{}\x1b[0m", footer.provider)
+    };
     let mode = colored_footer_mode_label(mode);
     let full = repl_footer_left_parts(&mode, &footer.model, Some(&provider), colored_thinking);
     if visible_width(&full) <= width {
@@ -2896,6 +2901,8 @@ async fn run_repl(paths: &GqyPaths, initial_mode: AgentMode) -> Result<()> {
     let mut input_history = load_repl_input_history(&state)?;
     let mut prefill = None::<String>;
     let mut live_repl = None::<LiveReplTail>;
+
+    crate::repl_avatar::print_if_supported(&mut std::io::stdout());
 
     let mut cumulative_tokens = 0u64;
     let mut show_shortcut_hint = true;
@@ -7132,14 +7139,15 @@ mod repl_input_tests {
         for mode in [AgentMode::Normal, AgentMode::Plan, AgentMode::Chat] {
             let line = repl_footer_left(mode, &footer, 120);
             assert!(line.contains("\x1b[1m\x1b[34mhigh\x1b[0m"));
+            // 默认 opencode 供应商不显示在 footer
+            let provider = if footer.provider.is_empty() || footer.provider == "opencode" {
+                String::new()
+            } else {
+                format!(" {}", footer.provider)
+            };
             assert_eq!(
                 strip_terminal_control_sequences(&line),
-                format!(
-                    "{} · {} {} · high",
-                    mode.label(),
-                    footer.model,
-                    footer.provider
-                )
+                format!("{} · {}{} · high", mode.label(), footer.model, provider)
             );
         }
     }
