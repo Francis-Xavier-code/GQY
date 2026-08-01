@@ -250,20 +250,28 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 </details>
 
 
-## 发布新版本
+## 开发与发布流程
+
+> 约定：**本机安装走 Homebrew，开发改动后一律发布新版再 `brew upgrade gqy` 测试**，
+> 不要手工覆盖 `/opt/homebrew/bin/gqy` 或直接跑 `target/release/gqy` 当日常环境，
+> 否则会出现二进制残留、版本错乱、hook 与数据不同步的麻烦。
 
 1. bump `Cargo.toml` 版本号（菜单栏 Info.plist 由 `build.sh` 自动跟随）；
-2. `git tag v0.4.2 && git push origin v0.4.2`；
+2. `git tag v0.4.3 && git push origin v0.4.3`；
 3. 构建并上传发布资产：
    ```zsh
-   cargo build --release --locked
+   cargo build --release --offline
    zsh macos/GQYMenuBar/build.sh
-   zsh macos/GQYMenuBar/make-dmg.sh   # 产出 .build/GQY-0.4.2.dmg
-   gh release create v0.4.2 macos/GQYMenuBar/.build/GQY-0.4.2.dmg --generate-notes
+   zsh macos/GQYMenuBar/make-dmg.sh   # 产出 .build/GQY-0.4.3.dmg
+   gh release create v0.4.3 macos/GQYMenuBar/.build/GQY-0.4.3.dmg --generate-notes
    ```
 4. 计算 `Formula/gqy.rb` 与 `Casks/gqy.rb` 里两个 `sha256`（源码 tarball 与 dmg）并提交；
 5. 同步到 Homebrew tap 仓库（`Francis-Xavier-code/homebrew-GQY`）里的同名文件并推送；
-6. 用户即可 `brew install gqy` / `brew install --cask gqy`。
+6. 本机测试：
+   ```zsh
+   brew upgrade gqy && brew upgrade --cask gqy
+   ```
+   数据全在 `GQY_HOME`，升级只换二进制，对话/记忆/配置分毫不动。
 
 ## 做出贡献
 
