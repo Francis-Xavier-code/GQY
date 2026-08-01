@@ -1474,7 +1474,7 @@ fn seed_default_knowledge_base(paths: &GqyPaths, interactive: bool) -> Result<()
     if imported.is_empty() {
         return Ok(());
     }
-    print_init_step(
+    let _ = print_init_step(
         interactive,
         t("Importing bundled knowledge base", "正在导入随包知识库"),
         &format!("{} 条文档", imported.len()),
