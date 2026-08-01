@@ -1,7 +1,7 @@
 {
   "name": "remember_fact",
   "display_name": "记录记忆",
-  "description": "长期记忆事实或有用知识点。",
+  "description": "记住一条事实。",
   "parameters": {
     "type": "object",
     "properties": {

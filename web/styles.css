@@ -949,6 +949,19 @@ textarea:disabled {
   min-width: 0;
 }
 
+/* 流式打字机光标：只挂在 element 上（rAF 重渲染不重建 element，光标不闪跳） */
+.live-text-block.streaming::after {
+  content: "▌";
+  margin-left: 1px;
+  color: var(--text-faint);
+  animation: caret-blink 0.9s steps(2, start) infinite;
+}
+
+/* 新消息块首次出现时轻微淡入（元素不重建，动画只播放一次） */
+.assistant-blocks > .live-text-block:first-of-type {
+  animation: block-in 220ms ease-out both;
+}
+
 .assistant-blocks > * {
   margin-top: 0;
   margin-bottom: 14px;
@@ -3353,6 +3366,16 @@ textarea.config-input {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes block-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes reasoning-progress {

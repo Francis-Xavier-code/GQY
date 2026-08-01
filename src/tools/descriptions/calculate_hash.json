@@ -1,7 +1,7 @@
 {
   "name": "calculate_hash",
   "display_name": "计算哈希",
-  "description": "Calculate hashes for text/hex/base64 input. Supports all mainstream.",
+  "description": "计算哈希。",
   "parameters": {
     "type": "object",
     "properties": {

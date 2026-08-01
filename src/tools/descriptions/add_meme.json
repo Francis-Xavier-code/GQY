@@ -27,11 +27,11 @@
       },
       "usage": {
         "type": "string",
-        "description": "什么时候使用该表情。"
+        "description": "何时使用该表情。"
       },
       "avoid": {
         "type": "string",
-        "description": "什么场景不要使用。"
+        "description": "何时不要使用。"
       },
       "tags": {
         "type": "array",

@@ -1,7 +1,7 @@
 {
   "name": "glob",
   "display_name": "查找文件",
-  "description": "在目录下按大小写不敏感 glob 模式查找文件。",
+  "description": "查找文件。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -11,7 +11,7 @@
       },
       "pattern": {
         "type": "string",
-        "description": "大小写不敏感 Glob 模式，例如 *ai*测试*。"
+        "description": "glob 模式。"
       },
       "max_results": {
         "type": "integer",

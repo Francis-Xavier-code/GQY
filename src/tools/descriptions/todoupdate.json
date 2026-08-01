@@ -1,7 +1,7 @@
 {
   "name": "todoupdate",
   "display_name": "更新任务",
-  "description": "原子更新现有任务列表。用于小范围变更：新增、修改、删除或清空任务，不需要重传完整列表。",
+  "description": "原子更新现有任务列表：新增、修改、删除或清空任务。",
   "parameters": {
     "type": "object",
     "properties": {

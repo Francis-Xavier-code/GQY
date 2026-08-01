@@ -47,6 +47,124 @@ struct Manifest {
 pub struct ImportResult {
     pub tools: Vec<String>,
     pub skills: Vec<String>,
+    /// 检测到的许可证 SPDX 标识（"unknown" = 未识别 / 无许可证文件）。
+    pub license: Option<String>,
+}
+
+/// 仓库许可证检测结果。
+#[derive(Debug, Clone)]
+pub struct LicenseInfo {
+    pub spdx: String,
+    /// 许可宽松度：permissive（MIT/Apache/BSD 等可自由再分发）、
+    /// copyleft（GPL/AGPL 等传染性）、restricted（自定义/无许可证）。
+    pub kind: LicenseKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LicenseKind {
+    Permissive,
+    Copyleft,
+    Restricted,
+}
+
+/// 扫描仓库根目录的许可证文件并识别 SPDX 标识。
+/// 兼容常见文件名：LICENSE/LICENSE.md/LICENSE.txt/COPYING/LICENCE 等。
+pub fn detect_license(dir: &Path) -> Result<LicenseInfo> {
+    const FILE_NAMES: &[&str] = &[
+        "LICENSE",
+        "LICENSE.md",
+        "LICENSE.txt",
+        "LICENCE",
+        "LICENCE.md",
+        "COPYING",
+        "COPYING.md",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+    ];
+    for name in FILE_NAMES {
+        let candidate = dir.join(name);
+        if !candidate.is_file() {
+            continue;
+        }
+        let text = match fs::read_to_string(&candidate) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        if let Some(spdx) = identify_license(&text) {
+            let kind = if is_permissive(&spdx) {
+                LicenseKind::Permissive
+            } else if is_copyleft(&spdx) {
+                LicenseKind::Copyleft
+            } else {
+                LicenseKind::Restricted
+            };
+            return Ok(LicenseInfo { spdx, kind });
+        }
+    }
+    Ok(LicenseInfo {
+        spdx: "unknown".to_string(),
+        kind: LicenseKind::Restricted,
+    })
+}
+
+fn identify_license(text: &str) -> Option<String> {
+    let head = &text[..text.len().min(2000)];
+    if head.contains("GNU AFFERO") {
+        return Some(if head.contains("Version 3") { "AGPL-3.0" } else { "AGPL-3.0" }.into());
+    }
+    if head.contains("GNU GENERAL PUBLIC LICENSE") {
+        if head.contains("Version 3") {
+            return Some("GPL-3.0".into());
+        }
+        if head.contains("Version 2") {
+            return Some("GPL-2.0".into());
+        }
+        return Some("GPL-3.0".into());
+    }
+    if head.contains("GNU LESSER GENERAL PUBLIC LICENSE") || head.contains("GNU LIBRARY GENERAL PUBLIC LICENSE") {
+        return Some("LGPL-3.0".into());
+    }
+    if head.contains("MOZILLA PUBLIC LICENSE") {
+        return Some("MPL-2.0".into());
+    }
+    if head.contains("Apache License") && head.contains("Version 2.0") {
+        return Some("Apache-2.0".into());
+    }
+    if head.contains("MIT License") || head.contains("Permission is hereby granted, free of charge")
+    {
+        return Some("MIT".into());
+    }
+    if head.contains("BSD 3-Clause") || head.contains("Redistribution and use in source and binary forms")
+    {
+        return Some("BSD-3-Clause".into());
+    }
+    if head.contains("BSD 2-Clause") {
+        return Some("BSD-2-Clause".into());
+    }
+    if head.contains("ISC License") || head.contains("Permission to use, copy, modify")
+    {
+        return Some("ISC".into());
+    }
+    if head.contains("This is free and unencumbered software") {
+        return Some("Unlicense".into());
+    }
+    if head.contains("CC0 1.0") {
+        return Some("CC0-1.0".into());
+    }
+    None
+}
+
+/// 宽松许可：允许自由再分发（兼容 GPL-3.0 项目）。
+fn is_permissive(spdx: &str) -> bool {
+    matches!(
+        spdx,
+        "MIT" | "Apache-2.0" | "BSD-2-Clause" | "BSD-3-Clause" | "ISC" | "Unlicense" | "CC0-1.0" | "MPL-2.0"
+    )
+}
+
+/// 传染性许可：再分发需保持同一许可证（GPL-3.0 兼容 GPL-3.0/AGPL-3.0，但与 GPL-2.0 不兼容）。
+fn is_copyleft(spdx: &str) -> bool {
+    matches!(spdx, "GPL-2.0" | "GPL-3.0" | "AGPL-3.0" | "LGPL-3.0")
 }
 
 /// 解析并准备仓库/目录（git URL 克隆到 workspace，本地路径规范化）。
@@ -132,6 +250,24 @@ pub fn import_tools(
     // 统一解析真实路径：/tmp 在 macOS 上是 /private/tmp 的符号链接，
     // 不 canonicalize 会导致后续 starts_with 越界误判
     let dir = dir.canonicalize().unwrap_or(dir);
+
+    // 先理解许可证：识别仓库 LICENSE，随包保留来源（GPL 合规），
+    // restricted（自定义/无许可证）时警告但不阻止
+    let license = detect_license(&dir)?;
+    if license.kind == LicenseKind::Restricted && license.spdx != "unknown" {
+        eprintln!(
+            "⚠ 许可证未识别（{spdx}），请确认来源可自由再分发后再使用",
+            spdx = license.spdx
+        );
+    } else if license.spdx == "unknown" {
+        eprintln!("⚠ 仓库没有 LICENSE 文件（默认为「保留所有权利」），导入仅供个人使用");
+    } else if license.kind == LicenseKind::Copyleft {
+        eprintln!(
+            "ℹ 许可证 {spdx} 为传染性许可：随工具包分发需保持同一许可证（GQY 本体 GPL-3.0）",
+            spdx = license.spdx
+        );
+    }
+
     let mut entries = load_entries(&dir)?;
     if let Some(only) = only {
         // 先理解再导入：只保留指定候选（按文件名/相对路径匹配）
@@ -164,6 +300,13 @@ pub fn import_tools(
     let scripts_root = paths.config_dir.join("scripts");
     let package_dir = scripts_root.join(&package_name);
     fs::create_dir_all(&package_dir)?;
+
+    // 许可证随包保留：复制 LICENSE 到包目录（GPL/MIT 都要求保留来源与版权声明）
+    if license.spdx != "unknown" {
+        if let Some(license_file) = find_license_file(&dir) {
+            let _ = fs::copy(&license_file, package_dir.join("LICENSE"));
+        }
+    }
     let mut installed = Vec::new();
     let mut new_entries = Vec::new();
     for entry in &entries {
@@ -237,7 +380,27 @@ pub fn import_tools(
     Ok(ImportResult {
         tools: installed,
         skills: imported_skills,
+        license: (license.spdx != "unknown").then_some(license.spdx),
     })
+}
+
+/// 返回仓库根目录的许可证文件路径（与 detect_license 的文件名清单一致）。
+fn find_license_file(dir: &Path) -> Option<PathBuf> {
+    const FILE_NAMES: &[&str] = &[
+        "LICENSE",
+        "LICENSE.md",
+        "LICENSE.txt",
+        "LICENCE",
+        "LICENCE.md",
+        "COPYING",
+        "COPYING.md",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+    ];
+    FILE_NAMES
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
 }
 
 /// 把文件名规范化为合法工具 id：字母开头，非法字符转下划线，去扩展名。
@@ -281,8 +444,9 @@ fn copy_dir(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 列出已导入的用户工具包（按根清单的 path 前缀分组）。
-pub fn list_tools(paths: &GqyPaths) -> Result<Vec<(String, usize)>> {
+/// 列出已导入的用户工具包（按根清单的 path 前缀分组），
+/// 附带包内 LICENSE 文件识别的许可证（无则 "unknown"）。
+pub fn list_tools(paths: &GqyPaths) -> Result<Vec<(String, usize, String)>> {
     let base = paths.config_dir.join("scripts");
     let mut result = Vec::new();
     let index = base.join("index.json");
@@ -291,7 +455,8 @@ pub fn list_tools(paths: &GqyPaths) -> Result<Vec<(String, usize)>> {
     }
     let text = fs::read_to_string(&index)?;
     let manifest: Manifest = serde_json::from_str(&text)?;
-    let mut packages: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut packages: std::collections::BTreeMap<String, (usize, String)> =
+        std::collections::BTreeMap::new();
     for script in manifest.scripts {
         let package = script
             .path
@@ -299,10 +464,17 @@ pub fn list_tools(paths: &GqyPaths) -> Result<Vec<(String, usize)>> {
             .next()
             .unwrap_or("default")
             .to_string();
-        *packages.entry(package).or_insert(0) += 1;
+        let entry = packages.entry(package.clone()).or_insert_with(|| {
+            let license = find_license_file(&base.join(&package))
+                .and_then(|path| fs::read_to_string(path).ok())
+                .and_then(|text| identify_license(&text))
+                .unwrap_or_else(|| "unknown".to_string());
+            (0, license)
+        });
+        entry.0 += 1;
     }
-    for (name, count) in packages {
-        result.push((name, count));
+    for (name, (count, license)) in packages {
+        result.push((name, count, license));
     }
     Ok(result)
 }
@@ -440,6 +612,83 @@ impl Default for ScriptEntry {
             always_loaded: false,
             load_policy: "group".to_string(),
             groups: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_license(dir: &Path, name: &str, text: &str) {
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+
+    #[test]
+    fn detects_mit_license() {
+        let dir = tempfile::tempdir().unwrap();
+        write_license(dir.path(), "LICENSE", "MIT License\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software...");
+        let info = detect_license(dir.path()).unwrap();
+        assert_eq!(info.spdx, "MIT");
+        assert_eq!(info.kind, LicenseKind::Permissive);
+    }
+
+    #[test]
+    fn detects_gpl3_as_copyleft() {
+        let dir = tempfile::tempdir().unwrap();
+        write_license(dir.path(), "COPYING", "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007");
+        let info = detect_license(dir.path()).unwrap();
+        assert_eq!(info.spdx, "GPL-3.0");
+        assert_eq!(info.kind, LicenseKind::Copyleft);
+    }
+
+    #[test]
+    fn detects_apache_license_md() {
+        let dir = tempfile::tempdir().unwrap();
+        write_license(dir.path(), "LICENSE.md", "Apache License\nVersion 2.0, January 2004");
+        let info = detect_license(dir.path()).unwrap();
+        assert_eq!(info.spdx, "Apache-2.0");
+    }
+
+    #[test]
+    fn no_license_file_is_restricted_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = detect_license(dir.path()).unwrap();
+        assert_eq!(info.spdx, "unknown");
+        assert_eq!(info.kind, LicenseKind::Restricted);
+    }
+
+    #[test]
+    fn license_copied_into_package_dir_on_import() {
+        let root = tempfile::tempdir().unwrap().into_path();
+        let old = std::env::var_os("GQY_HOME");
+        std::env::set_var("GQY_HOME", &root);
+        let paths = crate::paths::GqyPaths::new().unwrap();
+
+        // 模拟一个带 LICENSE 的本地工具目录
+        let src = root.join("src-repo");
+        std::fs::create_dir_all(&src).unwrap();
+        write_license(&src, "LICENSE", "MIT License\nPermission is hereby granted, free of charge...");
+        std::fs::write(src.join("hello.sh"), "#!/bin/sh\necho hello\n").unwrap();
+        std::fs::write(
+            src.join("gqy-tools.json"),
+            r#"{"scripts":[{"id":"hello","description":"say hello","path":"hello.sh"}]}"#,
+        )
+        .unwrap();
+
+        let result = import_tools(&paths, src.to_str().unwrap(), Some("testpkg"), None).unwrap();
+        assert_eq!(result.license.as_deref(), Some("MIT"));
+        let pkg_dir = paths.config_dir.join("scripts/testpkg");
+        assert!(pkg_dir.join("LICENSE").is_file(), "LICENSE should be copied into package dir");
+
+        // 列表应显示许可证
+        let listed = list_tools(&paths).unwrap();
+        assert!(listed.iter().any(|(name, _, license)| name == "testpkg" && license == "MIT"));
+
+        if let Some(v) = old {
+            std::env::set_var("GQY_HOME", v);
+        } else {
+            std::env::remove_var("GQY_HOME");
         }
     }
 }

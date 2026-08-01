@@ -1,13 +1,13 @@
 {
   "name": "check_issue",
   "display_name": "检查问题",
-  "description": "Collect read-only diagnostic evidence for a concrete local issue. This tool gathers facts only; it does not diagnose, rank root causes, or recommend fixes.",
+  "description": "收集本地问题诊断证据（只读，不诊断不修复）。",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Original user issue. Used for auto area/target inference."
+        "description": "用户原始问题，用于自动推断范围。"
       },
       "area": {
         "type": "string",
@@ -26,11 +26,11 @@
       },
       "target": {
         "type": "string",
-        "description": "Optional app, process, command, package, or subsystem target."
+        "description": "可选目标应用/进程/命令/包/子系统。"
       },
       "symptom": {
         "type": "string",
-        "description": "Optional symptom label."
+        "description": "可选症状标签。"
       },
       "depth": {
         "type": "string",
@@ -42,7 +42,7 @@
       },
       "recent_minutes": {
         "type": "integer",
-        "description": "Recent log window in minutes, clamped to 1..1440."
+        "description": "日志窗口分钟数（1..1440）。"
       },
       "platform": {
         "type": "string",
@@ -54,11 +54,11 @@
       },
       "allow_launch_probe": {
         "type": "boolean",
-        "description": "For app/input_method evidence only: explicitly allow launching target to sample runtime facts. Defaults to false."
+        "description": "允许启动目标采集运行时信息。"
       },
       "launch_timeout_seconds": {
         "type": "integer",
-        "description": "Seconds to wait after launch probe before sampling pids. Defaults to 3, max 15."
+        "description": "启动后等待秒数，默认 3，最大 15。"
       }
     },
     "required": []
