@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
+#import <Carbon/Carbon.h>
 #import <unistd.h>
 
 /**
@@ -31,10 +32,17 @@
 
     self.statusItem = [[NSStatusBar systemStatusBar]
         statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.image = [NSImage
-        imageWithSystemSymbolName:@"sparkles"
-        accessibilityDescription:@"顾清影"];
-    self.statusItem.button.toolTip = @"顾清影 —— 点开菜单，面板在 App 内";
+    // 优先用 App 图标（顾清影头像）作为状态栏图标，加载失败回退 sparkles
+    NSImage *appIcon = [NSImage imageNamed:@"AppIcon"];
+    if (appIcon) {
+        appIcon.size = NSMakeSize(18, 18);
+        self.statusItem.button.image = appIcon;
+    } else {
+        self.statusItem.button.image = [NSImage
+            imageWithSystemSymbolName:@"sparkles"
+            accessibilityDescription:@"顾清影"];
+    }
+    self.statusItem.button.toolTip = @"顾清影 —— 点开菜单，面板在 App 内（⌥G 快速打开迷你对话）";
 
     NSMenu *menu = [[NSMenu alloc] init];
 
@@ -71,13 +79,16 @@
     [menu addItem:[NSMenuItem separatorItem]];
 
     // ── 功能 ──
-    NSMenuItem *panelItem = [self itemWithTitle:@"打开面板"
+    NSMenuItem *panelItem = [self itemWithTitle:@"打开面板（迷你对话 ⌥G）"
                                          symbol:@"square.grid.2x2"
                                          action:@selector(openWebPanel:)];
     [menu addItem:panelItem];
     [menu addItem:[self itemWithTitle:@"打开配置"
                                symbol:@"gearshape"
                                action:@selector(openConfigPanel:)]];
+    [menu addItem:[self itemWithTitle:@"重启面板服务"
+                               symbol:@"arrow.clockwise"
+                               action:@selector(restartWebServer:)]];
     [menu addItem:[self itemWithTitle:@"打开终端对话"
                                symbol:@"terminal"
                                action:@selector(openTerminalChat:)]];
@@ -105,6 +116,43 @@
     menu.delegate = self;
     [self refreshLoginItemState];
     [self refreshStatus];
+    [self registerGlobalHotkey];
+}
+
+// ⌥G 全局快捷键：任何应用里按下都弹出迷你对话（面板窗口）
+static EventHotKeyRef g_hotkey_ref = NULL;
+static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
+                                   EventRef event,
+                                   void *userData) {
+    (void)nextHandler;
+    (void)event;
+    GQYMenuBarDelegate *delegate = (__bridge GQYMenuBarDelegate *)userData;
+    [delegate openWebPanel:nil];
+    return noErr;
+}
+
+- (void)registerGlobalHotkey {
+    EventHotKeyID hotkey_id = { .signature = 'GQYH', .id = 1 };
+    EventTypeSpec event_type = { .eventClass = kEventClassKeyboard,
+                                 .eventKind = kEventHotKeyPressed };
+    InstallEventHandler(GetEventDispatcherTarget(),
+                        gqy_hotkey_handler,
+                        1,
+                        &event_type,
+                        (__bridge void *)self,
+                        NULL);
+    // ⌥G：Option + G（避开中文输入法的 ⌥Space）
+    RegisterEventHotKey(kVK_ANSI_G, optionKey, hotkey_id,
+                        GetEventDispatcherTarget(), 0, &g_hotkey_ref);
+}
+
+- (void)restartWebServer:(id)sender {
+    (void)sender;
+    if (self.webTask.isRunning) {
+        [self.webTask terminate];
+    }
+    self.webTask = nil;
+    [self showInfo:@"面板服务已重启" detail:@"下次打开面板时自动重新启动，并加载最新配置。"];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {

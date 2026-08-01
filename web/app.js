@@ -73,6 +73,7 @@
     "run.cancelled",
     "run.failed",
     "conversation.reset",
+    "config.reloaded",
     "resync_required"
   ];
 
@@ -342,6 +343,12 @@
     window.requestAnimationFrame(() => elements.settingsClose.focus());
     if (!state.configLoaded && !state.configLoading) loadConfigDraft();
   }
+
+  // 菜单栏「打开配置」通过 evaluateJavaScript 调用；URL ?open=settings 走 handleOpenSettingsParam
+  window.__gqyOpenSettings = function () {
+    openSettings();
+    if (!state.configLoaded && !state.configLoading) loadConfigDraft();
+  };
 
   function closeSettings({ restoreFocus = true } = {}) {
     if (!elements.settingsDrawer.classList.contains("open")) return;
@@ -3954,6 +3961,13 @@
       return;
     }
     if (name === "conversation.reset") {
+      loadBootstrap();
+      return;
+    }
+    if (name === "config.reloaded") {
+      // 配置文件被外部修改（CLI/编辑），后端已自动重载：提示并刷新配置显示
+      showToast("检测到配置变更，已自动重新加载", "info");
+      loadConfigDraft();
       loadBootstrap();
       return;
     }
