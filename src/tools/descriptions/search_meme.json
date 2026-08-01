@@ -1,13 +1,13 @@
 {
   "name": "search_meme",
   "display_name": "搜索表情包",
-  "description": "按场景、情绪、标签或画面内容搜索当前人格表情库。",
+  "description": "搜索表情。",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "场景、情绪、画面内容或用户意图。"
+        "description": "关键词。"
       },
       "tags": {
         "type": "array",

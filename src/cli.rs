@@ -1252,9 +1252,11 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
                  ## 今天的待办\n\n\
                  - 修好 [GQY 的 GitHub](https://github.com/Francis-Xavier-code/GQY)\n\
                  - 学习 `Rust` 与 `OSC 8` 超链接\n\
-                 - 官方文档见 <https://www.rust-lang.org>\n\n\
+                 - [x] 月夜主题已上线\n\
+                 - [ ] 面板动画（下次）\n\n\
+                 > 链接在 iTerm2 / Terminal.app / kitty 里都可以点击\n\n\
                  ```rust\nfn greet() -> &'static str {\n    \"清影陪你写代码\"\n}\n```\n\n\
-                 | 项目 | 状态 |\n| --- | --- |\n| 月夜主题 | ✅ 完成 |\n| 可点击链接 | ✅ 完成 |\n",
+                 | 项目 | 状态 |\n| --- | --- |\n| 月夜主题 | ✅ 完成 |\n| 可点击链接 | ✅ 完成 |\n| 结构化渲染 | ✅ 完成 |\n",
             );
             Ok(())
         }
@@ -8409,6 +8411,9 @@ fn run_tools(paths: &GqyPaths, args: ToolsArgs) -> Result<()> {
                 .map(|value| value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>());
             let result =
                 crate::tools::import::import_tools(paths, &source, name.as_deref(), only_list.as_deref())?;
+            if let Some(license) = &result.license {
+                println!("许可证：{license}（已随包保留 LICENSE）");
+            }
             println!("已导入 {} 个工具：{}", result.tools.len(), result.tools.join(", "));
             println!(
                 "工具已安装到 {}，下轮对话即可使用，长期有效。",
@@ -8429,8 +8434,8 @@ fn run_tools(paths: &GqyPaths, args: ToolsArgs) -> Result<()> {
             if packages.is_empty() {
                 println!("暂无已导入的用户工具包（gqy tools import <目录或仓库>）");
             }
-            for (name, count) in packages {
-                println!("{name}: {count} 个工具");
+            for (name, count, license) in packages {
+                println!("{name}: {count} 个工具（{license}）");
             }
             Ok(())
         }

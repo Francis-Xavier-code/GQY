@@ -609,11 +609,308 @@ pub fn print_assistant_response(response: &ChatResult, show_reasoning: bool) -> 
 }
 
 pub fn print_markdown(markdown: &str) {
-    // 与流式 REPL 同一渲染器：月夜清影主题一致，链接 OSC 8 可点击
-    let mut renderer = MarkdownLineRenderer::new();
-    let mut output = renderer.render_lines(markdown);
-    output.push_str(&renderer.flush());
-    println!("{output}");
+    // 结构化渲染（pulldown-cmark）：标题/列表/表格去标记化，链接 OSC 8 可点击
+    println!("{}", render_markdown_structured(markdown));
+}
+
+/// 基于 pulldown-cmark 的整篇结构化渲染：
+/// - 标题不显示 `#`（h1/h2 亮蓝加粗）
+/// - 列表 `-` 渲染为 `•`（任务列表 ☑/☐），引用块 `>` 渲染为 `│`
+/// - 表格 Unicode 边框对齐、代码块带框、链接 OSC 8 超链接
+/// 与流式 MarkdownLineRenderer 视觉一致（月夜清影主题）。
+fn render_markdown_structured(markdown: &str) -> String {
+    use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
+    const ENABLED: Options = Options::ENABLE_TABLES
+        .union(Options::ENABLE_STRIKETHROUGH)
+        .union(Options::ENABLE_TASKLISTS)
+        .union(Options::ENABLE_HEADING_ATTRIBUTES);
+    let parser = Parser::new_ext(markdown, ENABLED);
+
+    let mut out = String::new();
+    let mut quote_depth = 0usize;
+    let mut list_stack: Vec<Option<u64>> = Vec::new();
+    let mut item_numbers: Vec<u64> = Vec::new();
+    let mut code_lang = String::new();
+    let mut code_lines: Vec<String> = Vec::new();
+    let mut in_code_block = false;
+    // 表格缓冲
+    let mut table_alignments: Vec<Alignment> = Vec::new();
+    let mut table_header: Vec<String> = Vec::new();
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    let mut in_table_head = false;
+    let mut in_table_row = false;
+    let mut current_row: Vec<String> = Vec::new();
+    let mut current_cell = String::new();
+    // 行内样式
+    let mut italic = false;
+    let mut strike = false;
+    let mut link_url: Option<String> = None;
+
+    /// 行首补缩进与引用竖线（段落跨行保持前缀）。
+    fn emit_line_prefix(out: &mut String, quote_depth: usize, list_indent: usize) {
+        if out.ends_with('\n') {
+            for _ in 0..list_indent {
+                out.push_str("  ");
+            }
+            for _ in 0..quote_depth {
+                out.push_str("\x1b[32m│ \x1b[0m");
+            }
+        }
+    }
+
+    /// 追加文本：应用行首前缀 + 当前行内样式。
+    fn emit_text(
+        out: &mut String,
+        text: &str,
+        quote_depth: usize,
+        list_indent: usize,
+        italic: bool,
+        strike: bool,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        emit_line_prefix(out, quote_depth, list_indent);
+        if italic {
+            out.push_str(ITALIC_STYLE);
+        }
+        if strike {
+            out.push_str(STRIKE_STYLE);
+        }
+        out.push_str(text);
+        if italic || strike {
+            out.push_str(RESET);
+        }
+    }
+
+    fn list_indent_of(stack: &[Option<u64>]) -> usize {
+        stack.len().saturating_sub(1)
+    }
+
+    for event in parser {
+        if in_code_block {
+            match event {
+                Event::End(TagEnd::CodeBlock) => {
+                    in_code_block = false;
+                    let rendered = render_code_block(&code_lang, &code_lines);
+                    code_lang.clear();
+                    code_lines.clear();
+                    out.push('\n');
+                    out.push_str(&rendered);
+                    out.push('\n');
+                }
+                Event::Text(text) => code_lines.push(text.to_string()),
+                Event::SoftBreak | Event::HardBreak => code_lines.push(String::new()),
+                _ => {}
+            }
+            continue;
+        }
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                let level = heading_level_number(level);
+                let style = if level <= 2 {
+                    "\x1b[1m\x1b[38;2;96;165;250m"
+                } else {
+                    HEADER_STYLE
+                };
+                out.push('\n');
+                out.push_str(style);
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                out.push_str(RESET);
+                out.push('\n');
+            }
+            Event::Start(Tag::Paragraph) => {
+                if !out.is_empty() && !out.ends_with("\n\n") {
+                    out.push('\n');
+                }
+            }
+            Event::End(TagEnd::Paragraph) => out.push('\n'),
+            Event::Start(Tag::List(ordered)) => {
+                list_stack.push(ordered);
+                item_numbers.push(0);
+            }
+            Event::End(TagEnd::List(_)) => {
+                list_stack.pop();
+                item_numbers.pop();
+            }
+            Event::Start(Tag::Item) => {
+                out.push('\n');
+                let indent = list_indent_of(&list_stack);
+                for _ in 0..indent {
+                    out.push_str("  ");
+                }
+                if let Some(Some(start)) = list_stack.last() {
+                    let number = item_numbers.last_mut().unwrap();
+                    *number += 1;
+                    let marker = *start + *number - 1;
+                    out.push_str(&format!("{TERTIARY_STYLE}{marker}.{RESET} "));
+                } else {
+                    out.push_str(&format!("{TERTIARY_STYLE}•{RESET} "));
+                }
+            }
+            Event::End(TagEnd::Item) => {}
+            Event::TaskListMarker(checked) => {
+                let marker = if checked { "☑" } else { "☐" };
+                out.push_str(&format!("{TERTIARY_STYLE}{marker}{RESET} "));
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                quote_depth += 1;
+                out.push('\n');
+            }
+            Event::End(TagEnd::BlockQuote(_)) => quote_depth = quote_depth.saturating_sub(1),
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
+                in_code_block = true;
+                code_lang = lang.to_string();
+                code_lines.clear();
+                out.push('\n');
+            }
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {
+                in_code_block = true;
+                code_lang.clear();
+                code_lines.clear();
+                out.push('\n');
+            }
+            Event::Start(Tag::Table(alignments)) => {
+                table_alignments = alignments.to_vec();
+                table_header.clear();
+                table_rows.clear();
+                in_table_head = true;
+                current_row.clear();
+                current_cell.clear();
+                out.push('\n');
+            }
+            Event::End(TagEnd::Table) => {
+                in_table_head = false;
+                if !table_header.is_empty() || !table_rows.is_empty() {
+                    let alignments: Vec<TableAlign> = table_alignments
+                        .iter()
+                        .map(|align| match align {
+                            Alignment::Left => TableAlign::Left,
+                            Alignment::Center => TableAlign::Center,
+                            Alignment::Right => TableAlign::Right,
+                            Alignment::None => TableAlign::Left,
+                        })
+                        .collect();
+                    let all_rows: Vec<Vec<String>> = std::iter::once(table_header.clone())
+                        .chain(table_rows.clone())
+                        .collect();
+                    let widths = table_widths_for_rows(&all_rows);
+                    let mut table = String::new();
+                    table.push_str(&top_table_border(&widths));
+                    if !table_header.is_empty() {
+                        table.push_str(&render_table_row(&table_header, &widths, &alignments, true));
+                        if !table_rows.is_empty() {
+                            table.push_str(&middle_table_border(&widths));
+                        }
+                    }
+                    for (index, row) in table_rows.iter().enumerate() {
+                        table.push_str(&render_table_row(row, &widths, &alignments, false));
+                        if index + 1 < table_rows.len() {
+                            table.push_str(&middle_table_border(&widths));
+                        }
+                    }
+                    table.push_str(&bottom_table_border(&widths));
+                    out.push_str(&table);
+                }
+                out.push('\n');
+            }
+            Event::Start(Tag::TableHead) => {
+                in_table_head = true;
+                current_row.clear();
+            }
+            Event::End(TagEnd::TableHead) => {
+                table_header = std::mem::take(&mut current_row);
+                in_table_head = false;
+            }
+            Event::Start(Tag::TableRow) => {
+                in_table_row = true;
+                current_row.clear();
+            }
+            Event::End(TagEnd::TableRow) => {
+                let row = std::mem::take(&mut current_row);
+                if in_table_head {
+                    table_header = row;
+                } else {
+                    table_rows.push(row);
+                }
+                in_table_row = false;
+            }
+            Event::Start(Tag::TableCell) => current_cell.clear(),
+            Event::End(TagEnd::TableCell) => {
+                let cell = std::mem::take(&mut current_cell);
+                current_row.push(cell);
+            }
+            Event::Start(Tag::Emphasis) => italic = true,
+            Event::End(TagEnd::Emphasis) => italic = false,
+            Event::Start(Tag::Strong) => out.push_str(BOLD_STYLE),
+            Event::End(TagEnd::Strong) => out.push_str(RESET),
+            Event::Start(Tag::Strikethrough) => strike = true,
+            Event::End(TagEnd::Strikethrough) => strike = false,
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                out.push_str(LINK_LABEL_STYLE);
+                out.push_str(&format!("\x1b]8;;{}\x1b\\", dest_url));
+            }
+            Event::End(TagEnd::Link) => {
+                out.push_str("\x1b]8;;\x1b\\");
+                out.push_str(RESET);
+            }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let alt = String::new();
+                out.push_str(&format!(
+                    "{IMAGE_STYLE}[image: {}]{RESET}({URL_STYLE}{}{RESET})",
+                    alt, dest_url
+                ));
+            }
+            Event::Text(text) => {
+                if in_table_row || in_table_head {
+                    current_cell.push_str(&text);
+                } else {
+                    emit_text(
+                        &mut out,
+                        &text,
+                        quote_depth,
+                        list_indent_of(&list_stack),
+                        italic,
+                        strike,
+                    );
+                }
+            }
+            Event::Code(text) => {
+                out.push_str(INLINE_CODE_STYLE);
+                out.push_str(&text);
+                out.push_str(RESET);
+            }
+            Event::SoftBreak => {
+                if in_table_row || in_table_head {
+                    current_cell.push(' ');
+                } else {
+                    out.push('\n');
+                }
+            }
+            Event::HardBreak => out.push('\n'),
+            Event::Rule => {
+                out.push('\n');
+                out.push_str(&horizontal_rule());
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn heading_level_number(level: pulldown_cmark::HeadingLevel) -> u8 {
+    use pulldown_cmark::HeadingLevel::*;
+    match level {
+        H1 => 1,
+        H2 => 2,
+        H3 => 3,
+        H4 => 4,
+        H5 => 5,
+        H6 => 6,
+    }
 }
 
 pub fn print_token_usage(
@@ -2530,15 +2827,22 @@ fn render_markdown_line(line: &str) -> String {
         return header;
     }
     if let Some((depth, rest)) = parse_blockquote(trimmed) {
-        let bars = "\x1b[32m| \x1b[0m".repeat(depth);
-        return format!("{indent}{bars}\x1b[32m{}\x1b[0m", render_inline(rest));
+        let bars = "\x1b[32m│ \x1b[0m".repeat(depth);
+        return format!("{indent}{bars}{}", render_inline(rest));
     }
     if let Some(rest) = trimmed
         .strip_prefix("- ")
         .or_else(|| trimmed.strip_prefix("* "))
         .or_else(|| trimmed.strip_prefix("+ "))
     {
-        return format!("{indent}{TERTIARY_STYLE}-{RESET} {}", render_inline(rest));
+        // 任务列表复选框渲染成 ☑/☐，普通列表用 •（去标记化）
+        if let Some(task) = rest.strip_prefix("[x] ").or_else(|| rest.strip_prefix("[X] ")) {
+            return format!("{indent}{TERTIARY_STYLE}☑{RESET} {}", render_inline(task));
+        }
+        if let Some(task) = rest.strip_prefix("[ ] ") {
+            return format!("{indent}{TERTIARY_STYLE}☐{RESET} {}", render_inline(task));
+        }
+        return format!("{indent}{TERTIARY_STYLE}•{RESET} {}", render_inline(rest));
     }
     let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
     if digits > 0
@@ -2573,9 +2877,14 @@ fn render_header(line: &str) -> Option<String> {
     if level == 0 || level > 6 || line.as_bytes().get(level) != Some(&b' ') {
         return None;
     }
-    let prefix = "#".repeat(level);
+    // 去标记化：标题不显示 #，冷蓝加粗；h1/h2 更醒目
+    let style = if level <= 2 {
+        "\x1b[1m\x1b[38;2;96;165;250m"
+    } else {
+        HEADER_STYLE
+    };
     Some(format!(
-        "{HEADER_STYLE}{prefix} {}{RESET}",
+        "{style}{}{RESET}",
         render_inline(&line[level + 1..])
     ))
 }
@@ -3682,11 +3991,49 @@ mod tests {
             output.contains("\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"),
             "bare URL should be an OSC 8 hyperlink: {output:?}"
         );
-        // 月夜主题：标题冷蓝、列表淡紫
+        // 月夜主题：标题亮蓝、列表淡紫
         let header = render_markdown_line("## 标题");
-        assert!(header.contains("\x1b[1m\x1b[38;2;59;130;246m"), "header should be cold blue: {header:?}");
+        assert!(header.contains("\x1b[1m\x1b[38;2;96;165;250m"), "header should be bright blue: {header:?}");
         let list = render_markdown_line("- 列表项");
         assert!(list.contains("\x1b[38;2;167;139;250m"), "list marker should be lavender: {list:?}");
+    }
+
+    #[test]
+    fn structured_renderer_hides_markdown_markers() {
+        let md = "# 标题\n\n- 列表项\n- [x] 完成项\n\n> 引用\n";
+        let out = render_markdown_structured(md);
+        // 标题不带 #，列表不带 -
+        assert!(!out.contains("# 标题"), "heading marker should be hidden: {out:?}");
+        assert!(out.contains("\x1b[1m\x1b[38;2;96;165;250m标题\x1b[0m"), "heading text styled: {out:?}");
+        assert!(!out.contains("- 列表项"), "list marker should be hidden: {out:?}");
+        assert!(out.contains("\x1b[38;2;167;139;250m•\x1b[0m"), "bullet marker: {out:?}");
+        assert!(out.contains("\x1b[38;2;167;139;250m☑\x1b[0m"), "task checked marker: {out:?}");
+        assert!(out.contains("\x1b[32m│ \x1b[0m"), "blockquote bar: {out:?}");
+        assert!(!out.contains("> 引用"), "blockquote marker should be hidden: {out:?}");
+    }
+
+    #[test]
+    fn structured_renderer_emits_osc8_links_and_table_borders() {
+        let md = "[GitHub](https://github.com)\n\n| 项目 | 状态 |\n| --- | --- |\n| 月夜 | ✅ |\n";
+        let out = render_markdown_structured(md);
+        assert!(
+            out.contains("\x1b]8;;https://github.com\x1b\\GitHub\x1b]8;;\x1b\\"),
+            "structured link should be OSC 8: {out:?}"
+        );
+        assert!(out.contains("┌"), "table top border: {out:?}");
+        assert!(out.contains("└"), "table bottom border: {out:?}");
+        assert!(out.contains("│"), "table vertical border: {out:?}");
+        assert!(!out.contains("| ---"), "table separator marker hidden: {out:?}");
+    }
+
+    #[test]
+    fn structured_renderer_handles_code_block() {
+        let md = "```rust\nfn main() {}\n```\n";
+        let out = render_markdown_structured(md);
+        assert!(out.contains("╭─ code rust"), "code block label: {out:?}");
+        let plain = strip_ansi_for_test(&out);
+        assert!(plain.contains("fn main() {}"), "code content kept: {plain:?}");
+        assert!(!plain.contains("```"), "fence hidden: {plain:?}");
     }
 
     fn visible_command_lines(lines: Vec<String>) -> Vec<String> {
@@ -4049,32 +4396,35 @@ mod tests {
     fn flushes_partial_final_line() {
         let mut renderer = MarkdownStreamRenderer::new();
         assert_eq!(renderer.push("# Title"), "");
-        assert_eq!(renderer.flush(), format!("{HEADER_STYLE}# Title{RESET}\n"));
+        assert_eq!(renderer.flush(), format!("\x1b[1m\x1b[38;2;96;165;250mTitle{RESET}\n"));
     }
 
     #[test]
     fn headings_use_one_color_and_distinct_prefix_lengths() {
+        // 去标记化：标题不显示 #，直接渲染文本
         assert_eq!(
             render_markdown_line("# One"),
-            format!("{HEADER_STYLE}# One{RESET}")
+            format!("\x1b[1m\x1b[38;2;96;165;250mOne{RESET}")
         );
         assert_eq!(
             render_markdown_line("## Two"),
-            format!("{HEADER_STYLE}## Two{RESET}")
+            format!("\x1b[1m\x1b[38;2;96;165;250mTwo{RESET}")
         );
         assert_eq!(
             render_markdown_line("### Three"),
-            format!("{HEADER_STYLE}### Three{RESET}")
+            format!("{HEADER_STYLE}Three{RESET}")
         );
         assert_eq!(
             render_markdown_line("###### Six"),
-            format!("{HEADER_STYLE}###### Six{RESET}")
+            format!("{HEADER_STYLE}Six{RESET}")
         );
     }
 
     #[test]
     fn list_markers_use_tertiary_color() {
-        assert!(render_markdown_line("- item").contains(&format!("{TERTIARY_STYLE}-{RESET}")));
+        assert!(render_markdown_line("- item").contains(&format!("{TERTIARY_STYLE}•{RESET}")));
+        assert!(render_markdown_line("- [x] done").contains(&format!("{TERTIARY_STYLE}☑{RESET}")));
+        assert!(render_markdown_line("- [ ] todo").contains(&format!("{TERTIARY_STYLE}☐{RESET}")));
         assert!(render_markdown_line("1. item").contains(&format!("{TERTIARY_STYLE}1.{RESET}")));
     }
 
@@ -4308,8 +4658,8 @@ mod tests {
     fn blockquote_is_visually_distinct() {
         let mut renderer = MarkdownStreamRenderer::new();
         let output = renderer.push(">> quoted\n");
-        assert!(output.contains("\x1b[32m| \x1b[0m\x1b[32m| \x1b[0m"));
-        assert!(output.contains("\x1b[32mquoted\x1b[0m"));
+        assert!(output.contains("\x1b[32m│ \x1b[0m\x1b[32m│ \x1b[0m"));
+        assert!(output.contains("quoted"));
         assert!(!output.contains("48;5;236"));
     }
 

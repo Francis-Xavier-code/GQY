@@ -3,7 +3,7 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-const BASE_DESCRIPTION: &str = "按需加载工具、脚本或工具组的完整说明和参数 schema。请从 <available_load_targets> 中选择 <name>，并使用 {\"names\":[\"名称\"]} 加载。type=tool/script 表示加载单个工具；type=group 表示加载该组所有未加载工具。<unregistered_scripts> 中的文件尚未注册为工具，不能直接加载或调用；需要先读取对应路径并使用 register_script 注册。";
+const BASE_DESCRIPTION: &str = "按需加载工具/脚本/工具组说明。从 <available_load_targets> 选 name 加载；type=tool 加载单个，type=group 加载整组。<unregistered_scripts> 需先 register_script 注册。";
 
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(

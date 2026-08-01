@@ -1,12 +1,13 @@
 {
   "name": "web_search",
   "display_name": "网页搜索",
-  "description": "搜索网络",
+  "description": "网络搜索。",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
-        "type": "string"
+        "type": "string",
+        "description": "搜索关键词。"
       },
       "max_results": {
         "type": "integer"

@@ -1716,9 +1716,10 @@ fn assistant_replay_content(turn: &crate::state::Turn) -> &str {
     if !turn.assistant_content.trim().is_empty() {
         return &turn.assistant_content;
     }
+    // content 缺失时只回放 reasoning 首行作为占位，避免重放整段思考
     turn.assistant_reasoning
         .as_deref()
-        .filter(|reasoning| !reasoning.trim().is_empty())
+        .map(|reasoning| reasoning.split('\n').next().unwrap_or(""))
         .unwrap_or(&turn.assistant_content)
 }
 
@@ -1731,7 +1732,7 @@ fn followup_assistant_replay_content(followup: &crate::state::TurnFollowup) -> O
             followup
                 .preceding_assistant_reasoning
                 .as_deref()
-                .filter(|reasoning| !reasoning.trim().is_empty())
+                .map(|reasoning| reasoning.split('\n').next().unwrap_or(""))
         })
 }
 

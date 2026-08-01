@@ -158,25 +158,11 @@ fn turns_to_text(turns: &[&Turn]) -> String {
                     output.push_str(content);
                 }
             }
-            if let Some(reasoning) = &followup.preceding_assistant_reasoning {
-                if !reasoning.trim().is_empty() {
-                    output.push_str("\n[Reasoning: ");
-                    output.push_str(reasoning);
-                    output.push(']');
-                }
-            }
             output.push_str("\nUser: ");
             output.push_str(&followup.content);
         }
         output.push_str("\nAssistant: ");
         output.push_str(&turn.assistant_content);
-        if let Some(reasoning) = &turn.assistant_reasoning {
-            if !reasoning.trim().is_empty() {
-                output.push_str("\n[Reasoning: ");
-                output.push_str(reasoning);
-                output.push(']');
-            }
-        }
         for report in &turn.tool_reports {
             output.push_str("\n[Tool Report: ");
             output.push_str(report);
@@ -306,15 +292,9 @@ fn turn_to_text(turn: &Turn) -> String {
         if let Some(content) = &followup.preceding_assistant_content {
             output.push_str(content);
         }
-        if let Some(reasoning) = &followup.preceding_assistant_reasoning {
-            output.push_str(reasoning);
-        }
         output.push_str(&followup.content);
     }
     output.push_str(&turn.assistant_content);
-    if let Some(reasoning) = &turn.assistant_reasoning {
-        output.push_str(reasoning);
-    }
     for report in &turn.tool_reports {
         output.push_str(report);
     }

@@ -1,7 +1,7 @@
 {
   "name": "set_alarm",
   "display_name": "设置闹钟",
-  "description": "设置本地闹钟或倒计时。支持 30s、10m、1h 30m 或 14:30。",
+  "description": "设置闹钟提醒。",
   "parameters": {
     "type": "object",
     "properties": {

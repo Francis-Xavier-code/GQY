@@ -1,13 +1,13 @@
 {
   "name": "grep",
   "display_name": "搜索内容",
-  "description": "在目录或单个文件中用 ripgrep 搜索内容。",
+  "description": "用 ripgrep 在目录或文件中搜索内容。",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "要搜索的目录或文件，默认工作区；查用户文件用 ~ 或 /home，受保护的全局搜索可用 /。"
+        "description": "目录或文件，默认工作区。"
       },
       "pattern": {
         "type": "string",

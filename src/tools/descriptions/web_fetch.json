@@ -1,13 +1,13 @@
 {
   "name": "web_fetch",
   "display_name": "读取网页",
-  "description": "Fetch a URL and return markdown, text, or html.Does not search the web.",
+  "description": "抓取网页内容。",
   "parameters": {
     "type": "object",
     "properties": {
       "url": {
         "type": "string",
-        "description": "Fully-qualified http or https URL."
+        "description": "网页 URL。"
       },
       "format": {
         "type": "string",

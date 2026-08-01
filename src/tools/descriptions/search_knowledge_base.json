@@ -1,13 +1,13 @@
 {
   "name": "search_knowledge_base",
   "display_name": "搜索知识库",
-  "description": "Search the local knowledge base content. Returns file paths and original text snippets. Use read_knowledge_base_file if snippets are insufficient. ",
+  "description": "搜索知识库。",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Search keywords or user question."
+        "description": "搜索关键词。"
       },
       "max_results": {
         "type": "integer",

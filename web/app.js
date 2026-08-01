@@ -2786,6 +2786,9 @@
   }
 
   function breakLiveText(live) {
+    if (live.currentText) {
+      live.currentText.element.classList.remove("streaming");
+    }
     live.currentText = null;
   }
 
@@ -2813,6 +2816,7 @@
       live.contextOperation = null;
       if (live.assistantText && !/\s$/.test(live.assistantText)) live.assistantText += "\n\n";
     }
+    live.currentText.element.classList.add("streaming");
     live.currentText.raw += text;
     live.assistantText += text;
     live.copyButton.hidden = !live.assistantText.trim();
@@ -3677,6 +3681,9 @@
     live.meta = null;
     live.endpoint = null;
     live.copyButton = null;
+    if (live.currentText) {
+      live.currentText.element.classList.remove("streaming");
+    }
     live.currentText = null;
     live.assistantText = "";
     live.assistantReasoning = "";

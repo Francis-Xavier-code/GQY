@@ -1,13 +1,13 @@
 {
   "name": "edit_knowledge_base_file",
   "display_name": "编辑知识库",
-  "description": "Edit an existing knowledge-base file by replacing an inclusive 1-based line range. Use after search_knowledge_base/read_knowledge_base_file identifies the exact file and line numbers.",
+  "description": "编辑知识库文件内容。",
   "parameters": {
     "type": "object",
     "properties": {
       "file_name": {
         "type": "string",
-        "description": "Knowledge base relative path to edit."
+        "description": "文件名。"
       },
       "start_line": {
         "type": "integer",

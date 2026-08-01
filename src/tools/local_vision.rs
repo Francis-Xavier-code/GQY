@@ -33,13 +33,13 @@ pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
     registry.register(ToolSpec::new(
         "analyze_image_local",
         t(
-            "Analyze a local image offline using Apple Vision: OCR text, classification labels and object detection. Free, no model API quota consumed. Use this when the vision model is rate-limited or unavailable.",
-            "用 Apple Vision 本地离线分析图片：OCR 文字识别、画面分类标签、对象检测。免费、不消耗模型 API 额度。视觉模型被限流或不可用时使用它看图。",
+            "Analyze a local image offline via Apple Vision: OCR text, classification, object detection. Free, no API quota. Use when the vision model is rate-limited or unavailable.",
+            "用 Apple Vision 本地离线分析图片：OCR 文字、分类标签、对象检测。免费不耗 API 额度。视觉模型限流或不可用时看图。",
         ),
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": t("Absolute path to the local image file.", "本地图片文件的绝对路径。") }
+                "path": { "type": "string", "description": t("Local image file path.", "本地图片文件路径。") }
             },
             "required": ["path"],
             "additionalProperties": false
