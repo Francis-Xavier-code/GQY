@@ -10,6 +10,7 @@
   const ICONS = {
     "arrow-down": [["path", { d: "M12 5v14" }], ["path", { d: "m19 12-7 7-7-7" }]],
     "arrow-up": [["path", { d: "m5 12 7-7 7 7" }], ["path", { d: "M12 19V5" }]],
+    "chart-column": [["path", { d: "M3 3v16a2 2 0 0 0 2 2h16" }], ["path", { d: "M7 15v-3" }], ["path", { d: "M12 15V8" }], ["path", { d: "M17 15v-5" }]],
     atom: [["circle", { cx: "12", cy: "12", r: "1" }], ["path", { d: "M20.2 20.2c2.04-2.03.02-7.37-4.5-11.9-4.52-4.52-9.87-6.54-11.9-4.5-2.04 2.03-.02 7.37 4.5 11.9 4.52 4.52 9.87 6.54 11.9 4.5Z" }], ["path", { d: "M15.7 15.7c4.52-4.52 6.54-9.87 4.5-11.9-2.03-2.04-7.37-.02-11.9 4.5-4.52 4.52-6.54 9.87-4.5 11.9 2.03 2.04 7.37.02 11.9-4.5Z" }]],
     check: [["path", { d: "M20 6 9 17l-5-5" }]],
     "chevron-down": [["path", { d: "m6 9 6 6 6-6" }]],
@@ -91,6 +92,14 @@
     sidebarConnectionStatus: document.getElementById("sidebarConnectionStatus"),
     newChatButton: document.getElementById("newChatButton"),
     currentConversation: document.getElementById("currentConversation"),
+    usageButton: document.getElementById("usageButton"),
+    usageView: document.getElementById("usageView"),
+    usageSubtitle: document.getElementById("usageSubtitle"),
+    usageBackButton: document.getElementById("usageBackButton"),
+    usageSummary: document.getElementById("usageSummary"),
+    usageContribution: document.getElementById("usageContribution"),
+    usageModelTable: document.getElementById("usageModelTable"),
+    conversationStage: document.getElementById("conversationStage"),
     sidebarConversationTitle: document.getElementById("sidebarConversationTitle"),
     sidebarConversationSnippet: document.getElementById("sidebarConversationSnippet"),
     sidebarConversationTime: document.getElementById("sidebarConversationTime"),
@@ -136,7 +145,6 @@
     drawerScrim: document.getElementById("drawerScrim"),
     settingsDrawer: document.getElementById("settingsDrawer"),
     settingsClose: document.getElementById("settingsClose"),
-    miniExpandButton: document.getElementById("miniExpandButton"),
     settingsNav: document.querySelector(".settings-nav"),
     settingsPanels: Array.from(document.querySelectorAll("[data-settings-panel]")),
     settingsModelMark: document.getElementById("settingsModelMark"),
@@ -155,10 +163,7 @@
     reloadConfigButton: document.getElementById("reloadConfigButton"),
     saveConfigButton: document.getElementById("saveConfigButton"),
     settingsStatus: document.getElementById("settingsStatus"),
-    toastRegion: document.getElementById("toastRegion"),
-    resetDialog: document.getElementById("resetDialog"),
-    resetCancelButton: document.getElementById("resetCancelButton"),
-    resetConfirmButton: document.getElementById("resetConfirmButton")
+    toastRegion: document.getElementById("toastRegion")
   };
 
   const state = {
@@ -2565,6 +2570,12 @@
       markdown.className = "markdown-body";
       renderMarkdown(markdown, content);
       blocks.appendChild(markdown);
+    } else if (String(reasoning || "").trim()) {
+      // 兜底：模型只输出思考没有正文时给出轻提示，避免「只有思考无文字」
+      const note = document.createElement("p");
+      note.className = "reasoning-only-note";
+      note.textContent = "（本轮思考完成，没有额外的文字回复。）";
+      blocks.appendChild(note);
     }
     for (const asset of Array.isArray(assets) ? assets : []) blocks.appendChild(createConversationMedia(asset));
     assistantContent.appendChild(blocks);
@@ -4492,15 +4503,32 @@
 
   function requestNewConversation() {
     closeSidebar();
+    hideUsageView();
     if (!hasHistory()) {
       elements.composerInput.focus();
       return;
     }
     if (conversationRunning() || state.adminBusy || state.submitting) return;
-    handleMiniMode();
-  if (typeof elements.resetDialog.showModal === "function") elements.resetDialog.showModal();
-    else elements.resetDialog.setAttribute("open", "");
-    window.requestAnimationFrame(() => elements.resetCancelButton.focus());
+    startNewConversation();
+  }
+
+  // 新建对话：当前对话归档（数据完整保留，gqy 仍可查历史），面板从空会话开始
+  async function startNewConversation() {
+    state.adminBusy = true;
+    updateControlState();
+    try {
+      await apiRequest("/api/conversation/reset", { method: "POST" });
+      await loadBootstrap();
+      elements.composerInput.focus();
+      showToast("已开始新对话（之前的对话已归档，顾清影随时可查）", "info");
+    } catch (error) {
+      showInlineError(error.message);
+      showToast(error.message, "error");
+      if (error.status === 409) await loadBootstrap();
+    } finally {
+      state.adminBusy = false;
+      updateControlState();
+    }
   }
 
   // 菜单栏「打开配置」通过 ?open=settings 直达设置抽屉（等价终端 gqy config 的 GUI 版）
@@ -4515,54 +4543,177 @@
     }
   }
 
-  // 迷你对话模式（?mini=1，菜单栏 ⌥G 打开的窄窗口）：隐藏侧栏/顶栏，
-  // 放大按钮通知原生 App 切换成完整面板
-  function handleMiniMode() {
-    const params = new URLSearchParams(location.search);
-    if (params.get("mini") === "1") {
-      document.body.dataset.mini = "1";
-      window.requestAnimationFrame(() => {
-        scrollToBottom();
-        elements.composerInput?.focus();
-      });
-      elements.miniExpandButton?.addEventListener("click", () => {
-        try {
-          window.webkit.messageHandlers.gqyExpand.postMessage("expand");
-        } catch (_) {
-          // 浏览器环境（非 App）：直接去掉 mini 参数重载
-          const url = new URL(location.href);
-          url.searchParams.delete("mini");
-          location.href = url.toString();
-        }
-      });
-    }
+  // ─────────────────────────── 用量统计（GitHub 贡献图风） ───────────────────────────
+
+  function showUsageView() {
+    elements.usageView.hidden = false;
+    elements.conversationStage.hidden = true;
+    closeSettings();
+    loadUsageStats();
   }
 
+  function hideUsageView() {
+    elements.usageView.hidden = true;
+    elements.conversationStage.hidden = false;
+  }
 
-  async function resetConversation() {
-    if (conversationRunning() || state.adminBusy || state.submitting) return;
-    state.adminBusy = true;
-    elements.resetConfirmButton.disabled = true;
-    elements.resetCancelButton.disabled = true;
-    elements.resetConfirmButton.textContent = "正在清除";
-    updateControlState();
+  async function loadUsageStats() {
+    elements.usageSubtitle.textContent = "正在载入…";
     try {
-      await apiRequest("/api/conversation/reset", { method: "POST" });
-      if (elements.resetDialog.open) elements.resetDialog.close("confirmed");
-      await loadBootstrap();
-      elements.composerInput.focus();
+      const response = await apiRequest("/api/usage/stats");
+      const data = await response.json();
+      const stats = data?.stats;
+      if (!stats) return;
+      renderUsageSummary(stats);
+      renderUsageContribution(stats);
+      renderUsageModelTable(stats);
+      elements.usageSubtitle.textContent = `共 ${formatTokens(stats.total?.total_tokens)} token · ${formatInteger(stats.total?.requests || 0)} 次请求`;
     } catch (error) {
-      showInlineError(error.message);
+      elements.usageSubtitle.textContent = "加载失败";
       showToast(error.message, "error");
-      if (error.status === 409) await loadBootstrap();
-    } finally {
-      state.adminBusy = false;
-      elements.resetConfirmButton.disabled = false;
-      elements.resetCancelButton.disabled = false;
-      elements.resetConfirmButton.textContent = "清除并新建";
-      updateControlState();
     }
   }
+
+  function renderUsageSummary(stats) {
+    const cards = [
+      ["累计", stats.total?.total_tokens, stats.total?.requests],
+      ["今日", stats.today?.total_tokens, stats.today?.requests],
+      ["本周", stats.this_week?.total_tokens, stats.this_week?.requests],
+      ["本月", stats.this_month?.total_tokens, stats.this_month?.requests]
+    ];
+    elements.usageSummary.replaceChildren();
+    for (const [label, tokens, requests] of cards) {
+      const card = document.createElement("div");
+      card.className = "usage-summary-card";
+      const name = document.createElement("span");
+      name.className = "usage-summary-label";
+      name.textContent = label;
+      const value = document.createElement("strong");
+      value.textContent = formatTokens(tokens);
+      const hint = document.createElement("small");
+      hint.textContent = `${formatInteger(requests)} 次请求`;
+      card.append(name, value, hint);
+      elements.usageSummary.appendChild(card);
+    }
+  }
+
+  // GitHub 风格贡献图：7 行（周）网格，按天着色，月份标签
+  function renderUsageContribution(stats) {
+    const daily = Array.isArray(stats.daily) ? stats.daily : [];
+    if (!daily.length) {
+      elements.usageContribution.textContent = "暂无消耗数据";
+      return;
+    }
+    const maxTokens = daily.reduce((max, day) => Math.max(max, asFiniteNumber(day.tokens, 0)), 0);
+    // 第一天的星期偏移（周日=0），保证首列对齐到周日
+    const firstDate = new Date(`${daily[0].date}T00:00:00`);
+    const leading = firstDate.getDay();
+    const totalCells = daily.length + leading;
+    const columns = Math.ceil(totalCells / 7);
+
+    elements.usageContribution.replaceChildren();
+    const months = document.createElement("div");
+    months.className = "contribution-months";
+    const grid = document.createElement("div");
+    grid.className = "contribution-grid";
+    grid.style.gridTemplateColumns = `repeat(${columns}, var(--cell-size))`;
+
+    let previousMonth = null;
+    for (let col = 0; col < columns; col++) {
+      const colDate = new Date(firstDate);
+      colDate.setDate(colDate.getDate() + col * 7 - leading);
+      if (previousMonth !== null && colDate.getMonth() !== previousMonth) {
+        const label = document.createElement("span");
+        label.textContent = `${colDate.getMonth() + 1}月`;
+        months.appendChild(label);
+      }
+      previousMonth = colDate.getMonth();
+    }
+    for (let col = 0; col < columns; col++) {
+      for (let row = 0; row < 7; row++) {
+        const index = col * 7 + row - leading;
+        const day = daily[index];
+        if (!day) {
+          const empty = document.createElement("i");
+          empty.className = "cell cell-empty";
+          grid.appendChild(empty);
+          continue;
+        }
+        const tokens = asFiniteNumber(day.tokens, 0);
+        const level = tokens === 0 ? 0 : maxTokens > 0 ? Math.max(1, Math.ceil((tokens / maxTokens) * 4)) : 0;
+        const cell = document.createElement("i");
+        cell.className = `cell cell-level-${level}`;
+        cell.title = `${day.date} · ${formatTokens(tokens)} token${day.requests ? `（${formatInteger(day.requests)} 次）` : ""}`;
+        grid.appendChild(cell);
+      }
+    }
+    elements.usageContribution.append(months, grid);
+  }
+
+  function renderUsageModelTable(stats) {
+    const models = Array.isArray(stats.models) ? stats.models : [];
+    const totalTokens = Math.max(1, asFiniteNumber(stats.total?.total_tokens, 0));
+    elements.usageModelTable.replaceChildren();
+    if (!models.length) {
+      const empty = document.createElement("p");
+      empty.className = "settings-empty";
+      empty.textContent = "暂无消耗记录";
+      elements.usageModelTable.appendChild(empty);
+      return;
+    }
+    const table = document.createElement("table");
+    table.className = "usage-model-table";
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const label of ["模型", "请求", "输入", "输出", "总 Token", "占比"]) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    table.appendChild(head);
+    const body = document.createElement("tbody");
+    for (const model of models) {
+      const row = document.createElement("tr");
+      const nameCell = document.createElement("td");
+      nameCell.className = "usage-model-name";
+      const mark = document.createElement("span");
+      mark.className = "model-mark usage-model-mark";
+      applyModelMark(mark, { provider_id: model.provider_id, provider_name: model.provider_id, base_url: "" });
+      const copy = document.createElement("span");
+      copy.className = "usage-model-copy";
+      const name = document.createElement("strong");
+      name.textContent = model.model || "(未标注)";
+      const provider = document.createElement("small");
+      provider.textContent = model.provider_id || "";
+      copy.append(name, provider);
+      nameCell.append(mark, copy);
+      const requests = document.createElement("td");
+      requests.textContent = formatInteger(model.requests);
+      const prompt = document.createElement("td");
+      prompt.textContent = formatTokens(model.prompt_tokens);
+      const completion = document.createElement("td");
+      completion.textContent = formatTokens(model.completion_tokens);
+      const total = document.createElement("td");
+      total.className = "usage-model-total";
+      total.textContent = formatTokens(model.total_tokens);
+      const shareCell = document.createElement("td");
+      const shareWrap = document.createElement("div");
+      shareWrap.className = "usage-share";
+      const bar = document.createElement("i");
+      const share = Math.min(100, (asFiniteNumber(model.total_tokens, 0) / totalTokens) * 100);
+      bar.style.width = `${share.toFixed(1)}%`;
+      const shareText = document.createElement("span");
+      shareText.textContent = `${share.toFixed(1)}%`;
+      shareWrap.append(bar, shareText);
+      shareCell.appendChild(shareWrap);
+      row.append(nameCell, requests, prompt, completion, total, shareCell);
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    elements.usageModelTable.appendChild(table);
+  }
+
 
   function handleGlobalKeydown(event) {
     if (elements.settingsDrawer.classList.contains("open") && event.key === "Tab") {
@@ -4583,7 +4734,6 @@
       }
     }
     if (event.key === "Escape") {
-      if (elements.resetDialog.open) return;
       if (!elements.modelMenu.hidden) {
         event.preventDefault();
         closeModelMenu({ restoreFocus: true });
@@ -4720,8 +4870,9 @@
       submitLogin();
     });
     elements.newChatButton.addEventListener("click", requestNewConversation);
+    elements.usageButton.addEventListener("click", showUsageView);
+    elements.usageBackButton.addEventListener("click", hideUsageView);
     elements.retryBootstrapButton.addEventListener("click", loadBootstrap);
-    elements.resetConfirmButton.addEventListener("click", resetConversation);
     elements.chatScroll.addEventListener("scroll", () => {
       state.nearBottom = isNearBottom();
       if (state.nearBottom) {

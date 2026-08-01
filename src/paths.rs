@@ -310,6 +310,16 @@ fn validate_isolated_home(raw: OsString) -> Result<PathBuf> {
     Ok(home)
 }
 
+/// 测试公共设施：保护 GQY_HOME 环境变量。
+/// 并行测试若各自 `set_var("GQY_HOME", …)` 会互相污染（backup/activity/import/
+/// learning 等模块都依赖它），统一持这把锁串行化。
+#[cfg(test)]
+pub mod test_env {
+    use std::sync::Mutex;
+
+    pub static GQY_HOME_LOCK: Mutex<()> = Mutex::new(());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

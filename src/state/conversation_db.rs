@@ -979,10 +979,12 @@ impl ConversationDb {
         Ok(())
     }
 
+    /// 「新建对话」：把当前可见对话归档（hidden=1），数据完整保留，
+    /// 面板从空会话开始，历史/记忆读取仍可查到归档内容。
     pub fn reset(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE turns SET hidden = 1 WHERE hidden = 0", [])?;
         conn.execute("DELETE FROM queued_prompts", [])?;
-        conn.execute("DELETE FROM turns", [])?;
         conn.execute("DELETE FROM session_loaded_items", [])?;
         Ok(())
     }

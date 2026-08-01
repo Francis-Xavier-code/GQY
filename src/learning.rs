@@ -134,6 +134,7 @@ mod tests {
     #[test]
     fn skips_short_answers() {
         let root = tempfile::tempdir().unwrap().into_path();
+        let _env_guard = crate::paths::test_env::GQY_HOME_LOCK.lock().unwrap();
         let old = std::env::var_os("GQY_HOME");
         std::env::set_var("GQY_HOME", &root);
         let paths = crate::paths::GqyPaths::new().unwrap();

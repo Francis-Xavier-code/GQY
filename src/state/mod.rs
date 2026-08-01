@@ -495,14 +495,20 @@ impl StateStore {
         self.conv_db.undo_last_turn()
     }
 
-    pub fn add_usage(&self, usage: &Usage) -> Result<()> {
+    pub fn add_usage(&self, usage: &Usage, provider_id: &str, model: &str) -> Result<()> {
         self.init_files()?;
-        usage::add_usage(&self.usage_file(), usage)
+        usage::add_usage(&self.usage_file(), usage)?;
+        usage::record_usage(&self.usage_history_file(), usage, provider_id, model, false)
     }
 
-    pub fn add_auxiliary_usage(&self, usage: &Usage) -> Result<()> {
+    pub fn add_auxiliary_usage(&self, usage: &Usage, provider_id: &str, model: &str) -> Result<()> {
         self.init_files()?;
-        usage::add_auxiliary_usage(&self.usage_file(), usage)
+        usage::add_auxiliary_usage(&self.usage_file(), usage)?;
+        usage::record_usage(&self.usage_history_file(), usage, provider_id, model, true)
+    }
+
+    pub fn usage_stats(&self) -> Result<usage::UsageStats> {
+        usage::usage_stats(&self.usage_history_file())
     }
 
     #[allow(dead_code)]
@@ -542,6 +548,10 @@ impl StateStore {
 
     fn usage_file(&self) -> PathBuf {
         self.state_dir.join("usage.json")
+    }
+
+    fn usage_history_file(&self) -> PathBuf {
+        self.state_dir.join("usage-history.jsonl")
     }
 
     fn profile_file(&self) -> PathBuf {
@@ -975,11 +985,10 @@ mod tests {
         assert!(!loaded.bytes.is_empty());
 
         store.reset_conversation().unwrap();
-        assert!(store.load_image_assets().unwrap().is_empty());
-        assert!(store
-            .load_image_asset(&loaded.asset.asset_id)
-            .unwrap()
-            .is_none());
+        // 新建对话 = 归档：对话与图片数据完整保留（gqy 仍可查历史）
+        assert_eq!(store.load_visible_turns().unwrap().len(), 0);
+        assert_eq!(store.load_image_assets().unwrap(), vec![saved.clone()]);
+        assert!(store.load_image_asset(&loaded.asset.asset_id).unwrap().is_some());
     }
 
     fn visible_snapshot(store: &StateStore) -> (i64, Vec<String>) {

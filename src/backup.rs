@@ -175,15 +175,16 @@ pub fn backup_now(paths: &GqyPaths, push: bool) -> Result<BackupOutcome> {
 /// 自动备份节流：距上次快照不足该秒数则跳过（`gqy backup now` 不受限）。
 const AUTO_BACKUP_MIN_INTERVAL_SECS: i64 = 30 * 60;
 
-/// 节流间隔（测试用环境变量可调，例如 `GQY_BACKUP_INTERVAL_SECS=0` 关闭节流）。
-fn auto_backup_min_interval_secs() -> i64 {
-    std::env::var("GQY_BACKUP_INTERVAL_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(AUTO_BACKUP_MIN_INTERVAL_SECS)
+pub fn maybe_auto_backup(paths: &GqyPaths) -> Result<Option<BackupOutcome>> {
+    maybe_auto_backup_with_interval(paths, AUTO_BACKUP_MIN_INTERVAL_SECS)
 }
 
-pub fn maybe_auto_backup(paths: &GqyPaths) -> Result<Option<BackupOutcome>> {
+/// 带节流参数的自动备份入口。测试直接传 0 关闭节流，
+/// 不依赖进程级环境变量（避免并行测试互相污染）。
+fn maybe_auto_backup_with_interval(
+    paths: &GqyPaths,
+    min_interval_secs: i64,
+) -> Result<Option<BackupOutcome>> {
     let Some(home) = paths.isolated_home()? else {
         return Ok(None);
     };
@@ -197,7 +198,7 @@ pub fn maybe_auto_backup(paths: &GqyPaths) -> Result<Option<BackupOutcome>> {
     }
     // 节流：刚快照过就不重复，避免高频对话时每轮全量拷贝+git
     if let Some(last) = last_commit_timestamp(&backup_dir, &settings) {
-        if Utc::now().timestamp() - last < auto_backup_min_interval_secs() {
+        if Utc::now().timestamp() - last < min_interval_secs {
             return Ok(None);
         }
     }
@@ -900,9 +901,38 @@ fn shell_quote(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::paths::GQY_HOME_ENV;
-    use std::sync::Mutex;
+    use crate::paths::test_env::GQY_HOME_LOCK;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// 测试隔离 home：持锁 + 设置 GQY_HOME，结束时恢复原值再释放锁。
+    /// panic 时 Drop 同样执行（先恢复 env 再放锁），避免并行测试互相污染。
+    struct TestHome {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _dir: tempfile::TempDir,
+        old_home: Option<OsString>,
+        home: PathBuf,
+    }
+
+    impl TestHome {
+        fn new() -> Self {
+            let guard = GQY_HOME_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+            let old_home = std::env::var_os(GQY_HOME_ENV);
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            std::env::set_var(GQY_HOME_ENV, &home);
+            Self { _guard: guard, _dir: dir, old_home, home }
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            match &self.old_home {
+                Some(value) => std::env::set_var(GQY_HOME_ENV, value),
+                None => std::env::remove_var(GQY_HOME_ENV),
+            }
+        }
+    }
 
     #[test]
     fn recursively_redacts_known_secret_names() {
@@ -986,9 +1016,8 @@ mod tests {
 
     #[test]
     fn restore_round_trips_state_from_local_remote() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let remote = root.path().join("remote.git");
+        let test_home = TestHome::new();
+        let remote = tempfile::tempdir().unwrap().path().join("remote.git");
         assert!(std::process::Command::new("git")
             .args(["init", "--bare", "--initial-branch=main"])
             .arg(&remote)
@@ -996,7 +1025,7 @@ mod tests {
             .unwrap()
             .success());
 
-        let home1 = root.path().join("home1");
+        let home1 = test_home.home.parent().unwrap().join("home1");
         let paths1 = test_paths(&home1);
         std::fs::create_dir_all(&paths1.state_dir).unwrap();
         std::fs::write(paths1.state_dir.join("memory.md"), "the answer is 42\n").unwrap();
@@ -1015,7 +1044,7 @@ mod tests {
         init(&paths1, options.clone()).unwrap();
         backup_now(&paths1, true).unwrap();
 
-        let home2 = root.path().join("home2");
+        let home2 = test_home.home.parent().unwrap().join("home2");
         let paths2 = test_paths(&home2);
         std::env::set_var(GQY_HOME_ENV, &home2);
         restore(
@@ -1040,9 +1069,8 @@ mod tests {
 
     #[test]
     fn force_restore_preserves_existing_live_config() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let remote = root.path().join("remote.git");
+        let test_home = TestHome::new();
+        let remote = tempfile::tempdir().unwrap().path().join("remote.git");
         assert!(std::process::Command::new("git")
             .args(["init", "--bare", "--initial-branch=main"])
             .arg(&remote)
@@ -1050,7 +1078,7 @@ mod tests {
             .unwrap()
             .success());
 
-        let home1 = root.path().join("home1");
+        let home1 = test_home.home.parent().unwrap().join("home1");
         let paths1 = test_paths(&home1);
         std::fs::create_dir_all(&paths1.state_dir).unwrap();
         std::fs::write(paths1.state_dir.join("memory.md"), "keep me\n").unwrap();
@@ -1066,7 +1094,7 @@ mod tests {
         init(&paths1, options.clone()).unwrap();
         backup_now(&paths1, true).unwrap();
 
-        let home2 = root.path().join("home2");
+        let home2 = test_home.home.parent().unwrap().join("home2");
         let paths2 = test_paths(&home2);
         std::fs::create_dir_all(&paths2.config_dir).unwrap();
         std::fs::write(&paths2.config_file, "{\"live\":true}\n").unwrap();
@@ -1109,12 +1137,9 @@ mod tests {
 
     #[test]
     fn local_mode_commits_without_remote() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
+        let test_home = TestHome::new();
+        let home = test_home.home.clone();
         let paths = test_paths(&home);
-        std::env::set_var(GQY_HOME_ENV, &home);
-        std::env::set_var("GQY_BACKUP_INTERVAL_SECS", "0");
 
         let options = BackupInitOptions {
             remote: None,
@@ -1136,18 +1161,16 @@ mod tests {
         let text = status(&paths).unwrap();
         assert!(text.contains("local mode"));
 
-        let auto = maybe_auto_backup(&paths).unwrap();
+        let auto = maybe_auto_backup_with_interval(&paths, 0).unwrap();
         assert!(auto.is_some());
         assert!(!auto.unwrap().pushed);
     }
 
     #[test]
     fn auto_backup_is_throttled_after_a_recent_snapshot() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
+        let test_home = TestHome::new();
+        let home = test_home.home.clone();
         let paths = test_paths(&home);
-        std::env::set_var(GQY_HOME_ENV, &home);
 
         init(
             &paths,
@@ -1168,15 +1191,13 @@ mod tests {
         assert!(outcome.committed);
 
         // 默认节流（30 分钟）：刚快照过就跳过
-        std::env::remove_var("GQY_BACKUP_INTERVAL_SECS");
         assert!(maybe_auto_backup(&paths).unwrap().is_none());
     }
 
     #[test]
     fn set_remote_enables_pushing_after_local_mode() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let remote = root.path().join("remote.git");
+        let test_home = TestHome::new();
+        let remote = tempfile::tempdir().unwrap().path().join("remote.git");
         assert!(std::process::Command::new("git")
             .args(["init", "--bare", "--initial-branch=main"])
             .arg(&remote)
@@ -1184,10 +1205,8 @@ mod tests {
             .unwrap()
             .success());
 
-        let home = root.path().join("home");
+        let home = test_home.home.clone();
         let paths = test_paths(&home);
-        std::env::set_var(GQY_HOME_ENV, &home);
-        std::env::set_var("GQY_BACKUP_INTERVAL_SECS", "0");
         init(
             &paths,
             BackupInitOptions {

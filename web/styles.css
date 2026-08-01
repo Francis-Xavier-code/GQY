@@ -595,6 +595,14 @@ textarea:disabled {
   overflow: hidden;
 }
 
+/* 只有思考没有正文时的轻提示 */
+.reasoning-only-note {
+  margin: 2px 0 0;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* 品牌 logo 标记（devicons）：替换字母缩写 */
 .model-mark.provider-logo {
   background: transparent;
@@ -3372,65 +3380,262 @@ textarea.config-input {
   border-left-color: var(--danger);
 }
 
-.reset-dialog {
-  width: min(440px, calc(100vw - 32px));
-  padding: 0;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface-1);
-  color: var(--text);
-  box-shadow: var(--shadow);
+/* ── 用量统计视图（GitHub 贡献图风） ── */
+.usage-view {
+  grid-row: 2;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
 }
 
-.reset-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.58);
-}
-
-.reset-dialog form {
-  margin: 0;
-}
-
-.reset-dialog header {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  padding: 18px;
+.usage-header {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px max(18px, calc((100% - 800px) / 2)) 2px;
   gap: 12px;
 }
 
-.dialog-icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border-radius: 6px;
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.dialog-icon .icon-slot {
-  width: 18px;
-  height: 18px;
-}
-
-.reset-dialog h2 {
-  margin: 1px 0 5px;
-  font-size: 15px;
+.usage-header h2 {
+  margin: 0;
+  font-size: 16px;
   font-weight: 600;
 }
 
-.reset-dialog p {
-  margin: 0;
-  color: var(--text-soft);
+.usage-header small {
+  display: block;
+  margin-top: 1px;
+  color: var(--text-faint);
   font-size: 11px;
-  line-height: 1.6;
 }
 
-.reset-dialog footer {
+.usage-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px max(18px, calc((100% - 800px) / 2)) 42px;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.usage-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 16px;
+  gap: 10px;
+}
+
+.usage-summary-card {
+  display: grid;
+  min-width: 0;
+  padding: 11px 13px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.usage-summary-label {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.usage-summary-card strong {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.usage-summary-card small {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.usage-chart-section,
+.usage-models {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.usage-section-heading {
   display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.usage-section-heading h3,
+.usage-models h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.usage-chart-hint {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.usage-contribution {
+  --cell-size: 12px;
+  display: flex;
+  margin: 12px 0 6px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.contribution-months {
+  display: flex;
+  height: 14px;
+  padding-left: 20px;
+  gap: 12px;
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.contribution-months span {
+  white-space: nowrap;
+}
+
+.contribution-grid {
+  display: grid;
+  grid-auto-rows: var(--cell-size);
+  gap: 3px;
+}
+
+.cell {
+  width: var(--cell-size);
+  height: var(--cell-size);
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.cell-empty {
+  background: transparent;
+}
+
+.cell-level-1 {
+  background: color-mix(in srgb, var(--cyan) 26%, var(--surface-2));
+}
+
+.cell-level-2 {
+  background: color-mix(in srgb, var(--cyan) 50%, var(--surface-2));
+}
+
+.cell-level-3 {
+  background: color-mix(in srgb, var(--cyan) 74%, var(--surface-2));
+}
+
+.cell-level-4 {
+  background: var(--cyan);
+}
+
+.usage-legend {
+  display: flex;
+  align-items: center;
   justify-content: flex-end;
-  padding: 11px 14px 14px;
-  border-top: 1px solid var(--line);
+  gap: 5px;
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.usage-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.usage-model-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.usage-model-table th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.usage-model-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-model-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.usage-model-name {
+  display: flex;
+  min-width: 190px;
+  align-items: center;
   gap: 8px;
+}
+
+.usage-model-mark {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  font-size: 7px;
+}
+
+.usage-model-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.usage-model-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-model-copy small {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.usage-model-total {
+  font-weight: 600;
+}
+
+.usage-share {
+  display: flex;
+  min-width: 130px;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-share i {
+  display: block;
+  min-width: 40px;
+  height: 6px;
+  flex: 1;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--cyan), var(--accent));
+}
+
+.usage-share span {
+  color: var(--text-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .usage-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .noscript-state {
@@ -4119,118 +4324,6 @@ textarea.config-input {
   }
 }
 
-
-/* ── 迷你对话模式（?mini=1）：Gemini 式窄输入框，隐藏侧栏/顶栏 ── */
-body[data-mini] .sidebar,
-body[data-mini] .topbar {
-  display: none !important;
-}
-body[data-mini] .app-shell {
-  grid-template-columns: minmax(0, 1fr) !important;
-}
-body[data-mini] .main-stage {
-  padding-top: 0 !important;
-}
-body[data-mini] .composer-dock {
-  border-top: 1px solid var(--line);
-  background: var(--app-bg);
-}
-body[data-mini] .timeline {
-  padding: 12px 16px 14px;
-  max-width: 100%;
-}
-body[data-mini] .timeline {
-  padding: 12px 16px 14px;
-  max-width: 100%;
-  overflow-y: auto;
-}
-/* 迷你模式专属：卡片感 + 大圆角输入框（与面板不同的视觉） */
-body[data-mini] .composer {
-  border-radius: 18px;
-  margin: 0 10px 10px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
-}
-body[data-mini] .composer textarea {
-  border-radius: 14px;
-  background: var(--surface-1);
-  margin: 6px;
-  padding: 10px 12px;
-  font-size: 14px;
-}
-body[data-mini] .composer-footer {
-  padding: 0 8px 8px;
-}
-body[data-mini] .composer-dock {
-  background: transparent;
-  border-top: none;
-}
-body[data-mini] .composer-context,
-body[data-mini] .character-count {
-  display: none;
-}
-body[data-mini] .mode-switch {
-  display: none;
-}
-body[data-mini] .assistant-message {
-  background: var(--surface-1);
-  border-radius: 16px;
-  padding: 10px 14px;
-  margin: 0 4px 12px;
-  border: 1px solid var(--line);
-}
-body[data-mini] .user-message .message-content {
-  background: var(--user-bg);
-  border-radius: 14px;
-  padding: 8px 12px;
-}
-body[data-mini] .assistant-content {
-  padding-left: 24px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-body[data-mini] .user-message .message-content {
-  font-size: 14px;
-}
-/* 迷你窗口顶部的工具条：放大按钮 */
-.mini-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--topbar-bg);
-  flex: 0 0 auto;
-}
-.mini-toolbar .mini-title {
-  font-size: 12px;
-  color: var(--text-soft);
-  font-weight: 600;
-}
-.mini-toolbar .mini-expand {
-  border: none;
-  background: none;
-  color: var(--text-soft);
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 16px;
-  line-height: 1;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.mini-toolbar .mini-expand:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-/* 默认隐藏 mini 工具条，仅 mini 模式显示 */
-.mini-toolbar {
-  display: none;
-}
-body[data-mini] .mini-toolbar {
-  display: flex;
-}
-body[data-mini] .assistant-blocks > .live-text-block {
-  animation: none !important;
-}
 
 /* ── 思考中：顾清影头像呼吸 + 月青光晕脉冲（live reasoning 期间）── */
 .assistant-message.is-thinking .assistant-label img {
