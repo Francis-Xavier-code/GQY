@@ -4115,6 +4115,7 @@
       await state.bootstrapPromise;
     } finally {
       state.bootstrapPromise = null;
+      handleOpenSettingsParam();
     }
   }
 
@@ -4315,6 +4316,18 @@
     if (typeof elements.resetDialog.showModal === "function") elements.resetDialog.showModal();
     else elements.resetDialog.setAttribute("open", "");
     window.requestAnimationFrame(() => elements.resetCancelButton.focus());
+  }
+
+  // 菜单栏「打开配置」通过 ?open=settings 直达设置抽屉（等价终端 gqy config 的 GUI 版）
+  function handleOpenSettingsParam() {
+    const open = new URLSearchParams(location.search).get("open");
+    if (open === "settings") {
+      openSettings();
+      // 清理参数，避免面板内后续刷新重复弹抽屉
+      const url = new URL(location.href);
+      url.searchParams.delete("open");
+      history.replaceState(null, "", url);
+    }
   }
 
   async function resetConversation() {

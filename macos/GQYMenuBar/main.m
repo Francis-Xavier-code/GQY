@@ -75,6 +75,9 @@
                                          symbol:@"square.grid.2x2"
                                          action:@selector(openWebPanel:)];
     [menu addItem:panelItem];
+    [menu addItem:[self itemWithTitle:@"打开配置"
+                               symbol:@"gearshape"
+                               action:@selector(openConfigPanel:)]];
     [menu addItem:[self itemWithTitle:@"打开终端对话"
                                symbol:@"terminal"
                                action:@selector(openTerminalChat:)]];
@@ -262,9 +265,22 @@
 
 - (void)openWebPanel:(id)sender {
     (void)sender;
+    [self openPanelWithSettings:NO];
+}
+
+// 打开面板并直接展开配置抽屉（等价于终端里的 gqy config，GUI 版）
+- (void)openConfigPanel:(id)sender {
+    (void)sender;
+    [self openPanelWithSettings:YES];
+}
+
+- (void)openPanelWithSettings:(BOOL)settings {
     if (self.panelWindow.isVisible) {
         [self.panelWindow makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
+        if (settings) {
+            [self.webView evaluateJavaScript:@"window.__gqyOpenSettings && window.__gqyOpenSettings()" completionHandler:nil];
+        }
         return;
     }
     [self ensureWebServer:^(BOOL ready) {
@@ -277,14 +293,15 @@
                                             }]];
             return;
         }
-        [self showPanel];
+        [self showPanelWithSettings:settings];
     }];
 }
 
-// 面板是独立 App 窗口：可拖动、可缩放、独立于状态栏存在
-- (void)showPanel {
+// 面板是独立 App 窗口：可拖动、可缩放、独立于状态栏存在；
+// 打开时切换到 Regular 激活策略，Dock 出现图标；关闭时切回 Accessory
+- (void)showPanelWithSettings:(BOOL)settings {
     if (!self.panelWindow) {
-        NSRect frame = NSMakeRect(0, 0, 460, 680);
+        NSRect frame = NSMakeRect(0, 0, 720, 680);
         self.panelWindow = [[NSPanel alloc]
             initWithContentRect:frame
                       styleMask:(NSWindowStyleMaskTitled |
@@ -294,7 +311,7 @@
                         backing:NSBackingStoreBuffered
                           defer:NO];
         self.panelWindow.title = @"顾清影 · 面板";
-        self.panelWindow.minSize = NSMakeSize(360, 480);
+        self.panelWindow.minSize = NSMakeSize(560, 480);
         self.panelWindow.delegate = self;
         self.panelWindow.releasedWhenClosed = NO;
 
@@ -303,21 +320,32 @@
         webView.allowsMagnification = YES;
         self.webView = webView;
         self.panelWindow.contentView = webView;
-        // 记住上次窗口位置
         [self.panelWindow center];
     }
     [self.panelWindow makeKeyAndOrderFront:nil];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp activateIgnoringOtherApps:YES];
-    if (![self.webView.URL.absoluteString hasPrefix:self.panelURL.absoluteString]) {
-        [self.webView loadRequest:[NSURLRequest requestWithURL:self.panelURL]];
+    NSString *urlString = self.panelURL.absoluteString;
+    if (settings) {
+        urlString = [urlString stringByAppendingString:@"?open=settings"];
+    }
+    if (![self.webView.URL.absoluteString hasPrefix:urlString]) {
+        [self.webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:urlString]]];
     } else {
         [self.webView reload];
     }
 }
 
+- (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object == self.panelWindow) {
+        // 关窗口不杀 web 服务（下次秒开），同时 Dock 图标收回
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    }
+}
+
 - (BOOL)windowShouldClose:(NSWindow *)sender {
     (void)sender;
-    return YES; // 关窗口不杀 web 服务，下次打开秒开
+    return YES;
 }
 
 // 确保 gqy web 已启动：轮询 /api/health 直到就绪（替代写死的 800ms 延迟）
@@ -595,6 +623,8 @@
 - (void)menuWillOpen:(NSMenu *)menu {
     (void)menu;
     [self refreshLoginItemState];
+    // 每次打开菜单都刷新状态区：WebUI/CLI 改过配置或备份后菜单栏即时同步
+    [self refreshStatus];
 }
 
 - (void)toggleLoginItem:(id)sender {
