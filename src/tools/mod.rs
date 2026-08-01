@@ -338,6 +338,7 @@ pub fn chat_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn test_paths(root: &std::path::Path) -> GqyPaths {
         GqyPaths {
@@ -353,6 +354,8 @@ mod tests {
             zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
             system_scripts_dir: root.join("system-scripts"),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 

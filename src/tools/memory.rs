@@ -201,6 +201,8 @@ mod tests {
             zsh_hook_file: root.join("zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
             system_scripts_dir: PathBuf::new(),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 

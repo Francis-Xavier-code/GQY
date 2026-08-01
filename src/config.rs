@@ -2621,6 +2621,8 @@ mod tests {
             zsh_hook_file: temp.path().join("gqy.zsh"),
             scripts_dir: temp.path().join("scripts"),
             system_scripts_dir: temp.path().join("system-scripts"),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         };
 
         assert_eq!(

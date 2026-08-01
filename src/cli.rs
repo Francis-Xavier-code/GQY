@@ -602,6 +602,12 @@ fn localize_reset_command(command: clap::Command) -> clap::Command {
 fn localize_web_command(command: clap::Command) -> clap::Command {
     command
         .mut_arg("port", |arg| arg.help(t("Local TCP port", "本地 TCP 端口")))
+        .mut_arg("host", |arg| {
+            arg.help(t(
+                "Bind address; non-loopback addresses require a password",
+                "监听地址；绑定非回环地址必须设置密码",
+            ))
+        })
         .mut_arg("no_open", |arg| {
             arg.help(t(
                 "Do not open the WebUI in a browser",
@@ -810,6 +816,10 @@ pub struct WebArgs {
     #[arg(long, default_value_t = 4096)]
     pub port: u16,
 
+    /// 监听地址。默认仅本机；绑定非回环地址必须设置密码
+    #[arg(long, default_value = "127.0.0.1", value_name = "HOST")]
+    pub host: String,
+
     #[arg(long)]
     pub no_open: bool,
 
@@ -825,6 +835,7 @@ impl std::fmt::Debug for WebArgs {
         formatter
             .debug_struct("WebArgs")
             .field("port", &self.port)
+            .field("host", &self.host)
             .field("no_open", &self.no_open)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field("password_file", &self.password_file)
@@ -1370,6 +1381,8 @@ fn remove_shell_hooks(paths: &GqyPaths) -> Result<()> {
 
 fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {
     let paths = alarm_worker_paths(args.state_dir, args.cache_dir);
+    // 先持 flock 再干活：取消/清理据此判定进程是否存活，杜绝 PID 复用误杀
+    let _worker_lock = crate::alarm::WorkerLock::acquire(&paths, &args.id)?;
     let seconds = crate::alarm::parse_alarm_seconds(&args.time)?;
     let source = args
         .audio_file
@@ -1432,6 +1445,7 @@ fn append_alarm_log(paths: &GqyPaths, line: &str) -> Result<()> {
 }
 
 fn alarm_worker_paths(state_dir: PathBuf, cache_dir: PathBuf) -> GqyPaths {
+    let share_dir = crate::paths::resolve_share_base();
     GqyPaths {
         config_dir: PathBuf::new(),
         config_file: PathBuf::new(),
@@ -1444,7 +1458,9 @@ fn alarm_worker_paths(state_dir: PathBuf, cache_dir: PathBuf) -> GqyPaths {
         bash_hook_file: PathBuf::new(),
         zsh_hook_file: PathBuf::new(),
         scripts_dir: PathBuf::new(),
-        system_scripts_dir: PathBuf::new(),
+        system_scripts_dir: share_dir.join("scripts"),
+        share_dir,
+        kb_dir: PathBuf::new(),
     }
 }
 
@@ -2538,6 +2554,8 @@ async fn run_chat_with_images(
             Some(cumulative_tokens),
         )?;
     }
+    // 一次性对话：等后台自动备份完成再退出，避免进程先退导致快照丢失
+    agent.settle_pending_backup().await;
     Ok(())
 }
 
@@ -2680,6 +2698,8 @@ async fn run_chat_with_options(
             Some(cumulative_tokens),
         )?;
     }
+    // 一次性对话：等后台自动备份完成再退出，避免进程先退导致快照丢失
+    agent.settle_pending_backup().await;
     Ok(())
 }
 
@@ -6831,6 +6851,8 @@ mod repl_input_tests {
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
             system_scripts_dir: root.join("system/scripts"),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 
@@ -6936,10 +6958,28 @@ mod repl_input_tests {
             cli.command,
             Some(Command::Web(WebArgs {
                 port: 4100,
+                host,
                 no_open: true,
                 password: None,
                 password_file: None,
-            }))
+            })) if host == "127.0.0.1"
+        ));
+
+        let cli = parse_args(
+            ["gqy", "web", "--host", "0.0.0.0", "--port", "4100", "--no-open", "-p", "secret"]
+                .map(OsString::from)
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Web(WebArgs {
+                port: 4100,
+                host,
+                no_open: true,
+                password: Some(password),
+                password_file: None,
+            })) if host == "0.0.0.0" && password == "secret"
         ));
 
         let cli = parse_args(["gqy", "web"].map(OsString::from).to_vec()).unwrap();
@@ -6947,10 +6987,11 @@ mod repl_input_tests {
             cli.command,
             Some(Command::Web(WebArgs {
                 port: 4096,
+                host,
                 no_open: false,
                 password: None,
                 password_file: None,
-            }))
+            })) if host == "127.0.0.1"
         ));
 
         let cli = parse_args(
@@ -7877,6 +7918,8 @@ mod repl_input_tests {
             zsh_hook_file: PathBuf::new(),
             scripts_dir: PathBuf::new(),
             system_scripts_dir: PathBuf::new(),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         };
         let state = StateStore::new(&paths).unwrap();
         state.start_turn("turn_1", "first", 999999).unwrap();

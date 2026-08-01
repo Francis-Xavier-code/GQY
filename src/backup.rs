@@ -164,6 +164,17 @@ pub fn backup_now(paths: &GqyPaths, push: bool) -> Result<BackupOutcome> {
     })
 }
 
+/// 自动备份节流：距上次快照不足该秒数则跳过（`gqy backup now` 不受限）。
+const AUTO_BACKUP_MIN_INTERVAL_SECS: i64 = 30 * 60;
+
+/// 节流间隔（测试用环境变量可调，例如 `GQY_BACKUP_INTERVAL_SECS=0` 关闭节流）。
+fn auto_backup_min_interval_secs() -> i64 {
+    std::env::var("GQY_BACKUP_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(AUTO_BACKUP_MIN_INTERVAL_SECS)
+}
+
 pub fn maybe_auto_backup(paths: &GqyPaths) -> Result<Option<BackupOutcome>> {
     let Some(home) = paths.isolated_home()? else {
         return Ok(None);
@@ -176,7 +187,19 @@ pub fn maybe_auto_backup(paths: &GqyPaths) -> Result<Option<BackupOutcome>> {
     if !settings.auto_push {
         return Ok(None);
     }
+    // 节流：刚快照过就不重复，避免高频对话时每轮全量拷贝+git
+    if let Some(last) = last_commit_timestamp(&backup_dir, &settings) {
+        if Utc::now().timestamp() - last < auto_backup_min_interval_secs() {
+            return Ok(None);
+        }
+    }
     backup_now(paths, true).map(Some)
+}
+
+/// 备份仓库最近一次 commit 的 unix 时间戳（秒）；仓库为空时返回 None。
+fn last_commit_timestamp(backup_dir: &Path, settings: &BackupSettings) -> Option<i64> {
+    let output = git_output(backup_dir, settings, ["log", "-1", "--format=%ct"]).ok()?;
+    output.trim().parse::<i64>().ok().filter(|value| *value > 0)
 }
 
 pub fn status(paths: &GqyPaths) -> Result<String> {
@@ -847,6 +870,8 @@ mod tests {
             zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
             system_scripts_dir: PathBuf::new(),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 
@@ -980,6 +1005,7 @@ mod tests {
         let home = root.path().join("home");
         let paths = test_paths(&home);
         std::env::set_var(GQY_HOME_ENV, &home);
+        std::env::set_var("GQY_BACKUP_INTERVAL_SECS", "0");
 
         let options = BackupInitOptions {
             remote: None,
@@ -1007,6 +1033,37 @@ mod tests {
     }
 
     #[test]
+    fn auto_backup_is_throttled_after_a_recent_snapshot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let paths = test_paths(&home);
+        std::env::set_var(GQY_HOME_ENV, &home);
+
+        init(
+            &paths,
+            BackupInitOptions {
+                remote: None,
+                branch: "main".to_string(),
+                git_name: "Test".to_string(),
+                git_email: "test@localhost".to_string(),
+                auto_push: true,
+                ssh_key: None,
+            },
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        std::fs::write(paths.state_dir.join("memory.md"), "hello\n").unwrap();
+        let outcome = backup_now(&paths, true).unwrap();
+        assert!(outcome.committed);
+
+        // 默认节流（30 分钟）：刚快照过就跳过
+        std::env::remove_var("GQY_BACKUP_INTERVAL_SECS");
+        assert!(maybe_auto_backup(&paths).unwrap().is_none());
+    }
+
+    #[test]
     fn set_remote_enables_pushing_after_local_mode() {
         let _guard = ENV_LOCK.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -1021,6 +1078,7 @@ mod tests {
         let home = root.path().join("home");
         let paths = test_paths(&home);
         std::env::set_var(GQY_HOME_ENV, &home);
+        std::env::set_var("GQY_BACKUP_INTERVAL_SECS", "0");
         init(
             &paths,
             BackupInitOptions {

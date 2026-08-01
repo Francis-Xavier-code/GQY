@@ -266,6 +266,8 @@ pub struct Agent {
     config: AppConfig,
     paths: GqyPaths,
     on_overflow: String,
+    /// 每轮结束后台自动备份任务；一次性 CLI 退出前会等它完成
+    pending_backup: Option<tokio::task::JoinHandle<()>>,
 }
 
 struct PreparedUserInput {
@@ -308,6 +310,7 @@ impl Agent {
             config,
             paths: paths.clone(),
             on_overflow,
+            pending_backup: None,
         })
     }
 
@@ -619,13 +622,27 @@ impl Agent {
         if let Some(usage) = result.usage.clone() {
             self.state.add_usage(&usage)?;
         }
-        if let Err(error) = crate::backup::maybe_auto_backup(&self.paths) {
-            eprintln!(
-                "{}: {error:#}",
-                crate::i18n::text("warning: automatic backup failed", "警告：自动备份失败")
-            );
-        }
+        // 自动备份移出对话热路径：后台执行，且内部有 30 分钟节流。
+        // 一次性 CLI（gqy "问题"）退出前会通过 settle_pending_backup 等它完成。
+        let backup_paths = self.paths.clone();
+        let backup_task = tokio::task::spawn_blocking(move || {
+            if let Err(error) = crate::backup::maybe_auto_backup(&backup_paths) {
+                tracing::error!("automatic backup failed: {error:#}");
+                eprintln!(
+                    "{}: {error:#}",
+                    crate::i18n::text("warning: automatic backup failed", "警告：自动备份失败")
+                );
+            }
+        });
+        self.pending_backup = Some(backup_task);
         Ok(result)
+    }
+
+    /// 等待后台自动备份任务结束（一次性 CLI 退出前调用，避免进程先退导致备份丢失）。
+    pub async fn settle_pending_backup(&mut self) {
+        if let Some(task) = self.pending_backup.take() {
+            let _ = task.await;
+        }
     }
 
     async fn prepare_user_input(
@@ -3624,6 +3641,8 @@ mod tests {
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
             system_scripts_dir: PathBuf::new(),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 }

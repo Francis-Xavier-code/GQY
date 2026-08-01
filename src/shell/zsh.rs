@@ -8,16 +8,82 @@ const BEGIN_MARKER: &str = "# >>> gqy zsh hook >>>";
 const END_MARKER: &str = "# <<< gqy zsh hook <<<";
 
 pub fn hook() -> &'static str {
-    r#"command_not_found_handler() {
+    r#"# 拦截「命令未找到」：明显是命令/拼写错误 → 交给系统报错；自然语言 → 交给 GQY。
+command_not_found_handler() {
     [[ -o interactive ]] || return 127
 
     local text="$*"
     [[ -n "$text" ]] || return 127
     [[ "$text" != *$'\n'* && "$text" != *$'\r'* ]] || return 127
 
+    # 明显是命令（含路径/内置命令/环境变量前缀）→ 系统报错，不打扰 GQY
+    gqy --shell-classify --shell zsh -- "$@" 2>/dev/null && return 127
+
     gqy --shell-intercept --shell zsh -- "$@" 2>/dev/null
     return 127
 }
+
+# ---- 多行自然语言：Enter 时整块交给 GQY（与 fish 的拦截策略一致） ----
+__gqy_pending_buffer=""
+
+# 缓冲内是否含「未知命令」行：有则视为自然语言块，交给 GQY
+__gqy_zsh_multiline_has_unknown() {
+    local buffer="$1" line token kind
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -n "$line" ]] || continue
+        [[ "$line" != \#* ]] || continue
+        # 跳过 env 赋值前缀（VAR=... cmd）
+        while [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+            line="${line#*=}"
+            line="${line#"${line%%[![:space:]]*}"}"
+        done
+        token="${line%%[[:space:]]*}"
+        [[ -n "$token" ]] || continue
+        if ! (( $+commands[$token] )); then
+            kind="${$(whence -w "$token" 2>/dev/null)#*: }"
+            case "$kind" in
+                builtin|reserved|alias|function|autoload|hashed) ;;
+                *) return 0 ;;
+            esac
+        fi
+    done <<< "$buffer"
+    return 1
+}
+
+__gqy_zsh_accept_line() {
+    local buffer="$BUFFER"
+    local trimmed="${buffer#"${buffer%%[![:space:]]*}"}"
+    if [[ -n "$trimmed" && "$buffer" == *$'\n'* ]]; then
+        if __gqy_zsh_multiline_has_unknown "$buffer"; then
+            # 整块交给 GQY：隐藏光标、清空缓冲，下一提示符发送
+            __gqy_pending_buffer="$buffer"
+            print -s -- "$buffer"
+            print -n '\e[?25l'
+            BUFFER=""
+            zle accept-line
+            return
+        fi
+    fi
+    zle accept-line
+}
+zle -N __gqy_zsh_accept_line
+bindkey -M emacs '^M' __gqy_zsh_accept_line
+bindkey -M viins '^M' __gqy_zsh_accept_line
+bindkey -M vicmd '^M' __gqy_zsh_accept_line
+
+__gqy_zsh_precmd() {
+    if [[ -n "$__gqy_pending_buffer" ]]; then
+        local buffer="$__gqy_pending_buffer"
+        __gqy_pending_buffer=""
+        print -rn -- '\e[?25h'
+        print -rn -- $'\e[31m'"${buffer}"$'\e[0m\n'
+        printf '%s' "$buffer" | gqy --shell-intercept --shell zsh --stdin 2>/dev/null
+        print -rn -- '\e[?25h'
+    fi
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd __gqy_zsh_precmd
 "#
 }
 
@@ -121,6 +187,16 @@ mod tests {
         assert!(hook.contains("command_not_found_handler"));
         assert!(hook.contains("--shell zsh"));
         assert!(hook.contains("return 127"));
+    }
+
+    #[test]
+    fn zsh_hook_wires_classifier_and_multiline_intercept() {
+        let hook = hook();
+        assert!(hook.contains("--shell-classify"));
+        assert!(hook.contains("gqy_zsh_accept_line"));
+        assert!(hook.contains("bindkey -M emacs '^M'"));
+        assert!(hook.contains("precmd"));
+        assert!(hook.contains("--stdin"));
     }
 
     #[test]

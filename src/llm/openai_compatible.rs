@@ -25,6 +25,8 @@ static LLM_SCHEDULER: LazyLock<Mutex<LlmScheduler>> =
     LazyLock::new(|| Mutex::new(LlmScheduler::default()));
 
 const TRANSPORT_RETRY_DELAY: Duration = Duration::from_millis(250);
+/// 流式读取的空闲超时：服务器超过该时长无任何字节则按传输超时处理（可重试/转移端点）。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 const CHAT_RESERVED_BODY_KEYS: &[&str] = &[
     "model",
@@ -133,7 +135,7 @@ impl std::fmt::Display for TransportFailureKind {
 }
 
 fn retryable_transport_failure(kind: TransportFailureKind) -> bool {
-    kind == TransportFailureKind::Connect
+    matches!(kind, TransportFailureKind::Connect | TransportFailureKind::Timeout)
 }
 
 #[derive(Debug)]
@@ -1272,6 +1274,29 @@ impl OpenAiCompatibleClient {
         Ok(None)
     }
 
+    /// 带空闲超时的流式取块：长时间无字节返回 Err(TransportFailure::Timeout)，
+    /// 避免服务器静默挂起时无限转圈。chat/anthropic/responses 三种协议共用。
+    async fn next_stream_chunk<B, E>(
+        &self,
+        stream: &mut (impl futures_util::Stream<Item = Result<B, E>> + Unpin),
+    ) -> Result<Option<B>>
+    where
+        E: Into<anyhow::Error>,
+    {
+        match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(chunk))) => Ok(Some(chunk)),
+            Ok(Some(Err(err))) => Err(err.into()),
+            Ok(None) => Ok(None),
+            Err(_) => Err(anyhow::anyhow!(
+                "stream idle timeout (no data for {STREAM_IDLE_TIMEOUT:?})"
+            )
+            .context(TransportFailure {
+                stage: "stream",
+                kind: TransportFailureKind::Timeout,
+            })),
+        }
+    }
+
     async fn consume_chat_completion_stream<F>(
         &self,
         response: reqwest::Response,
@@ -1291,8 +1316,7 @@ impl OpenAiCompatibleClient {
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = self.next_stream_chunk(&mut stream).await? {
             for line in buffer.push(&chunk)? {
                 if let Some(done) = handle_sse_line(
                     &line,
@@ -1487,8 +1511,7 @@ impl OpenAiCompatibleClient {
         let mut state = AnthropicStreamState::default();
         let mut buffer = SseDataBuffer::default();
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = self.next_stream_chunk(&mut stream).await? {
             for data in buffer.push(&chunk)? {
                 if handle_anthropic_sse_data(&data, &mut state, &mut *on_chunk)? {
                     return finalize_stream_result(
@@ -1610,8 +1633,7 @@ impl OpenAiCompatibleClient {
         let mut content_started = false;
         let mut tool_calls = ResponsesToolAccumulator::default();
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = self.next_stream_chunk(&mut stream).await? {
             for line in buffer.push(&chunk)? {
                 if handle_responses_sse_line(
                     &line,
@@ -3954,7 +3976,12 @@ mod tests {
         let error = finalize_stream_result(String::new(), String::new(), None, Vec::new(), false)
             .unwrap_err();
 
-        assert!(format!("{error:#}").contains("流式响应为空"));
+        // 错误文案随 locale 变化，断言同时兼容中英文
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("流式响应为空") || message.contains("stream response was empty"),
+            "unexpected error message: {message}"
+        );
     }
 
     #[test]
@@ -4916,7 +4943,7 @@ mod tests {
     #[test]
     fn only_connect_failures_are_retried() {
         assert!(retryable_transport_failure(TransportFailureKind::Connect));
-        assert!(!retryable_transport_failure(TransportFailureKind::Timeout));
+        assert!(retryable_transport_failure(TransportFailureKind::Timeout));
         assert!(!retryable_transport_failure(TransportFailureKind::Other));
     }
 
@@ -5069,6 +5096,8 @@ mod tests {
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
             system_scripts_dir: root.join("system/scripts"),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         }
     }
 

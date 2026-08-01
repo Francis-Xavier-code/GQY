@@ -246,6 +246,9 @@ function fish_command_not_found
     set -l text (string join ' ' -- $command)
     string match -qr '[\n\r]' -- $text; and return 127
 
+    # 明显是命令/拼写错误 → 系统报错，不打扰 GQY
+    gqy --shell-classify --shell fish -- $command 2>/dev/null; and return 127
+
     gqy --shell-intercept --shell fish -- $command 2>/dev/null
     return 127
 end
@@ -392,6 +395,8 @@ mod tests {
             zsh_hook_file: temp.path().join("zsh-hook.zsh"),
             scripts_dir: temp.path().join("scripts"),
             system_scripts_dir: PathBuf::new(),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         };
 
         assert!(!uninstall(&paths).unwrap());

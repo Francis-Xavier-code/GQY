@@ -875,6 +875,17 @@ struct ModelResponse {
 
 pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
     let password = resolve_web_password(&args)?;
+    let bind_ip: IpAddr = args
+        .host
+        .parse()
+        .with_context(|| format!("invalid WebUI host: {}", args.host))?;
+    if !bind_ip.is_loopback() && password.is_none() {
+        anyhow::bail!(
+            "绑定非回环地址（{}）必须设置访问密码：gqy web --host {} -p <password>",
+            args.host,
+            args.host
+        );
+    }
     AppConfig::init_files(&paths)?;
     let config = AppConfig::load_or_default(&paths)?;
     let state_store = StateStore::new(&paths)?;
@@ -894,12 +905,9 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
         window: agent.context_window(),
     };
 
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        args.port,
-    ))
-    .await
-    .with_context(|| format!("binding 顾清影 WebUI to 0.0.0.0:{}", args.port))?;
+    let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind_ip, args.port))
+        .await
+        .with_context(|| format!("binding 顾清影 WebUI to {}:{}", args.host, args.port))?;
     let port = listener.local_addr()?.port();
     let boot_id: Arc<str> = random_id("boot", 18).into();
     let events = EventHub::new();
@@ -930,7 +938,8 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
         actor_tx: actor_tx.clone(),
     };
     let app = router(state);
-    let urls = web_access_urls(port);
+    // 只有设置了密码才把局域网地址列出来（无密码时仅回环可达）
+    let urls = web_access_urls(port, password.is_some());
     for url in &urls {
         println!("顾清影 WebUI: {url}");
     }
@@ -1112,14 +1121,16 @@ fn resolve_web_password(args: &WebArgs) -> Result<Option<String>> {
     Ok(password)
 }
 
-fn web_access_urls(port: u16) -> Vec<String> {
+fn web_access_urls(port: u16, include_lan: bool) -> Vec<String> {
     let mut addresses = BTreeSet::new();
     addresses.insert(Ipv4Addr::LOCALHOST);
-    if let Ok(interfaces) = if_addrs::get_if_addrs() {
-        for interface in interfaces {
-            if let if_addrs::IfAddr::V4(address) = interface.addr {
-                if !address.ip.is_unspecified() {
-                    addresses.insert(address.ip);
+    if include_lan {
+        if let Ok(interfaces) = if_addrs::get_if_addrs() {
+            for interface in interfaces {
+                if let if_addrs::IfAddr::V4(address) = interface.addr {
+                    if !address.ip.is_unspecified() {
+                        addresses.insert(address.ip);
+                    }
                 }
             }
         }
@@ -3574,6 +3585,8 @@ mod tests {
             zsh_hook_file: paths.path().join("zsh"),
             scripts_dir: paths.path().join("scripts"),
             system_scripts_dir: paths.path().join("system-scripts"),
+            share_dir: PathBuf::new(),
+            kb_dir: PathBuf::new(),
         };
         let response = config_response(
             &config,

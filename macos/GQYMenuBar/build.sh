@@ -57,6 +57,15 @@ if [[ -n "$backend_bin" ]]; then
   cp "$backend_bin" "$resources_dir/gqy"
 fi
 
+# 只读共享资源统一放进 Resources/share/gqy（内置脚本/表情库/知识库源），
+# 与 brew 安装的 $(brew --prefix)/share/gqy 布局一致，bundle 内二进制自包含。
+share_dir="$resources_dir/share/gqy"
+mkdir -p "$share_dir"
+cp -R "$repo_dir/src/scripts" "$share_dir/scripts"
+mkdir -p "$share_dir/memes"
+cp -R "$repo_dir/src/memes/gqy" "$share_dir/memes/gqy"
+cp -R "$repo_dir/kb" "$share_dir/kb"
+
 # 默认 ad-hoc 签名；设置 CODESIGN_IDENTITY 可用 Developer ID 正式签名
 codesign --force --deep --sign "${CODESIGN_IDENTITY:--}" "$app_dir"
 
