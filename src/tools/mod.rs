@@ -19,6 +19,7 @@ mod mcp;
 pub(crate) mod memes;
 mod memory;
 mod moegirl;
+pub(crate) mod path_guard;
 mod patch_preview;
 mod registry;
 mod scripts;

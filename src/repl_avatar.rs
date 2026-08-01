@@ -1,5 +1,4 @@
 use base64::Engine;
-use image::GenericImageView;
 use std::io::Write;
 
 /// 内嵌的顾清影头像（512×512 RGBA），显示时缩放到目标高度。

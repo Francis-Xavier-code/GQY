@@ -56,6 +56,10 @@ fn apply_patch(args: Value, progress: ToolProgress) -> Result<String> {
         ));
     }
 
+    for change in &changes {
+        crate::tools::path_guard::ensure_writable(&change.path)?;
+    }
+
     let mut files = Vec::new();
     for change in changes {
         match change.kind {
