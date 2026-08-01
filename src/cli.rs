@@ -1,7 +1,7 @@
 use crate::agent::{
     archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
 };
-use crate::backup::{BackupInitOptions, BackupOutcome};
+use crate::backup::{BackupInitOptions, BackupOutcome, RestoreOptions};
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::{ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions};
@@ -726,6 +726,11 @@ fn localize_backup_command(mut command: clap::Command) -> clap::Command {
             "Show backup configuration and Git status",
             "显示备份配置与 Git 状态",
         ),
+        (
+            "restore",
+            "Restore state from the backup remote",
+            "从备份远程恢复状态",
+        ),
     ];
     for (name, en, zh) in descriptions {
         command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
@@ -932,6 +937,7 @@ pub enum BackupCommand {
     Init(BackupInitArgs),
     Now(BackupNowArgs),
     Status,
+    Restore(BackupRestoreArgs),
 }
 
 #[derive(Debug, Args)]
@@ -954,6 +960,22 @@ pub struct BackupInitArgs {
 pub struct BackupNowArgs {
     #[arg(long)]
     pub no_push: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupRestoreArgs {
+    #[arg(long)]
+    pub remote: String,
+    #[arg(long, default_value = "main")]
+    pub branch: String,
+    #[arg(long, default_value = "GQY Restore")]
+    pub name: String,
+    #[arg(long, default_value = "gqy@localhost")]
+    pub email: String,
+    #[arg(long)]
+    pub ssh_key: Option<PathBuf>,
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1102,6 +1124,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::ZshInit)
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
+                | Some(Command::Backup(_))
         )
     {
         run_init(&paths, InitKind::FirstRun)?;
@@ -8028,6 +8051,26 @@ fn run_backup(paths: &MiyuPaths, args: BackupArgs) -> Result<()> {
             print_backup_outcome(&outcome);
         }
         BackupCommand::Status => println!("{}", crate::backup::status(paths)?),
+        BackupCommand::Restore(args) => {
+            crate::backup::restore(
+                paths,
+                RestoreOptions {
+                    remote: args.remote,
+                    branch: args.branch,
+                    git_name: args.name,
+                    git_email: args.email,
+                    ssh_key: args.ssh_key,
+                    force: args.force,
+                },
+            )?;
+            println!(
+                "{}",
+                t(
+                    "restored GQY state from the backup remote; re-enter API keys if the restored config redacted them",
+                    "已从备份远程恢复 GQY 状态；若恢复的配置脱敏了密钥，请重新填写"
+                )
+            );
+        }
     }
     Ok(())
 }

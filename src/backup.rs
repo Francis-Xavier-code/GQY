@@ -40,6 +40,16 @@ pub struct BackupOutcome {
     pub commit: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RestoreOptions {
+    pub remote: String,
+    pub branch: String,
+    pub git_name: String,
+    pub git_email: String,
+    pub ssh_key: Option<PathBuf>,
+    pub force: bool,
+}
+
 pub fn init(paths: &MiyuPaths, options: BackupInitOptions) -> Result<()> {
     let home = required_isolated_home(paths)?;
     validate_init_options(&home, &options)?;
@@ -180,6 +190,165 @@ pub fn status(paths: &MiyuPaths) -> Result<String> {
         settings.auto_push,
         git_status.trim_end()
     ))
+}
+
+pub fn restore(paths: &MiyuPaths, options: RestoreOptions) -> Result<()> {
+    let home = required_isolated_home(paths)?;
+    validate_init_options(
+        &home,
+        &BackupInitOptions {
+            remote: options.remote.clone(),
+            branch: options.branch.clone(),
+            git_name: options.git_name.clone(),
+            git_email: options.git_email.clone(),
+            auto_push: false,
+            ssh_key: options.ssh_key.clone(),
+        },
+    )?;
+
+    let backup_dir = home.join("backup");
+    let repo = backup_dir.join("repository");
+    if repo.join(".git").is_dir() {
+        bail!("backup repository already exists; refusing to overwrite it");
+    }
+
+    let live_targets = [
+        (paths.config_dir.as_path(), "config", true),
+        (paths.data_dir.as_path(), "data", false),
+        (paths.state_dir.as_path(), "state", false),
+        (paths.pictures_dir.as_path(), "pictures", false),
+    ];
+    if !options.force {
+        for (live, _name, _) in &live_targets {
+            if dir_has_files(live) {
+                bail!(
+                    "{} already contains data; pass --force to overwrite it",
+                    live.display()
+                );
+            }
+        }
+    }
+
+    std::fs::create_dir_all(&backup_dir)?;
+    ensure_isolated_global_config(&backup_dir)?;
+    let settings = BackupSettings {
+        version: SETTINGS_VERSION,
+        remote: options.remote.trim().to_string(),
+        branch: options.branch.trim().to_string(),
+        git_name: options.git_name.trim().to_string(),
+        git_email: options.git_email.trim().to_string(),
+        auto_push: false,
+        ssh_key: options.ssh_key,
+    };
+
+    let mut command = git_command(&backup_dir, &settings);
+    command
+        .current_dir(&backup_dir)
+        .args(["clone", "--branch", settings.branch.as_str()])
+        .arg(settings.remote.as_str())
+        .arg("repository");
+    let output = command
+        .output()
+        .with_context(|| "failed to start isolated git clone")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git clone failed: {}", stderr.trim());
+    }
+
+    for (live, name, is_config) in &live_targets {
+        let skip = if *is_config && paths.config_file.is_file() {
+            Some(OsStr::new("config.jsonc"))
+        } else {
+            None
+        };
+        copy_restored_dir(&repo.join(name), live, skip)?;
+    }
+    write_settings(&backup_dir, &settings)?;
+    run_git(
+        &backup_dir,
+        &settings,
+        ["config", "--local", "user.name", settings.git_name.as_str()],
+    )?;
+    run_git(
+        &backup_dir,
+        &settings,
+        ["config", "--local", "user.email", settings.git_email.as_str()],
+    )?;
+    let hooks_path = backup_dir.join("no-hooks");
+    let hooks_path = hooks_path.to_string_lossy().to_string();
+    run_git(
+        &backup_dir,
+        &settings,
+        ["config", "--local", "core.hooksPath", hooks_path.as_str()],
+    )?;
+    Ok(())
+}
+
+fn dir_has_files(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    std::fs::read_dir(path)
+        .map(|entries| entries.filter_map(Result::ok).next().is_some())
+        .unwrap_or(false)
+}
+
+fn copy_restored_dir(source: &Path, destination: &Path, skip: Option<&OsStr>) -> Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if skip == Some(name.as_os_str()) {
+            continue;
+        }
+        let source_path = entry.path();
+        let destination_path = destination.join(&name);
+        if entry.file_type()?.is_dir() {
+            copy_tree_plain(&source_path, &destination_path)?;
+        } else {
+            if let Some(parent) = destination_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "failed to restore {} to {}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_tree_plain(source: &Path, destination: &Path) -> Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree_plain(&source_path, &destination_path)?;
+        } else {
+            if let Some(parent) = destination_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "failed to restore {} to {}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn required_isolated_home(paths: &MiyuPaths) -> Result<PathBuf> {
@@ -468,17 +637,9 @@ where
     git_output(backup_dir, settings, args).map(|_| ())
 }
 
-fn git_output<I, S>(backup_dir: &Path, settings: &BackupSettings, args: I) -> Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let repo = backup_dir.join("repository");
+fn git_command(backup_dir: &Path, settings: &BackupSettings) -> Command {
     let mut command = Command::new("git");
     command
-        .arg("-C")
-        .arg(&repo)
-        .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", backup_dir.join("gitconfig"))
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -494,7 +655,7 @@ where
             .unwrap_or(backup_dir)
             .join("secrets/ssh/known_hosts");
         if let Some(parent) = known_hosts.parent() {
-            std::fs::create_dir_all(parent)?;
+            let _ = std::fs::create_dir_all(parent);
         }
         let ssh = format!(
             "ssh -i {} -o IdentitiesOnly=yes -o UserKnownHostsFile={} -o StrictHostKeyChecking=accept-new",
@@ -503,6 +664,17 @@ where
         );
         command.env("GIT_SSH_COMMAND", ssh);
     }
+    command
+}
+
+fn git_output<I, S>(backup_dir: &Path, settings: &BackupSettings, args: I) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let repo = backup_dir.join("repository");
+    let mut command = git_command(backup_dir, settings);
+    command.arg("-C").arg(&repo).args(args);
 
     let output = command
         .output()
@@ -531,6 +703,10 @@ fn shell_quote(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::GQY_HOME_ENV;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn recursively_redacts_known_secret_names() {
@@ -583,5 +759,142 @@ mod tests {
         assert!(is_obvious_secret_file(Path::new("deploy-key.pem")));
         assert!(is_obvious_secret_file(Path::new("id_ed25519")));
         assert!(!is_obvious_secret_file(Path::new("persona.md")));
+    }
+
+    fn test_paths(root: &Path) -> MiyuPaths {
+        MiyuPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/conf.d/miyu.fish"),
+            bash_hook_file: root.join("config/shell/bash-hook.sh"),
+            zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn restore_round_trips_state_from_local_remote() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        assert!(std::process::Command::new("git")
+            .args(["init", "--bare", "--initial-branch=main"])
+            .arg(&remote)
+            .status()
+            .unwrap()
+            .success());
+
+        let home1 = root.path().join("home1");
+        let paths1 = test_paths(&home1);
+        std::fs::create_dir_all(&paths1.state_dir).unwrap();
+        std::fs::write(paths1.state_dir.join("memory.md"), "the answer is 42\n").unwrap();
+        std::fs::create_dir_all(&paths1.data_dir.join("kb")).unwrap();
+        std::fs::write(paths1.data_dir.join("kb/note.md"), "persistent note\n").unwrap();
+        std::env::set_var(GQY_HOME_ENV, &home1);
+
+        let options = BackupInitOptions {
+            remote: remote.display().to_string(),
+            branch: "main".to_string(),
+            git_name: "Test".to_string(),
+            git_email: "test@localhost".to_string(),
+            auto_push: false,
+            ssh_key: None,
+        };
+        init(&paths1, options.clone()).unwrap();
+        backup_now(&paths1, true).unwrap();
+
+        let home2 = root.path().join("home2");
+        let paths2 = test_paths(&home2);
+        std::env::set_var(GQY_HOME_ENV, &home2);
+        restore(
+            &paths2,
+            RestoreOptions {
+                remote: remote.display().to_string(),
+                branch: "main".to_string(),
+                git_name: "Test".to_string(),
+                git_email: "test@localhost".to_string(),
+                ssh_key: None,
+                force: false,
+            },
+        )
+        .unwrap();
+
+        let restored = std::fs::read_to_string(paths2.state_dir.join("memory.md")).unwrap();
+        assert_eq!(restored, "the answer is 42\n");
+        let restored_kb = std::fs::read_to_string(paths2.data_dir.join("kb/note.md")).unwrap();
+        assert_eq!(restored_kb, "persistent note\n");
+    }
+
+    #[test]
+    fn force_restore_preserves_existing_live_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        assert!(std::process::Command::new("git")
+            .args(["init", "--bare", "--initial-branch=main"])
+            .arg(&remote)
+            .status()
+            .unwrap()
+            .success());
+
+        let home1 = root.path().join("home1");
+        let paths1 = test_paths(&home1);
+        std::fs::create_dir_all(&paths1.state_dir).unwrap();
+        std::fs::write(paths1.state_dir.join("memory.md"), "keep me\n").unwrap();
+        std::env::set_var(GQY_HOME_ENV, &home1);
+        let options = BackupInitOptions {
+            remote: remote.display().to_string(),
+            branch: "main".to_string(),
+            git_name: "Test".to_string(),
+            git_email: "test@localhost".to_string(),
+            auto_push: false,
+            ssh_key: None,
+        };
+        init(&paths1, options.clone()).unwrap();
+        backup_now(&paths1, true).unwrap();
+
+        let home2 = root.path().join("home2");
+        let paths2 = test_paths(&home2);
+        std::fs::create_dir_all(&paths2.config_dir).unwrap();
+        std::fs::write(&paths2.config_file, "{\"live\":true}\n").unwrap();
+        std::env::set_var(GQY_HOME_ENV, &home2);
+
+        let error = restore(
+            &paths2,
+            RestoreOptions {
+                remote: remote.display().to_string(),
+                branch: "main".to_string(),
+                git_name: "Test".to_string(),
+                git_email: "test@localhost".to_string(),
+                ssh_key: None,
+                force: false,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("--force"));
+
+        restore(
+            &paths2,
+            RestoreOptions {
+                remote: remote.display().to_string(),
+                branch: "main".to_string(),
+                git_name: "Test".to_string(),
+                git_email: "test@localhost".to_string(),
+                ssh_key: None,
+                force: true,
+            },
+        )
+        .unwrap();
+
+        let live = std::fs::read_to_string(&paths2.config_file).unwrap();
+        assert_eq!(live, "{\"live\":true}\n");
+        let restored = std::fs::read_to_string(paths2.state_dir.join("memory.md")).unwrap();
+        assert_eq!(restored, "keep me\n");
     }
 }

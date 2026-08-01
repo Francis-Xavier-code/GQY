@@ -78,6 +78,17 @@ miyu backup status
 miyu backup now
 ```
 
+在另一台机器上从远程恢复（还原人格、记忆、对话状态和图片）：
+
+```zsh
+export GQY_HOME="$HOME/Library/Application Support/GQY"
+miyu backup restore \
+  --remote git@github.com:YOUR_NAME/gqy-memory.git \
+  --ssh-key "$GQY_HOME/secrets/ssh/id_ed25519"
+```
+
+`backup restore` 会跳过首次初始化，直接把快照还原进独立主目录；已存在本地配置时需 `--force` 覆盖，且不会覆盖已有 `config.jsonc`（避免用脱敏配置冲掉真实密钥，恢复后再重新填写 API key 即可）。恢复完成后 `backup now` 即可继续增量备份。
+
 初始化后默认开启自动推送：每次成功完成一轮对话并落盘记忆后，程序刷新快照、提交变更并推送。传入 `backup init --no-auto-push` 可只保留手动备份。
 
 ### 隔离与安全边界
@@ -89,7 +100,7 @@ miyu backup now
 - `config.jsonc` 会递归清除 API key、token、password、secret、credential、authorization 等字段后再进入快照。
 - `.env*`、私钥/证书、缓存、日志和 Git 凭据不会进入提交。
 
-当前备份覆盖人格、用户身份、skills、长期记忆、对话状态和图片资产。远程自动恢复和 Keychain 管理仍属于后续阶段；在实现恢复前，远端仓库已经是可检查的标准 Git 快照，不是私有二进制格式。
+当前备份覆盖人格、用户身份、skills、长期记忆、对话状态和图片资产；`backup restore` 可从同一远程还原全部内容。Keychain 管理仍属于后续阶段；在实现恢复前，远端仓库已经是可检查的标准 Git 快照，不是私有二进制格式。
 
 ## 开机自启
 
