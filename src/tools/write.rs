@@ -9,15 +9,15 @@ pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new_with_progress(
         "write_file",
         t(
-            "Write content to a file, creating it if it does not exist or overwriting if it does. Supports absolute, workspace-relative, and ~/ paths.",
-            "写入文件内容。文件不存在时创建，存在时覆盖。支持绝对路径、工作区相对路径和 ~/ 路径。",
+            "Write content to a file, creating it if it does not exist or overwriting if it does. Supports absolute, workspace-relative, and ~/ paths. Temporary files should go to ~/gqy-workspace; the GQY project directory is protected.",
+            "写入文件内容。文件不存在时创建，存在时覆盖。支持绝对路径、工作区相对路径和 ~/ 路径。临时文件建议放 ~/gqy-workspace；GQY 项目目录受保护。",
         ),
         json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": t("File path. Supports absolute, workspace-relative, and ~/ paths.", "文件路径。支持绝对路径、工作区相对路径和 ~/ 路径。")
+                    "description": t("File path. Supports absolute, workspace-relative, and ~/ paths. Temporary files should go to ~/gqy-workspace.", "文件路径。支持绝对路径、工作区相对路径和 ~/ 路径。临时文件建议放 ~/gqy-workspace。")
                 },
                 "content": {
                     "type": "string",
@@ -33,6 +33,7 @@ pub fn register(registry: &mut ToolRegistry) {
 
 fn write_file(args: Value, progress: ToolProgress) -> Result<String> {
     let path = path_arg(&args, "path")?;
+    crate::tools::path_guard::ensure_writable(&path)?;
     let content = args
         .get("content")
         .and_then(Value::as_str)

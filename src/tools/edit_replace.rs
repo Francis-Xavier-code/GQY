@@ -42,6 +42,7 @@ pub fn register(registry: &mut ToolRegistry) {
 
 fn edit_string(args: Value, progress: ToolProgress) -> Result<String> {
     let path = path_arg(&args, "path")?;
+    crate::tools::path_guard::ensure_writable(&path)?;
     let old_string = args
         .get("old_string")
         .and_then(Value::as_str)
