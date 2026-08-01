@@ -30,6 +30,8 @@
     "messages-square": [["path", { d: "M14 9a2 2 0 0 1-2 2H6l-4 4V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" }], ["path", { d: "M18 9h2a2 2 0 0 1 2 2v10l-4-4h-6a2 2 0 0 1-2-2v-1" }]],
     moon: [["path", { d: "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" }]],
     "panel-left": [["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ["path", { d: "M9 3v18" }]],
+    "panel-left-close": [["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ["path", { d: "M9 3v18" }], ["path", { d: "m16 15-3-3 3-3" }]],
+    "panel-left-open": [["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ["path", { d: "M9 3v18" }], ["path", { d: "m14 15 3-3-3-3" }]],
     "refresh-cw": [["path", { d: "M21 12a9 9 0 0 0-15.35-6.35L3 8" }], ["path", { d: "M3 3v5h5" }], ["path", { d: "M3 12a9 9 0 0 0 15.35 6.35L21 16" }], ["path", { d: "M16 16h5v5" }]],
     route: [["circle", { cx: "6", cy: "19", r: "3" }], ["path", { d: "M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" }], ["circle", { cx: "18", cy: "5", r: "3" }]],
     "settings-2": [["path", { d: "M20 7h-9" }], ["path", { d: "M14 17H5" }], ["circle", { cx: "17", cy: "17", r: "3" }], ["circle", { cx: "7", cy: "7", r: "3" }]],
@@ -106,8 +108,6 @@
     modelMark: document.getElementById("modelMark"),
     modelLabel: document.getElementById("modelLabel"),
     modelMenu: document.getElementById("modelMenu"),
-    themeButton: document.getElementById("themeButton"),
-    topbarSettingsButton: document.getElementById("topbarSettingsButton"),
     errorRegion: document.getElementById("errorRegion"),
     chatScroll: document.getElementById("chatScroll"),
     loadingState: document.getElementById("loadingState"),
@@ -295,12 +295,11 @@
       button.setAttribute("aria-pressed", String(button.dataset.themeChoice === selected));
     });
     const nextIcon = selected === "graphite" ? "sun" : "moon";
-    for (const button of [elements.themeButton, elements.sidebarThemeButton]) {
-      const slot = button.querySelector(".icon-slot");
-      slot.replaceChildren(createIcon(nextIcon));
-      button.title = selected === "graphite" ? "切换到浅色主题" : "切换到石墨主题";
-      button.setAttribute("aria-label", button.title);
-    }
+    const themeButton = elements.sidebarThemeButton;
+    const slot = themeButton.querySelector(".icon-slot");
+    slot.replaceChildren(createIcon(nextIcon));
+    themeButton.title = selected === "graphite" ? "切换到浅色主题" : "切换到石墨主题";
+    themeButton.setAttribute("aria-label", themeButton.title);
     const themeColor = document.querySelector('meta[name="theme-color"]');
     if (themeColor) themeColor.content = selected === "graphite" ? "#111512" : "#f2f5f3";
     if (persist) safeStorageSet("gqy.web.theme", selected);
@@ -800,12 +799,16 @@
       card.className = "provider-card";
       card.open = index === 0;
       const summary = document.createElement("summary");
+      const logo = document.createElement("span");
+      logo.className = "provider-card-logo";
+      applyModelMark(logo, provider);
       const copy = document.createElement("span");
       const name = document.createElement("strong");
       name.textContent = provider.display_name || provider.id || `供应商 ${index + 1}`;
       const id = document.createElement("small");
       id.textContent = provider.id || "尚未命名";
       copy.append(name, id);
+      summary.append(logo, copy);
       const remove = actionButton("删除", "text-button danger-text");
       remove.addEventListener("click", (event) => {
         event.preventDefault();
@@ -1477,6 +1480,94 @@
     return mark.toLocaleUpperCase("en-US");
   }
 
+  /* 服务商品牌图标（devicons，web/assets/provider-icons.svg）。
+     优先按 provider_id / display_name 精确匹配，其次按 base_url 域名兜底；
+     未收录的供应商（如 kimi/glm/qwen 等）回退为字母缩写。 */
+  const PROVIDER_ICONS = {
+    deepseek: "deepseek",
+    openai: "openai",
+    anthropic: "anthropic",
+    claude: "claude-code",
+    "claude-code": "claude-code",
+    ollama: "ollama-icon",
+    groq: "groq",
+    gemini: "google-gemini",
+    google: "google-gemini",
+    vertex: "google-gemini",
+    meta: "meta-icon",
+    llama: "meta-icon",
+    nvidia: "nvidia",
+    together: "together",
+    perplexity: "perplexity-icon",
+    cohere: "cohere-icon",
+    xai: "xai",
+    grok: "xai",
+    zai: "zai",
+    fireworks: "fireworks",
+    mistral: "mistral-ai",
+    github: "github-icon",
+    microsoft: "microsoft-azure",
+    azure: "microsoft-azure",
+    ibm: "ibm",
+    oracle: "oracle",
+    cloudflare: "cloudflare-icon",
+    bedrock: "aws-bedrock",
+    aws: "aws-bedrock"
+  };
+
+  let providerIconsReady = null;
+  function ensureProviderIcons() {
+    if (!providerIconsReady) {
+      providerIconsReady = fetch("/assets/provider-icons.svg")
+        .then((response) => (response.ok ? response.text() : Promise.reject(new Error("sprite unavailable"))))
+        .then((markup) => {
+          const holder = document.createElementNS(SVG_NS, "svg");
+          holder.style.display = "none";
+          holder.setAttribute("aria-hidden", "true");
+          holder.setAttribute("focusable", "false");
+          const template = document.createElement("template");
+          template.innerHTML = markup;
+          for (const symbol of template.content.querySelectorAll("symbol")) holder.appendChild(symbol);
+          document.body.appendChild(holder);
+        })
+        .catch(() => {});
+    }
+    return providerIconsReady;
+  }
+
+  function providerIconSymbol(model) {
+    const sources = [model?.provider_id, model?.provider_name, model?.display_name, model?.base_url];
+    for (const source of sources) {
+      if (!source) continue;
+      const text = String(source).toLowerCase();
+      if (PROVIDER_ICONS[text]) return PROVIDER_ICONS[text];
+      const host = (text.match(/^https?:\/\/([^/]+)/) || [])[1]?.replace(/^www\./, "") || "";
+      for (const [key, symbol] of Object.entries(PROVIDER_ICONS)) {
+        if (host === key || host.endsWith(`.${key}`)) return symbol;
+      }
+    }
+    return null;
+  }
+
+  function applyModelMark(el, model) {
+    const symbol = providerIconSymbol(model);
+    if (symbol) {
+      ensureProviderIcons();
+      el.classList.add("provider-logo");
+      el.textContent = "";
+      const svg = document.createElementNS(SVG_NS, "svg");
+      svg.setAttribute("aria-hidden", "true");
+      svg.setAttribute("focusable", "false");
+      const use = document.createElementNS(SVG_NS, "use");
+      use.setAttribute("href", `#${symbol}`);
+      svg.appendChild(use);
+      el.appendChild(svg);
+    } else {
+      el.classList.remove("provider-logo");
+      el.textContent = modelMark(model);
+    }
+  }
+
   function modelKey(model) {
     return JSON.stringify([String(model?.provider_id || ""), String(model?.model || "")]);
   }
@@ -1540,9 +1631,11 @@
   function updateCurrentModelDisplay() {
     const active = activeModels();
     if (active.length === 0) {
+      elements.modelMark.classList.remove("provider-logo");
       elements.modelMark.textContent = "--";
       elements.modelLabel.textContent = state.models.length ? "未选择模型" : "未配置模型";
       elements.modelLabel.title = elements.modelLabel.textContent;
+      elements.settingsModelMark.classList.remove("provider-logo");
       elements.settingsModelMark.textContent = "--";
       elements.settingsModelName.textContent = elements.modelLabel.textContent;
       elements.settingsModelProvider.textContent = "--";
@@ -1550,20 +1643,21 @@
     }
     if (active.length > 1) {
       const title = active.map((model) => `${model.provider_name || model.provider_id || ""} · ${model.model || ""}`).join("\n");
+      elements.modelMark.classList.remove("provider-logo");
       elements.modelMark.textContent = "MX";
       elements.modelLabel.textContent = `混合模型 · ${active.length}`;
       elements.modelLabel.title = title;
+      elements.settingsModelMark.classList.remove("provider-logo");
       elements.settingsModelMark.textContent = "MX";
       elements.settingsModelName.textContent = "混合模型";
       elements.settingsModelProvider.textContent = `${active.length} 个活动端点`;
       return;
     }
     const selected = active[0];
-    const mark = modelMark(selected);
-    elements.modelMark.textContent = mark;
+    applyModelMark(elements.modelMark, selected);
     elements.modelLabel.textContent = String(selected.model || "");
     elements.modelLabel.title = `${selected.provider_name || selected.provider_id || ""} · ${selected.model || ""}`;
-    elements.settingsModelMark.textContent = mark;
+    applyModelMark(elements.settingsModelMark, selected);
     elements.settingsModelName.textContent = String(selected.model || "");
     elements.settingsModelProvider.textContent = String(selected.provider_name || selected.provider_id || "");
   }
@@ -1596,7 +1690,7 @@
 
       const mark = document.createElement("span");
       mark.className = "model-mark";
-      mark.textContent = modelMark(model);
+      applyModelMark(mark, model);
       const copy = document.createElement("span");
       copy.className = "model-menu-copy";
       const name = document.createElement("strong");
@@ -4521,7 +4615,6 @@
       scrollToBottom({ force: true, smooth: true });
     });
     elements.settingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));
-    elements.topbarSettingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));
     elements.settingsClose.addEventListener("click", () => closeSettings());
     elements.drawerScrim.addEventListener("click", () => closeSettings());
     elements.settingsNav.querySelectorAll("[data-settings-view]").forEach((button) => {
@@ -4548,7 +4641,6 @@
     if (refreshAlarmsButton) refreshAlarmsButton.addEventListener("click", loadAlarms);
     elements.saveConfigButton.addEventListener("click", saveConfigDraft);
     elements.applyAdvancedConfigButton.addEventListener("click", applyAdvancedConfig);
-    elements.themeButton.addEventListener("click", () => setTheme(elements.body.dataset.theme === "graphite" ? "linen" : "graphite"));
     elements.sidebarThemeButton.addEventListener("click", () => setTheme(elements.body.dataset.theme === "graphite" ? "linen" : "graphite"));
     // 折叠侧栏（仅桌面；移动端侧栏是抽屉，不显示折叠按钮）
     const applyCollapseButtonVisibility = () => {
@@ -4563,10 +4655,14 @@
       safeStorageSet("gqy.web.sidebarCollapsed", !collapsed);
       elements.sidebarCollapseButton.title = collapsed ? "折叠会话栏" : "展开会话栏";
       elements.sidebarCollapseButton.setAttribute("aria-label", elements.sidebarCollapseButton.title);
+      elements.sidebarCollapseButton.querySelector("[data-icon]")?.replaceChildren(createIcon(collapsed ? "panel-left-close" : "panel-left-open"));
     });
     // 恢复持久化的折叠状态
     if (safeStorageGet("gqy.web.sidebarCollapsed") === "true") {
       elements.body.dataset.sidebarCollapsed = "1";
+      elements.sidebarCollapseButton.title = "展开会话栏";
+      elements.sidebarCollapseButton.setAttribute("aria-label", "展开会话栏");
+      elements.sidebarCollapseButton.querySelector("[data-icon]")?.replaceChildren(createIcon("panel-left-open"));
     }
     document.querySelectorAll("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => setTheme(button.dataset.themeChoice)));
     elements.modeSwitch.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));

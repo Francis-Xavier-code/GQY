@@ -82,12 +82,6 @@
             </button>
             <div class="model-menu" id="modelMenu" role="menu" aria-label="选择模型" hidden></div>
           </div>
-          <button class="icon-button" id="themeButton" type="button" title="切换主题" aria-label="切换主题">
-            <span class="icon-slot" data-icon="moon" aria-hidden="true"><span class="icon-fallback">◐</span></span>
-          </button>
-          <button class="icon-button" id="topbarSettingsButton" type="button" title="打开设置" aria-label="打开设置">
-            <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
-          </button>
         </div>
       </header>
 
@@ -211,14 +205,24 @@
       </header>
       <div class="settings-layout">
         <nav class="settings-nav" aria-label="设置分类">
-          <button class="active" type="button" data-settings-view="interface">界面</button>
-          <button type="button" data-settings-view="general">全局</button>
-          <button type="button" data-settings-view="tasks">定时任务</button>
-          <button type="button" data-settings-view="providers">供应商</button>
-          <button type="button" data-settings-view="models">模型池</button>
-          <button type="button" data-settings-view="plugins">插件</button>
-          <button type="button" data-settings-view="prompts">提示词</button>
-          <button type="button" data-settings-view="advanced">高级</button>
+          <div class="settings-nav-group"><h3>外观</h3>
+            <button class="active" type="button" data-settings-view="interface">主题</button>
+          </div>
+          <div class="settings-nav-group"><h3>模型</h3>
+            <button type="button" data-settings-view="models">模型池</button>
+            <button type="button" data-settings-view="providers">供应商</button>
+          </div>
+          <div class="settings-nav-group"><h3>自动化</h3>
+            <button type="button" data-settings-view="tasks">定时任务</button>
+          </div>
+          <div class="settings-nav-group"><h3>扩展</h3>
+            <button type="button" data-settings-view="plugins">插件</button>
+            <button type="button" data-settings-view="prompts">提示词</button>
+          </div>
+          <div class="settings-nav-group"><h3>系统</h3>
+            <button type="button" data-settings-view="general">全局</button>
+            <button type="button" data-settings-view="advanced">高级</button>
+          </div>
         </nav>
         <div class="settings-content">
           <section class="settings-section settings-panel" data-settings-panel="interface">
@@ -227,25 +231,6 @@
             <button type="button" data-theme-choice="linen"><i class="theme-swatch linen"></i><span>浅色</span></button>
             <button type="button" data-theme-choice="graphite"><i class="theme-swatch graphite"></i><span>石墨</span></button>
           </div>
-          </section>
-          <section class="settings-section settings-panel" data-settings-panel="interface">
-          <h2>当前模型</h2>
-          <div class="settings-model" id="settingsModel">
-            <span class="model-mark" id="settingsModelMark">--</span>
-            <span><strong id="settingsModelName">正在载入</strong><small id="settingsModelProvider">--</small></span>
-          </div>
-          </section>
-          <section class="settings-section settings-panel" data-settings-panel="interface">
-          <h2>能力</h2>
-          <dl class="capability-list" id="capabilityList">
-            <div><dt>会话</dt><dd>正在载入</dd></div>
-            <div><dt>附件</dt><dd>正在载入</dd></div>
-            <div><dt>消息队列</dt><dd>正在载入</dd></div>
-          </dl>
-          </section>
-          <section class="settings-section about-section settings-panel" data-settings-panel="interface">
-          <h2>关于</h2>
-          <div class="about-row"><span>顾清影 WebUI</span><span id="versionLabel">--</span></div>
           </section>
           <section class="settings-section settings-panel" data-settings-panel="general" hidden>
           <h2>全局设置</h2>
@@ -259,13 +244,18 @@
           </div>
           <button class="secondary-button compact-button" id="refreshAlarmsButton" type="button">刷新</button>
           </section>
+          <section class="settings-section settings-panel" data-settings-panel="models" hidden>
+          <h2>当前模型</h2>
+          <div class="settings-model" id="settingsModel">
+            <span class="model-mark" id="settingsModelMark">--</span>
+            <span><strong id="settingsModelName">正在载入</strong><small id="settingsModelProvider">--</small></span>
+          </div>
+          <h2>模型池</h2>
+          <div class="model-pool-editor" id="modelPoolEditor"></div>
+          </section>
           <section class="settings-section settings-panel" data-settings-panel="providers" hidden>
           <div class="settings-section-heading"><h2>供应商</h2><button class="secondary-button compact-button" id="addProviderButton" type="button">添加</button></div>
           <div class="provider-editor" id="providerEditor"></div>
-          </section>
-          <section class="settings-section settings-panel" data-settings-panel="models" hidden>
-          <h2>模型池</h2>
-          <div class="model-pool-editor" id="modelPoolEditor"></div>
           </section>
           <section class="settings-section settings-panel" data-settings-panel="plugins" hidden>
           <h2>插件配置</h2>
@@ -276,6 +266,12 @@
           <div class="prompt-editor" id="promptEditor"></div>
           </section>
           <section class="settings-section settings-panel" data-settings-panel="advanced" hidden>
+          <h2>能力状态</h2>
+          <dl class="capability-list" id="capabilityList">
+            <div><dt>会话</dt><dd>正在载入</dd></div>
+            <div><dt>附件</dt><dd>正在载入</dd></div>
+            <div><dt>消息队列</dt><dd>正在载入</dd></div>
+          </dl>
           <h2>完整配置</h2>
           <p class="settings-description">这里包含结构化表单未单独展示的所有配置项。应用到草稿后仍需保存。</p>
           <textarea class="config-json-editor" id="advancedConfigEditor" spellcheck="false" aria-label="完整配置 JSON"></textarea>
@@ -284,7 +280,7 @@
         </div>
       </div>
       <footer class="settings-footer">
-        <span id="settingsStatus">尚未载入配置</span>
+        <span class="settings-footer-meta"><span>顾清影 WebUI</span><span id="versionLabel">--</span><span id="settingsStatus">尚未载入配置</span></span>
         <div>
           <button class="secondary-button" id="reloadConfigButton" type="button">重新载入</button>
           <button class="primary-button" id="saveConfigButton" type="button" disabled>保存配置</button>

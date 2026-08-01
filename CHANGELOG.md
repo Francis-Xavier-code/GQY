@@ -5,6 +5,24 @@
 
 ## [Unreleased]
 
+### 修复
+- 对话壁纸位置重做：不再用 contain 留白贴死在视口右下角（会半截藏在输入区
+  后面）——按图片真实比例（1672:941）铺满、圆角淡显在输入区上方，滚动对话
+  时保持不动，矮窗口自动缩小
+- 侧栏折叠修复：折叠按钮图标此前缺失定义导致一直显示警告圈；补
+  `panel-left-close/open` 图标并随折叠状态翻转；悬停自动展开时整条网格同步
+  回流（`:has(.sidebar:hover)`），会话区让位不再被侧栏盖住；展开/收起双向
+  平滑过渡
+- 设置界面重构：导航按「外观/模型/自动化/扩展/系统」分组；「当前模型」移到
+  模型池面板顶部、「能力状态」并入高级面板、版本号移入设置页脚
+- 去重顶栏按钮：主题/设置此前顶栏与侧栏各有一个——只保留侧栏（带文字标签），
+  顶栏只剩模型选择器
+- 供应商品牌 logo：模型标记/模型菜单/供应商卡片改用 devicons 品牌图标
+  （DeepSeek/OpenAI/Anthropic/Claude/Ollama/Groq/Gemini/Meta/NVIDIA/
+  Together/Perplexity/Cohere/xAI/Z.ai/Fireworks/Mistral/GitHub/Azure/
+  IBM/Oracle/Cloudflare/AWS 等 22 个，本地 sprite 离线加载，MIT 来源）；
+  未收录的供应商（如 Moonshot/GLM/Qwen 等）保持字母缩写
+
 ### 新增
 - 迷你对话窗口重写为**独立页面**（/mini，不再复用面板 UI）：
   自己的输入条/发送按钮/放大按钮/回复区，输入发送后展开回复，

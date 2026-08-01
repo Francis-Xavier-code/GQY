@@ -197,6 +197,7 @@ textarea:disabled {
   min-height: 0;
   border-right: 1px solid var(--line);
   background: var(--sidebar-bg);
+  transition: width 0.2s ease-out;
 }
 
 .brand-row {
@@ -594,6 +595,42 @@ textarea:disabled {
   overflow: hidden;
 }
 
+/* 品牌 logo 标记（devicons）：替换字母缩写 */
+.model-mark.provider-logo {
+  background: transparent;
+  border-radius: 4px;
+}
+
+.model-mark.provider-logo svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.provider-card > summary > .provider-card-logo {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.provider-card > summary > .provider-card-logo.provider-logo svg {
+  width: 88%;
+  height: 88%;
+  display: block;
+}
+
+.provider-card > summary > .provider-card-logo:not(.provider-logo) {
+  color: var(--accent-strong);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+}
+
 .model-menu {
   position: absolute;
   top: calc(100% + 7px);
@@ -766,18 +803,29 @@ textarea:disabled {
   position: relative;
 }
 
-/* 对话背景：顾清影壁纸淡显在右下角（新对话/有对话都可见） */
+/* 对话背景：顾清影壁纸淡显在右下角（新对话/有对话都可见）。
+   按图片真实比例铺满（aspect-ratio + cover，避免 contain 留白），
+   锚定在输入区上方，滚动对话时保持不动。 */
 .timeline::before {
   content: "";
   position: fixed;
-  right: 0;
-  bottom: 0;
-  width: min(46vw, 520px);
-  height: min(62vh, 500px);
-  background: url("/assets/gqy-wallpaper.png") no-repeat right bottom / contain;
-  opacity: 0.1;
+  right: 20px;
+  bottom: 158px;
+  width: min(36vw, 400px);
+  aspect-ratio: 1672 / 941;
+  background: url("/assets/gqy-wallpaper.png") no-repeat center / cover;
+  opacity: 0.08;
+  border-radius: 10px;
   pointer-events: none;
   z-index: 0;
+}
+
+@media (max-height: 620px) {
+  .timeline::before {
+    width: min(30vw, 240px);
+    bottom: 132px;
+    opacity: 0.06;
+  }
 }
 
 .timeline > * {
@@ -2644,8 +2692,21 @@ textarea:disabled {
   gap: 2px;
 }
 
+.settings-nav-group h3 {
+  margin: 10px 12px 3px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-nav-group:first-child h3 {
+  margin-top: 2px;
+}
+
 .settings-nav button {
-  min-height: 42px;
+  min-height: 36px;
   padding: 0 12px;
   border-radius: 5px;
   background: transparent;
@@ -2697,11 +2758,31 @@ textarea:disabled {
   gap: 10px;
 }
 
-.settings-footer > span {
+.settings-footer > .settings-footer-meta {
+  display: flex;
   min-width: 0;
+  align-items: center;
+  gap: 8px;
   color: var(--text-faint);
   font-size: 12px;
-  overflow-wrap: anywhere;
+}
+
+.settings-footer-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-footer-meta span:first-child {
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.settings-footer-meta span + span::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--text-faint);
 }
 
 .settings-footer > div {
@@ -4028,12 +4109,13 @@ textarea.config-input {
   body[data-sidebar-collapsed] .sidebar:hover .sidebar-actions .sidebar-action {
     padding: revert;
   }
-  body[data-sidebar-collapsed] .sidebar-collapse-button .icon-fallback {
-    content: "▶";
-  }
+  /* 悬停展开时整条网格回流（:has 让会话区同步让位），收起/展开均平滑过渡 */
   body[data-sidebar-collapsed] .app-shell {
     grid-template-columns: 48px minmax(0, 1fr);
     transition: grid-template-columns 0.2s ease-out;
+  }
+  body[data-sidebar-collapsed]:has(.sidebar:hover) .app-shell {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   }
 }
 
