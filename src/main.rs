@@ -16,6 +16,7 @@ mod prompts;
 mod question;
 mod question_tui;
 mod render;
+mod repl_avatar;
 mod shell;
 mod state;
 mod token_counter;

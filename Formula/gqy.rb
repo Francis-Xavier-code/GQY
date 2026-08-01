@@ -23,7 +23,6 @@ class Gqy < Formula
 
   def install
     system "cargo", "install", *std_cargo_args
-    bin.install Dir[libexec/"bin/*"]
   end
 
   test do
