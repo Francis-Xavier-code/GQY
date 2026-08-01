@@ -12,7 +12,7 @@
 #   4. 把结果填入下面 sha256 并提交本文件
 cask "gqy" do
   version "0.4.0"
-  sha256 "" # TODO: 发布 v0.4.0 后填入 dmg sha256
+  sha256 "b8243f8f3cc74e42a7397b9c4a240b355ed54f81119ff0a5b7ef39ac93f75c51"
 
   url "https://github.com/Francis-Xavier-code/GQY/releases/download/v#{version}/GQY-#{version}.dmg"
   name "顾清影"
