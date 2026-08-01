@@ -6,13 +6,14 @@
 #
 # 发布流程：
 #   1. zsh macos/GQYMenuBar/build.sh && zsh macos/GQYMenuBar/make-dmg.sh
-#   2. 上传 macos/GQYMenuBar/.build/GQY-0.4.1.dmg 到 GitHub Release v0.4.1 资产
+#   2. gh release create v0.4.2 macos/GQYMenuBar/.build/GQY-0.4.2.dmg
 #   3. 计算 dmg 的 sha256：
-#        shasum -a 256 macos/GQYMenuBar/.build/GQY-0.4.1.dmg
+#        shasum -a 256 macos/GQYMenuBar/.build/GQY-0.4.2.dmg
 #   4. 把结果填入下面 sha256 并提交本文件
+#   5. 同步到 homebrew-GQY tap 仓库
 cask "gqy" do
-  version "0.4.1"
-  sha256 "b0743523d1e1c4936cf18c7a38f814a1ee43fe595d73815f0021f7eaf7b355bc"
+  version "0.4.2"
+  sha256 "4fc51b363bdb89197088f16a4accc8304adf78a50ea38b80892482a4da93a153"
 
   url "https://github.com/Francis-Xavier-code/GQY/releases/download/v#{version}/GQY-#{version}.dmg"
   name "顾清影"
