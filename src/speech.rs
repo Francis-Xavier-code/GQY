@@ -100,6 +100,8 @@ fn speech_tool_path(paths: &GqyPaths) -> std::path::PathBuf {
 mod tests {
     use super::*;
 
+    // 依赖 macOS 自带 `say`；Linux 上无此命令，跳过
+    #[cfg(target_os = "macos")]
     #[test]
     fn tts_generates_audio_file() {
         let out = std::env::temp_dir().join(format!("gqy-tts-test-{}.aiff", std::process::id()));
@@ -111,6 +113,7 @@ mod tests {
         let _ = std::fs::remove_file(&out);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn lists_system_voices() {
         let voices = list_voices().unwrap();
