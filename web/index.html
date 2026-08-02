@@ -33,6 +33,10 @@
       </button>
 
       <nav class="session-list" aria-label="会话">
+        <div class="sidebar-search" role="search">
+          <input id="sidebarSearchInput" type="search" placeholder="搜索对话历史…" aria-label="搜索对话历史" autocomplete="off" />
+        </div>
+        <div class="search-results" id="searchResults" aria-label="搜索结果" hidden></div>
         <div class="channel-list" id="channelList" aria-label="对话通道"></div>
         <button class="session-item active" id="currentConversation" type="button">
           <span class="session-item-main">
@@ -80,6 +84,9 @@
         </div>
 
         <div class="topbar-actions">
+          <button class="topbar-icon-button" id="exportButton" type="button" title="导出当前对话" aria-label="导出当前对话">
+            <span class="icon-slot" data-icon="download" aria-hidden="true"><span class="icon-fallback">↓</span></span>
+          </button>
           <div class="model-menu-wrap" id="modelMenuWrap">
             <button class="model-button" id="modelButton" type="button" aria-haspopup="menu" aria-expanded="false" disabled>
               <span class="model-mark" id="modelMark">--</span>
@@ -162,7 +169,8 @@
         <footer class="composer-dock" id="composerDock">
           <div class="question-dock" id="questionDock" aria-label="待回答问题" aria-live="polite" hidden></div>
           <form class="composer" id="composerForm">
-            <textarea id="composerInput" rows="3" placeholder="给顾清影发消息" aria-label="消息" disabled></textarea>
+            <div class="image-tray" id="imageTray" aria-label="待发送图片" hidden></div>
+            <textarea id="composerInput" rows="3" placeholder="给顾清影发消息（可粘贴/拖入图片）" aria-label="消息" disabled></textarea>
             <div class="queue-tray" id="queueTray" aria-label="排队中的消息" hidden></div>
             <div class="composer-footer">
               <div class="composer-controls">
@@ -208,8 +216,15 @@
           <div class="usage-summary" id="usageSummary"></div>
           <div class="usage-chart-section">
             <div class="usage-section-heading">
-              <h3>每日 Token 消耗</h3>
-              <span class="usage-chart-hint">最近 365 天</span>
+              <h3>近 30 天趋势</h3>
+              <span class="usage-chart-hint">每日 token 消耗</span>
+            </div>
+            <div class="usage-bars" id="usageBars" role="img" aria-label="近 30 天 token 消耗柱状图"></div>
+          </div>
+          <div class="usage-chart-section">
+            <div class="usage-section-heading">
+              <h3>每月 Token 消耗</h3>
+              <span class="usage-chart-hint">近 12 个月</span>
             </div>
             <div class="usage-contribution" id="usageContribution" role="img" aria-label="每日 token 消耗贡献图"></div>
             <div class="usage-legend">

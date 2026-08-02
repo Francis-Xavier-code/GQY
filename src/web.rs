@@ -1,15 +1,16 @@
 use crate::agent::{Agent, AgentEvent, AgentMode, AgentTurnControl};
+use crate::clipboard::{ClipboardImage, PastedImage};
 use crate::cli::{build_tool_registry, WebArgs};
 use crate::config::{ActiveProviderModelConfig, AppConfig};
-use crate::llm::{ChatResult, ChatStreamKind, OpenAiCompatibleClient, Usage};
+use crate::llm::{ChatResult, ChatStreamKind, LlmClient, Usage};
 use crate::memory::MemoryStore;
 use crate::paths::GqyPaths;
 use crate::question::{self, QuestionAnswers, QuestionRequest, QuestionResponse};
 use crate::state::{
-    ChannelSummary, ConversationSummary, ImageAsset, QueuedPrompt, StateStore, Turn, TurnFollowup,
-    TurnStatus, UsageSnapshot,
+    ChannelSummary, ConversationSummary, ImageAsset, QueuedPrompt, QueuedPromptAttachment,
+    StateStore, Turn, TurnFollowup, TurnStatus, UsageSnapshot,
 };
-use crate::tools::{self, CommandOutputStream};
+use crate::tools::{self, CommandOutputStream, ToolRegistry};
 use anyhow::{Context, Result};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
@@ -71,6 +72,10 @@ struct WebState {
     actor_tx: mpsc::UnboundedSender<ActorCommand>,
     /// 余额查询缓存（60s 防抖：每次对话后刷新一次即可，避免频繁请求公开接口）
     balance_cache: Arc<Mutex<Option<(std::time::Instant, serde_json::Value)>>>,
+    /// pi 工具桥共用的工具注册表（Web 端 /api/tools/call 与桥共享）
+    bridge_registry: Arc<std::sync::Mutex<ToolRegistry>>,
+    /// 优雅退出信号（/api/shutdown 触发，菜单栏「退出」用它统一收尾）
+    shutdown: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone)]
@@ -176,7 +181,14 @@ enum ActorCommand {
     StartTurn {
         run_id: String,
         content: String,
+        images: Vec<Option<PastedImage>>,
         mode: AgentMode,
+    },
+    /// pi 控制命令（模型/思考级别）
+    Pi {
+        kind: PiCommandKind,
+        value: String,
+        reply: oneshot::Sender<Result<serde_json::Value>>,
     },
     Cancel {
         run_id: String,
@@ -691,17 +703,73 @@ struct EventsQuery {
     after: u64,
 }
 
+#[derive(Clone, Copy)]
+enum PiCommandKind {
+    GetState,
+    GetModels,
+    SetModel,
+    SetThinking,
+}
+
+/// 解析 pi 控制命令（web /api/pi/* 用）
+fn parse_pi_command(path: &str) -> Option<PiCommandKind> {
+    match path {
+        "state" => Some(PiCommandKind::GetState),
+        "models" => Some(PiCommandKind::GetModels),
+        "model" => Some(PiCommandKind::SetModel),
+        "thinking" => Some(PiCommandKind::SetThinking),
+        _ => None,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[derive(Clone)]
+struct WebImageInput {
+    mime: String,
+    data_base64: String,
+}
+
+/// 把前端 base64 图片转成 agent 用的 PastedImage（解码失败则丢弃该项）。
+fn pasted_images_from_input(images: &[WebImageInput]) -> Vec<Option<PastedImage>> {
+    images
+        .iter()
+        .map(|image| match base64::engine::general_purpose::STANDARD.decode(&image.data_base64) {
+            Ok(data) => Some(PastedImage::Binary(ClipboardImage::new(
+                image.mime.clone(),
+                data,
+            ))),
+            Err(_) => None,
+        })
+        .collect()
+}
+
+fn queued_attachments_from_input(images: &[WebImageInput]) -> Vec<QueuedPromptAttachment> {
+    images
+        .iter()
+        .filter(|image| base64::engine::general_purpose::STANDARD.decode(&image.data_base64).is_ok())
+        .map(|image| QueuedPromptAttachment::Binary {
+            mime: image.mime.clone(),
+            data_base64: image.data_base64.clone(),
+        })
+        .collect()
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateTurnRequest {
     content: String,
     mode: String,
+    #[serde(default)]
+    images: Vec<WebImageInput>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QueuePromptRequest {
     content: String,
+    #[serde(default)]
+    images: Vec<WebImageInput>,
 }
 
 #[derive(Deserialize)]
@@ -789,6 +857,8 @@ struct BootstrapResponse {
     display: WebDisplayConfig,
     context: ContextSnapshot,
     usage: SafeUsageSnapshot,
+    /// 引擎标识：`pi`（pi 底座）或 provider id
+    engine: String,
     capabilities: Capabilities,
 }
 
@@ -885,6 +955,8 @@ struct SafeImageAsset {
     height: u32,
     alt: String,
     hide_caption: bool,
+    /// 资产归属：`user`（用户随消息发送的图片）/ `tool`（工具输出，表情包等）
+    source: String,
 }
 
 #[derive(Serialize)]
@@ -926,8 +998,9 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
     let config = AppConfig::load_or_default(&paths)?;
     let state_store = StateStore::new(&paths)?;
     state_store.init_files()?;
-    let client = OpenAiCompatibleClient::from_config(&config, &paths)?;
+    let client = LlmClient::from_config(&config, &paths)?;
     let registry = build_tool_registry(&config, &paths, AgentMode::Normal, true)?;
+    let bridge_registry = Arc::new(std::sync::Mutex::new(registry.clone()));
     let agent = Agent::new(
         config.clone(),
         &paths,
@@ -964,6 +1037,26 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
         questions.clone(),
     )?;
 
+    // pi 底座模式：启动工具桥；图片事件（表情包等）经 events/state_store 落到 WebUI 资产
+    let bridge_sink: Option<Arc<dyn Fn(std::path::PathBuf, String) + Send + Sync>> = Some(Arc::new({
+        let events = events.clone();
+        let state_store = state_store.clone();
+        let manager = manager.clone();
+        move |path, alt| {
+            publish_bridge_image(&events, &state_store, &manager, path, alt);
+        }
+    }));
+    let bridge_progress_sink: Option<Arc<dyn Fn(String) + Send + Sync>> = Some(Arc::new({
+        let events = events.clone();
+        let manager = manager.clone();
+        move |message| {
+            publish_bridge_progress(&events, &manager, message);
+        }
+    }));
+    crate::pi_bridge::ensure_pi_bridge(bridge_registry.clone(), &paths, bridge_sink, bridge_progress_sink)
+        .await
+        .with_context(|| "failed to start pi tool bridge")?;
+
     // 配置文件热重载：检测 GQY_HOME/config/config.jsonc 被外部修改
     // （CLI `gqy config set`、直接编辑等），自动重建 agent 并通知前端，
     // 让菜单栏 / CLI / 面板三端配置始终同步。
@@ -979,7 +1072,10 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
         questions,
         actor_tx: actor_tx.clone(),
         balance_cache: Arc::new(Mutex::new(None)),
+        bridge_registry,
+        shutdown: Arc::new(tokio::sync::Notify::new()),
     };
+    let shutdown_notify = state.shutdown.clone();
     let app = router(state);
     // 只有设置了密码才把局域网地址列出来（无密码时仅回环可达）
     let urls = web_access_urls(port, password.is_some());
@@ -1000,6 +1096,7 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
     let serve_result = tokio::select! {
         result = &mut server => result,
         _ = shutdown_signal() => Ok(()),
+        _ = shutdown_notify.notified() => Ok(()),
     };
     let _ = actor_tx.send(ActorCommand::Shutdown);
     let actor_result = tokio::task::spawn_blocking(move || actor_join.join())
@@ -1036,6 +1133,11 @@ fn router(state: WebState) -> Router {
         .route("/api/usage/stats", get(usage_stats_web))
         .route("/api/usage/details", get(usage_details_web))
         .route("/api/channels/{channel_id}/turns", get(channel_turns_web))
+        .route("/api/search", get(search_web))
+        .route("/api/tools/call", post(call_tool_web))
+        .route("/api/pi/{kind}", get(pi_control_web).post(pi_control_web))
+        .route("/api/export", get(export_conversation_web))
+        .route("/api/shutdown", post(shutdown_web))
         .route(
             "/api/conversations/{conversation_id}/turns",
             get(conversation_turns_web),
@@ -1416,6 +1518,183 @@ async fn channel_turns_web(
     Ok(response)
 }
 
+/// pi 控制：state/models 查询 + model/thinking 设置。
+/// 经 ActorCommand::Pi 转发到持有 agent 的线程执行（回合运行中也可切换）。
+async fn pi_control_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    method: axum::http::Method,
+    Path(kind): Path<String>,
+    body: axum::body::Bytes,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let Some(command) = parse_pi_command(&kind) else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown pi command"));
+    };
+    let value = if matches!(command, PiCommandKind::SetModel | PiCommandKind::SetThinking) {
+        let payload: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+        payload
+            .get(if matches!(command, PiCommandKind::SetModel) { "modelId" } else { "level" })
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        String::new()
+    };
+    let (tx, rx) = oneshot::channel();
+    state
+        .actor_tx
+        .send(ActorCommand::Pi {
+            kind: command,
+            value,
+            reply: tx,
+        })
+        .map_err(ApiError::internal)?;
+    let result = rx.await.map_err(ApiError::internal)?;
+    let payload = result.map_err(ApiError::internal)?;
+    Ok(Json(json!({ "ok": true, "data": payload })).into_response())
+}
+
+/// 导出当前会话为 markdown 文档。
+async fn export_conversation_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let turns = state
+        .state_store
+        .load_visible_turns()
+        .map_err(ApiError::internal)?;
+    let mut md = String::new();
+    md.push_str("# GQY 对话导出\n\n");
+    for turn in turns {
+        if turn.is_summary {
+            continue;
+        }
+        md.push_str(&format!("## {}\n\n", turn.user_timestamp));
+        if !turn.user_content.trim().is_empty() {
+            md.push_str(&format!("**你**：\n\n{}\n\n", turn.user_content));
+        }
+        if !turn.assistant_content.trim().is_empty() {
+            md.push_str(&format!("**顾清影**：\n\n{}\n\n", turn.assistant_content));
+        }
+    }
+    let filename = "gqy-export.md";
+    let mut response = Response::new(axum::body::Body::from(md));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("text/markdown; charset=utf-8"));
+    response.headers_mut().insert(
+        "content-disposition",
+        HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).unwrap(),
+    );
+    Ok(response)
+}
+
+/// 优雅退出：菜单栏「退出」调用，停 serve → actor 结束（agent drop → pi 进程组被杀）→ 进程退出。
+/// 本机信任端点：不要求 auth（本地进程可触发，外部不可达）。
+async fn shutdown_web(State(state): State<WebState>) -> Json<Value> {
+    state.shutdown.notify_one();
+    Json(json!({ "ok": true, "message": "shutting down" }))
+}
+
+/// Web 端调用 GQY 工具（工具块「重跑」用）。
+/// 与 pi 工具桥共用 registry；task/deep_research 等长任务给足超时。
+async fn call_tool_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Json(request): Json<WebToolCallRequest>,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let name = request.name.clone();
+    let name_for_call = name.clone();
+    let arguments = if request.arguments.is_null() {
+        json!({})
+    } else {
+        request.arguments
+    };
+    let arguments_str = arguments.to_string();
+    let registry = state
+        .bridge_registry
+        .lock()
+        .unwrap()
+        .clone();
+    let timeout = if matches!(name.as_str(), "task" | "deep_research") {
+        Duration::from_secs(1800)
+    } else {
+        Duration::from_secs(180)
+    };
+    let (progress_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let progress = crate::tools::ToolProgress::new(progress_tx);
+    let result = tokio::time::timeout(timeout, async move {
+        registry.call_with_progress(&name_for_call, &arguments_str, &progress).await
+    })
+    .await;
+    let body = match result {
+        Ok(Ok(output)) => json!({ "ok": true, "output": output }),
+        Ok(Err(err)) => json!({ "ok": false, "error": format!("{err:#}") }),
+        Err(_) => json!({ "ok": false, "error": format!("tool {name} timed out after {}s", timeout.as_secs()) }),
+    };
+    Ok(Json(body).into_response())
+}
+
+#[derive(Deserialize)]
+struct WebToolCallRequest {
+    name: String,
+    #[serde(default)]
+    arguments: Value,
+}
+
+/// 全文搜索对话（跨通道），返回匹配轮次（新→旧）
+async fn search_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<SearchQuery>,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let needle = query.q.trim();
+    if needle.is_empty() {
+        return Ok(Json(json!({ "ok": true, "query": "", "results": [] })).into_response());
+    }
+    let limit = query.limit.unwrap_or(30).clamp(1, 200);
+    let turns = state
+        .state_store
+        .search_turns(needle, limit)
+        .map_err(ApiError::internal)?;
+    let mut assets_by_turn = HashMap::<String, Vec<ImageAsset>>::new();
+    for asset in state
+        .state_store
+        .load_image_assets()
+        .map_err(ApiError::internal)?
+    {
+        assets_by_turn
+            .entry(asset.turn_id.clone())
+            .or_default()
+            .push(asset);
+    }
+    let results = turns
+        .into_iter()
+        .map(|turn| {
+            let assets = assets_by_turn.remove(&turn.turn_id).unwrap_or_default();
+            let turn_id = turn.turn_id.clone();
+            let mut safe = SafeTurn::from_turn(turn, assets);
+            safe.id = turn_id;
+            safe
+        })
+        .collect::<Vec<_>>();
+    let mut response = Json(json!({ "ok": true, "query": needle, "results": results })).into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    limit: Option<usize>,
+}
+
 /// 读取指定历史会话的 turns（当前通道内，含归档轮次；只读数据源）
 async fn conversation_turns_web(
     State(state): State<WebState>,
@@ -1539,10 +1818,16 @@ async fn bootstrap(
         .into_iter()
         .map(safe_conversation_summary)
         .collect();
+    let engine = match config.provider(None) {
+        Ok(provider) if provider.is_pi() => "pi".to_string(),
+        Ok(provider) => provider.id.clone(),
+        Err(_) => "unknown".to_string(),
+    };
     let mut response = Json(BootstrapResponse {
         version: env!("CARGO_PKG_VERSION"),
         boot_id: state.boot_id.to_string(),
         latest_event_id: state.events.latest_id(),
+        engine,
         active_run_id,
         running_turn_id,
         external_queue_available,
@@ -1557,7 +1842,7 @@ async fn bootstrap(
         usage,
         capabilities: Capabilities {
             multi_conversation: true,
-            attachments: false,
+            attachments: true,
             queue: true,
         },
     })
@@ -1774,6 +2059,7 @@ fn record_to_sse(record: EventRecord) -> Event {
 fn enqueue_running_prompt(
     state: &WebState,
     content: &str,
+    attachments: &[QueuedPromptAttachment],
 ) -> std::result::Result<(Option<String>, Option<String>, SafeQueuedPrompt), ApiError> {
     let active_run_id = {
         let manager = state.manager.lock().unwrap();
@@ -1789,7 +2075,7 @@ fn enqueue_running_prompt(
     if let Some(run_id) = active_run_id {
         let prompt = state
             .state_store
-            .enqueue_prompt(&prompt_id, content, content, &[])
+            .enqueue_prompt(&prompt_id, content, content, attachments)
             .map_err(ApiError::internal)?;
         return Ok((Some(run_id), None, SafeQueuedPrompt::from(prompt)));
     }
@@ -1850,7 +2136,8 @@ async fn create_turn(
         .has_running_turns()
         .map_err(ApiError::internal)?
     {
-        let (run_id, turn_id, prompt) = enqueue_running_prompt(&state, &content)?;
+        let (run_id, turn_id, prompt) =
+            enqueue_running_prompt(&state, &content, &[])?;
         publish_queued_prompt(&state, run_id.as_deref(), turn_id.as_deref(), &prompt);
         return Ok((
             StatusCode::ACCEPTED,
@@ -1874,11 +2161,13 @@ async fn create_turn(
         }
         manager.active_run_id = Some(run_id.clone());
     }
+    let pasted = pasted_images_from_input(&request.images);
     if state
         .actor_tx
         .send(ActorCommand::StartTurn {
             run_id: run_id.clone(),
             content,
+            images: pasted,
             mode,
         })
         .is_err()
@@ -1889,7 +2178,67 @@ async fn create_turn(
             "agent worker is unavailable",
         ));
     }
+    // 用户随消息发送的图片 → 持久化为回合资产（刷新/历史查看时仍能预览）
+    if !request.images.is_empty() {
+        let images = request.images.clone();
+        let state_store = state.state_store.clone();
+        let paths = state.paths.clone();
+        tokio::spawn(async move {
+            persist_user_images(&state_store, &paths, &images).await;
+        });
+    }
     Ok((StatusCode::ACCEPTED, Json(json!({ "run_id": run_id }))).into_response())
+}
+
+/// 等待当前回合启动（轮询 running_turn_queue_target），把用户图片写入
+/// `cache/clipboard_images` 并保存为 `user_image_N` 资产。
+async fn persist_user_images(
+    state_store: &StateStore,
+    paths: &GqyPaths,
+    images: &[WebImageInput],
+) {
+    let turn_id = {
+        let mut found = None;
+        for _ in 0..100 {
+            match state_store.running_turn_queue_target() {
+                Ok(Some(target)) if !target.turn_id.is_empty() => {
+                    found = Some(target.turn_id.clone());
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
+        }
+        found
+    };
+    let Some(turn_id) = turn_id else {
+        return;
+    };
+    let dir = paths.cache_dir.join("clipboard_images");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    for (index, image) in images.iter().enumerate() {
+        let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&image.data_base64)
+        else {
+            continue;
+        };
+        let ext = match image.mime.split('/').nth(1).unwrap_or("png") {
+            "jpeg" | "jpg" => "jpg",
+            "gif" => "gif",
+            "webp" => "webp",
+            _ => "png",
+        };
+        let path = dir.join(format!("user_image_{}_{}.{ext}", turn_id, index));
+        if std::fs::write(&path, &data).is_err() {
+            continue;
+        }
+        let _ = state_store.save_image_asset(
+            &turn_id,
+            Some(&format!("user_image_{index}")),
+            &path,
+            "用户发送的图片",
+        );
+    }
 }
 
 async fn queue_prompt(
@@ -1899,7 +2248,8 @@ async fn queue_prompt(
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
     let content = validate_content(request.content)?;
-    let (run_id, turn_id, safe) = enqueue_running_prompt(&state, &content)?;
+    let attachments = queued_attachments_from_input(&request.images);
+    let (run_id, turn_id, safe) = enqueue_running_prompt(&state, &content, &attachments)?;
     publish_queued_prompt(&state, run_id.as_deref(), turn_id.as_deref(), &safe);
     Ok((StatusCode::ACCEPTED, Json(safe)).into_response())
 }
@@ -2219,6 +2569,7 @@ async fn actor_loop(
             ActorCommand::StartTurn {
                 run_id,
                 content,
+                images,
                 mode,
             } => {
                 let keep_running = run_agent_turn(
@@ -2232,12 +2583,17 @@ async fn actor_loop(
                     &mut receiver,
                     run_id,
                     content,
+                    images,
                     mode,
                 )
                 .await;
                 if !keep_running {
                     break;
                 }
+            }
+            ActorCommand::Pi { kind, value, reply } => {
+                let result = run_pi_command(&agent.llm_client(), kind, value).await;
+                let _ = reply.send(result);
             }
             ActorCommand::Cancel { .. } => {}
             ActorCommand::SetModels { models, reply } => {
@@ -2289,6 +2645,77 @@ async fn actor_loop(
     }
 }
 
+/// pi 工具桥产生的图片（表情包等）：保存为 WebUI 资产并推送 tool.image 事件。
+/// 图片事件发生在 axum 工具调用线程，与 agent 回合并发，这里通过
+/// state_store 找到当前运行中的回合来归属资产。
+fn publish_bridge_image(
+    events: &EventHub,
+    state_store: &StateStore,
+    manager: &Arc<Mutex<ManagerState>>,
+    path: std::path::PathBuf,
+    alt: String,
+) {
+    let run_id = manager
+        .lock()
+        .unwrap()
+        .active_run_id
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let turn_id = match state_store.running_turn_queue_target() {
+        Ok(Some(target)) => target.turn_id.clone(),
+        _ => String::new(),
+    };
+    if turn_id.is_empty() {
+        return;
+    }
+    let tool_id = format!("{run_id}_bridge_image");
+    let name = if alt.contains("表情") || alt.contains("meme") {
+        "show_meme"
+    } else {
+        "image"
+    };
+    match state_store.save_image_asset(&turn_id, Some(&tool_id), &path, &alt) {
+        Ok(asset) => {
+            let hide_caption = name == "show_meme";
+            events.publish(
+                "tool.image",
+                json!({
+                    "run_id": run_id,
+                    "tool_id": tool_id,
+                    "name": name,
+                    "asset": SafeImageAsset::from_asset(asset, hide_caption),
+                }),
+            );
+        }
+        Err(error) => {
+            tracing::warn!(run_id, error = %error, "pi bridge: failed to persist image asset");
+        }
+    }
+}
+
+/// pi 工具桥产生的进度消息（agent 思考/回复增量等）→ tool.progress SSE，
+/// 挂到独立的「agent 集群活动」工具卡（实时滚动）。
+fn publish_bridge_progress(events: &EventHub, manager: &Arc<Mutex<ManagerState>>, message: String) {
+    let run_id = manager
+        .lock()
+        .unwrap()
+        .active_run_id
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    if run_id == "unknown" {
+        return;
+    }
+    events.publish(
+        "tool.progress",
+        json!({
+            "run_id": run_id,
+            "tool_id": format!("{run_id}_agent_activity"),
+            "name": "agent 集群活动",
+            "message": message,
+        }),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_turn(
     agent: &mut Agent,
@@ -2301,6 +2728,7 @@ async fn run_agent_turn(
     receiver: &mut mpsc::UnboundedReceiver<ActorCommand>,
     run_id: String,
     content: String,
+    images: Vec<Option<PastedImage>>,
     mode: AgentMode,
 ) -> bool {
     events.publish(
@@ -2339,9 +2767,11 @@ async fn run_agent_turn(
         questions.clone(),
         state_store.clone(),
     )));
+    // pi 控制命令在回合运行中也能执行：用 client 克隆（chat future 借用了 agent）
+    let pi_client = agent.llm_client();
     let chat_outcome = {
         let callback_mapper = mapper.clone();
-        let chat = agent.chat_stream_with_control(&content, &[], &control, move |event| {
+        let chat = agent.chat_stream_with_control(&content, &images, &control, move |event| {
             callback_mapper.lock().unwrap().handle(event);
             Ok(())
         });
@@ -2351,6 +2781,11 @@ async fn run_agent_turn(
                 biased;
                 result = &mut chat => break TurnOutcome::Finished(result),
                 command = receiver.recv() => {
+                    if let Some(ActorCommand::Pi { kind, value, reply }) = command {
+                        let result = run_pi_command(&pi_client, kind, value).await;
+                        let _ = reply.send(result);
+                        continue;
+                    }
                     match active_directive(command, &run_id, manager) {
                         ActiveDirective::Continue => {}
                         ActiveDirective::Cancel => {
@@ -2408,6 +2843,11 @@ async fn run_agent_turn(
                 biased;
                 result = &mut overflow => break OverflowOutcome::Finished(result),
                 command = receiver.recv() => {
+                    if let Some(ActorCommand::Pi { kind, value, reply }) = command {
+                        let result = run_pi_command(&pi_client, kind, value).await;
+                        let _ = reply.send(result);
+                        continue;
+                    }
                     match active_directive(command, &run_id, manager) {
                         ActiveDirective::Continue => {}
                         ActiveDirective::Cancel => break OverflowOutcome::Cancelled,
@@ -2468,6 +2908,28 @@ enum ActiveDirective {
     Shutdown,
 }
 
+async fn run_pi_command(
+    client: &LlmClient,
+    kind: PiCommandKind,
+    value: String,
+) -> Result<serde_json::Value> {
+    match kind {
+        PiCommandKind::GetState => client.pi_state().await,
+        PiCommandKind::GetModels => client
+            .pi_available_models()
+            .await
+            .map(serde_json::Value::Array),
+        PiCommandKind::SetModel => client
+            .pi_set_model(&value)
+            .await
+            .map(|_| serde_json::json!({ "ok": true })),
+        PiCommandKind::SetThinking => client
+            .pi_set_thinking_level(&value)
+            .await
+            .map(|_| serde_json::json!({ "ok": true })),
+    }
+}
+
 fn active_directive(
     command: Option<ActorCommand>,
     run_id: &str,
@@ -2479,6 +2941,7 @@ fn active_directive(
         }
         Some(ActorCommand::Cancel { .. }) => ActiveDirective::Continue,
         Some(ActorCommand::Shutdown) | None => ActiveDirective::Shutdown,
+        Some(ActorCommand::Pi { .. }) => ActiveDirective::Continue,
         Some(ActorCommand::SetModels { reply, .. }) => {
             release_admin(manager);
             let _ = reply.send(Err(AdminFailure::Invalid(
@@ -2525,7 +2988,7 @@ fn rebuild_for_models(
     if next_config.active_provider_models == config.active_provider_models {
         return Ok(());
     }
-    let client = OpenAiCompatibleClient::from_config(&next_config, paths)
+    let client = LlmClient::from_config(&next_config, paths)
         .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
     let registry = build_tool_registry(&next_config, paths, AgentMode::Normal, true)
         .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
@@ -2591,7 +3054,7 @@ fn rebuild_for_config(
     });
 
     let build_agent = || -> Result<Agent> {
-        let client = OpenAiCompatibleClient::from_config(&next_config, paths)?;
+        let client = LlmClient::from_config(&next_config, paths)?;
         let registry = build_tool_registry(&next_config, paths, AgentMode::Normal, true)?;
         Agent::new(
             next_config.clone(),
@@ -3543,6 +4006,10 @@ fn safe_conversation_summary(summary: ConversationSummary) -> SafeConversationSu
 
 impl SafeImageAsset {
     fn from_asset(asset: ImageAsset, hide_caption: bool) -> Self {
+        let source = match asset.tool_id.as_deref() {
+            Some(id) if id.starts_with("user_image") => "user",
+            _ => "tool",
+        };
         Self {
             url: format!("/api/assets/{}", asset.asset_id),
             id: asset.asset_id,
@@ -3551,6 +4018,7 @@ impl SafeImageAsset {
             height: asset.height,
             alt: asset.alt,
             hide_caption,
+            source: source.to_string(),
         }
     }
 }
