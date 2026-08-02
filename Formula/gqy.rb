@@ -32,6 +32,9 @@ class Gqy < Formula
     pkgshare.install "src/memes"
     pkgshare.install "kb"
     pkgshare.install "communication" => "bridges"
+    # 菜单栏壳源码（gqy menubar --install 用 clang 现场编译，无需单独 cask/DMG）
+    pkgshare.install "macos/GQYMenuBar" => "menubar"
+    pkgshare.install "pics/GQY-icon.png"
   end
 
   test do

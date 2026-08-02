@@ -331,7 +331,8 @@ pub fn import_tools(
 
         // id 规范化：脚本文件名不能直接当工具 id（须字母开头、无点号）
         let tool_id = normalize_tool_id(file_name);
-        let mut installed_entry = entry.clone();
+        let installed_entry = entry.clone().normalized_for_index();
+        let mut installed_entry = installed_entry;
         installed_entry.id = tool_id.clone();
         installed_entry.path = format!("{package_name}/{file_name}");
         new_entries.push(installed_entry);
@@ -446,6 +447,184 @@ fn copy_dir(source: &Path, target: &Path) -> Result<()> {
 
 /// 列出已导入的用户工具包（按根清单的 path 前缀分组），
 /// 附带包内 LICENSE 文件识别的许可证（无则 "unknown"）。
+/// 删除已导入的工具包：移除 `config/scripts/<name>` 目录，
+/// 并从 `config/scripts/index.json` 里清掉该包注册的条目（含 disabled 记录）。
+/// 返回删除的工具条目数。
+pub fn remove_tools(paths: &GqyPaths, package_name: &str) -> Result<usize> {
+    let name = sanitize_name(package_name);
+    let scripts_root = paths.config_dir.join("scripts");
+    let package_dir = scripts_root.join(&name);
+    if !package_dir.exists() && !scripts_root.join("index.json").is_file() {
+        bail!("工具包不存在：{name}");
+    }
+
+    let mut removed = 0usize;
+    let index_path = scripts_root.join("index.json");
+    if index_path.is_file() {
+        if let Ok(text) = fs::read_to_string(&index_path) {
+            if let Ok(mut index) = serde_json::from_str::<Value>(&text) {
+                let prefix = format!("{name}/");
+                if let Some(scripts) = index.get_mut("scripts").and_then(Value::as_array_mut) {
+                    let before = scripts.len();
+                    scripts.retain(|entry| {
+                        entry
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .map(|path| !path.starts_with(&prefix))
+                            .unwrap_or(true)
+                    });
+                    removed = before.saturating_sub(scripts.len());
+                }
+                if let Some(disabled) = index.get_mut("disabled").and_then(Value::as_array_mut) {
+                    disabled.retain(|entry| {
+                        entry
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .map(|path| !path.starts_with(&prefix))
+                            .unwrap_or(true)
+                            && entry
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .map(|id| !id.starts_with(&name))
+                                .unwrap_or(true)
+                    });
+                }
+                if let Ok(written) = fs::write(&index_path, serde_json::to_string_pretty(&index)?) {
+                    let _ = written;
+                }
+            }
+        }
+    }
+
+    if package_dir.exists() {
+        fs::remove_dir_all(&package_dir)?;
+    }
+    Ok(removed)
+}
+
+/// 查看工具包详情：列出包内工具（id / 显示名 / 描述 / 是否被禁用）。
+pub fn show_tools(paths: &GqyPaths, package_name: &str) -> Result<Vec<(String, String, String, bool)>> {
+    let name = sanitize_name(package_name);
+    let base = paths.config_dir.join("scripts");
+    let index_path = base.join("index.json");
+    if !index_path.is_file() {
+        bail!("工具包不存在：{name}");
+    }
+    let text = fs::read_to_string(&index_path)?;
+    let index: Value = serde_json::from_str(&text)?;
+    let prefix = format!("{name}/");
+    let disabled_ids = index
+        .get("disabled")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>();
+    let mut tools = Vec::new();
+    for entry in index
+        .get("scripts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let path = entry.get("path").and_then(Value::as_str).unwrap_or("");
+        if !path.starts_with(&prefix) {
+            continue;
+        }
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
+        let display = entry
+            .get("display_name")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(&id)
+            .to_string();
+        let description = entry
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let disabled = disabled_ids.iter().any(|d| d == &id);
+        tools.push((id, display, description, disabled));
+    }
+    if tools.is_empty() {
+        bail!("工具包 {name} 没有已注册的工具");
+    }
+    Ok(tools)
+}
+
+/// 禁用工具：把 id/path 写入 index.json 的 disabled 数组，扫描时会被跳过。
+pub fn disable_tool(paths: &GqyPaths, id_or_path: &str) -> Result<()> {
+    toggle_tool_disabled(paths, id_or_path, true)
+}
+
+/// 启用工具：从 index.json 的 disabled 数组移除。
+pub fn enable_tool(paths: &GqyPaths, id_or_path: &str) -> Result<()> {
+    toggle_tool_disabled(paths, id_or_path, false)
+}
+
+fn toggle_tool_disabled(paths: &GqyPaths, id_or_path: &str, disable: bool) -> Result<()> {
+    let base = paths.config_dir.join("scripts");
+    let index_path = base.join("index.json");
+    if !index_path.is_file() {
+        bail!("还没有导入任何工具包（先 `gqy tools import`）");
+    }
+    let text = fs::read_to_string(&index_path)?;
+    let mut index: Value = serde_json::from_str(&text)?;
+    let needle = id_or_path.trim().to_string();
+    if needle.is_empty() {
+        bail!("请输入工具 id 或路径");
+    }
+
+    // 找到匹配的工具条目（id 或 包内路径）
+    let mut matched = None;
+    for entry in index
+        .get("scripts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or("");
+        let path = entry.get("path").and_then(Value::as_str).unwrap_or("");
+        if id == needle
+            || path == needle
+            || path.ends_with(&format!("/{needle}"))
+            || path.ends_with(&format!("/{needle}.sh"))
+        {
+            matched = Some((id.to_string(), path.to_string()));
+            break;
+        }
+    }
+    let Some((id, path)) = matched else {
+        bail!("找不到工具：{needle}（`gqy tools list` 查看已导入工具）");
+    };
+
+    if !index.is_object() {
+        bail!("index.json 根必须是对象");
+    }
+    if index.get("disabled").is_none() {
+        index.as_object_mut().unwrap().insert("disabled".to_string(), json!([]));
+    }
+    let disabled = index
+        .get_mut("disabled")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("index.json 缺少 disabled 数组"))?;
+    let exists = disabled.iter().any(|d| {
+        d.get("id").and_then(Value::as_str) == Some(id.as_str())
+            || d.get("path").and_then(Value::as_str) == Some(path.as_str())
+    });
+    if disable && !exists {
+        disabled.push(json!({ "id": id, "path": path }));
+    }
+    if !disable {
+        disabled.retain(|d| {
+            d.get("id").and_then(Value::as_str) != Some(id.as_str())
+                && d.get("path").and_then(Value::as_str) != Some(path.as_str())
+        });
+    }
+    fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+    Ok(())
+}
+
 pub fn list_tools(paths: &GqyPaths) -> Result<Vec<(String, usize, String)>> {
     let base = paths.config_dir.join("scripts");
     let mut result = Vec::new();
@@ -613,6 +792,17 @@ impl Default for ScriptEntry {
             load_policy: "group".to_string(),
             groups: Vec::new(),
         }
+    }
+}
+
+impl ScriptEntry {
+    /// 写入 index.json 前规范化：空 load_policy → "group"（旧版本可能写入空串，
+    /// 扫描侧枚举不认空串会静默丢弃整个工具）。
+    fn normalized_for_index(mut self) -> Self {
+        if self.load_policy.trim().is_empty() {
+            self.load_policy = "group".to_string();
+        }
+        self
     }
 }
 
