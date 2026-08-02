@@ -3389,7 +3389,8 @@
       elements.emptyState.hidden = true;
       elements.timeline.hidden = false;
       let previousDay = null;
-      for (const turn of turns) {
+      for (let index = 0; index < turns.length; index += 1) {
+        const turn = turns[index];
         const currentDay = dayKey(turn?.user_timestamp);
         if (currentDay !== previousDay) {
           elements.timeline.appendChild(createDayDivider(turn?.user_timestamp));
