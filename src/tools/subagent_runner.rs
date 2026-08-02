@@ -1,7 +1,7 @@
 use super::{readable_tool_name, ToolProgress, ToolRegistry};
 use crate::i18n::is_zh;
 use crate::llm::{
-    ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage,
+    ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, LlmClient, Usage,
 };
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -232,7 +232,7 @@ pub fn finalization_prompt() -> &'static str {
 }
 
 pub struct SubagentRunner {
-    client: OpenAiCompatibleClient,
+    client: LlmClient,
     system_prompt: String,
     tools: ToolRegistry,
     excluded_tools: Vec<String>,
@@ -243,7 +243,7 @@ pub struct SubagentRunner {
 
 impl SubagentRunner {
     pub fn new(
-        client: OpenAiCompatibleClient,
+        client: LlmClient,
         system_prompt: impl Into<String>,
         tools: ToolRegistry,
         progress: SubagentProgress,

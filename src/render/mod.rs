@@ -1311,6 +1311,8 @@ impl StreamRenderer {
             ChatStreamKind::ReasoningPartStart
                 | ChatStreamKind::ReasoningPartEnd
                 | ChatStreamKind::ReasoningReset
+                | ChatStreamKind::ToolProgress
+                | ChatStreamKind::ToolResult
         ) {
             return Ok(());
         }
@@ -1744,6 +1746,7 @@ impl StreamRenderer {
                 }
             }
             ChatStreamKind::ToolCall => return Ok(()),
+            ChatStreamKind::ToolProgress | ChatStreamKind::ToolResult => return Ok(()),
             ChatStreamKind::ReasoningPartStart | ChatStreamKind::ReasoningPartEnd => return Ok(()),
             ChatStreamKind::ReasoningReset => return Ok(()),
         }

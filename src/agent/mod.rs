@@ -6,7 +6,7 @@ use crate::clipboard::{ClipboardImage, PastedImage};
 use crate::config::AppConfig;
 use crate::llm::{
     ChatContent, ChatContentPart, ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind,
-    ImageUrlContent, OpenAiCompatibleClient, Usage,
+    ImageUrlContent, LlmClient, Usage,
 };
 use crate::memory::{EvictedTurn, MemoryStore};
 use crate::paths::GqyPaths;
@@ -254,7 +254,7 @@ where
 
 pub struct Agent {
     state: StateStore,
-    client: OpenAiCompatibleClient,
+    client: LlmClient,
     system_prompt: String,
     trim_at_ratio: f32,
     trim_batch_ratio: f32,
@@ -281,7 +281,7 @@ impl Agent {
         config: AppConfig,
         paths: &GqyPaths,
         state: StateStore,
-        client: OpenAiCompatibleClient,
+        client: LlmClient,
         tools: ToolRegistry,
         mode: AgentMode,
     ) -> Result<Self> {
@@ -486,14 +486,14 @@ impl Agent {
         self.tools = Arc::new(Mutex::new(tools));
     }
 
-    pub fn replace_client(&mut self, client: OpenAiCompatibleClient) {
+    pub fn replace_client(&mut self, client: LlmClient) {
         self.client = client;
     }
 
     pub fn reload_config(
         &mut self,
         config: AppConfig,
-        client: OpenAiCompatibleClient,
+        client: LlmClient,
     ) -> Result<()> {
         self.config = config;
         self.client = client;
@@ -505,6 +505,40 @@ impl Agent {
         self.memory = MemoryStore::new(&self.config, &self.paths);
         self.memory.init()?;
         self.prepare_for_turn()
+    }
+
+    /// 返回 LLM 客户端副本（用于在流式进行中发送 abort 等）
+    pub fn llm_client(&self) -> LlmClient {
+        self.client.clone()
+    }
+
+    /// pi 状态/模型/思考级别透传（web actor 线程用）
+    pub async fn pi_state(&self) -> Result<serde_json::Value> {
+        Ok(self.client.pi_state().await?)
+    }
+
+    pub async fn pi_set_model(&self, model_id: &str) -> Result<()> {
+        self.client.pi_set_model(model_id).await?;
+        Ok(())
+    }
+
+    pub async fn pi_set_thinking_level(&self, level: &str) -> Result<()> {
+        self.client.pi_set_thinking_level(level).await?;
+        Ok(())
+    }
+
+    pub async fn pi_available_models(&self) -> Result<Vec<serde_json::Value>> {
+        Ok(self.client.pi_available_models().await?)
+    }
+
+    /// 返回工具注册表（pi 工具桥需要）
+    pub fn tools_registry(&self) -> Arc<Mutex<ToolRegistry>> {
+        self.tools.clone()
+    }
+
+    /// 返回 GQY 路径（pi 工具桥写缓存用）
+    pub fn paths(&self) -> &GqyPaths {
+        &self.paths
     }
 
     pub fn reset_memory(&mut self) -> Result<()> {
@@ -797,6 +831,19 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
+        if self.client.is_pi() {
+            // pi 自己管理上下文压缩，GQY 侧不再手动压缩
+            let mut on_event = on_event;
+            on_event(AgentEvent::Chunk(ChatStreamChunk {
+                kind: ChatStreamKind::Content,
+                text: crate::i18n::text(
+                    "Context compaction is handled by pi in pi mode",
+                    "pi 模式下上下文压缩由 pi 自己管理",
+                )
+                .to_string(),
+            }))?;
+            return Ok(None);
+        }
         let mut on_event = on_event;
         let context_window = self.context_window().or_else(|| {
             if crate::models_cache::is_loaded() {
@@ -915,6 +962,11 @@ impl Agent {
     }
 
     fn current_model_supports_vision(&self) -> bool {
+        if self.client.is_pi() {
+            // pi 模式：图片直接随 prompt 的 images 字段交给 pi，
+            // 是否支持由 pi 的模型决定（GQY 不做本地降级描述）
+            return true;
+        }
         let provider = match self.config.provider(None) {
             Ok(p) => p,
             Err(_) => return false,
@@ -2434,6 +2486,42 @@ where
                 }))?;
             }
         }
+        ChatStreamKind::ToolProgress => {
+            // pi 模式：工具调用开始/进度 → AgentEvent，驱动终端与 Web 的工具块
+            if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&chunk.text) {
+                if let Some(name) = payload.get("name").and_then(Value::as_str) {
+                    if payload.get("args").is_some() {
+                        on_event(AgentEvent::ToolCall {
+                            name: name.to_string(),
+                            arguments: payload
+                                .get("args")
+                                .map(|args| args.to_string())
+                                .unwrap_or_default(),
+                        })?;
+                    } else if let Some(message) = payload.get("output").and_then(Value::as_str) {
+                        on_event(AgentEvent::ToolProgress {
+                            name: name.to_string(),
+                            message: message.to_string(),
+                        })?;
+                    }
+                }
+            }
+        }
+        ChatStreamKind::ToolResult => {
+            if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&chunk.text) {
+                if let Some(name) = payload.get("name").and_then(Value::as_str) {
+                    on_event(AgentEvent::ToolResult {
+                        name: name.to_string(),
+                        ok: payload.get("ok").and_then(Value::as_bool).unwrap_or(true),
+                        output: payload
+                            .get("output")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    })?;
+                }
+            }
+        }
         _ => on_event(AgentEvent::Chunk(chunk))?,
     }
     Ok(())
@@ -2572,6 +2660,7 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{AppConfig, ProviderConfig};
+    use crate::llm::OpenAiCompatibleClient;
     use crate::paths::GqyPaths;
     use crate::tools::{empty_parameters, ToolSpec};
     use std::path::PathBuf;
@@ -2982,8 +3071,9 @@ mod tests {
         let config = AppConfig::default();
         let state = StateStore::new(&paths).unwrap();
         state.init_files().unwrap();
-        let client =
-            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let client = LlmClient::OpenAi(
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap(),
+        );
         let mut tools = ToolRegistry::new();
         tools.register(ToolSpec::new(
             "heavy_context_tool",
@@ -3099,8 +3189,9 @@ mod tests {
         };
         let state = StateStore::new(&paths).unwrap();
         state.init_files().unwrap();
-        let client =
-            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let client = LlmClient::OpenAi(
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap(),
+        );
         let mut agent = Agent::new(
             config,
             &paths,
@@ -3151,8 +3242,9 @@ mod tests {
         config.tools.loading_mode = "hybrid".to_string();
         let state = StateStore::new(&paths).unwrap();
         state.init_files().unwrap();
-        let client =
-            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let client = LlmClient::OpenAi(
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap(),
+        );
         let mut tools = ToolRegistry::new();
         tools.register(
             ToolSpec::new(
@@ -3209,8 +3301,9 @@ mod tests {
         config.tools.persist_loaded_tools = false;
         let state = StateStore::new(&paths).unwrap();
         state.init_files().unwrap();
-        let client =
-            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let client = LlmClient::OpenAi(
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap(),
+        );
         let mut tools = ToolRegistry::new();
         tools.register(
             ToolSpec::new(
@@ -3438,7 +3531,9 @@ mod tests {
         let state = StateStore::new(&paths).unwrap();
         state.init_files().unwrap();
         let provider = config.provider(None).unwrap().clone();
-        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let client = LlmClient::OpenAi(
+            OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap(),
+        );
         let mut agent = Agent::new(
             config,
             &paths,
@@ -3562,7 +3657,9 @@ mod tests {
         let state = StateStore::new(&paths).unwrap();
         state.init_files().unwrap();
         let provider = config.provider(None).unwrap().clone();
-        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let client = LlmClient::OpenAi(
+            OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap(),
+        );
         let mut agent = Agent::new(
             config,
             &paths,

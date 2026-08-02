@@ -91,8 +91,22 @@ pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &GqyPaths) {
     ];
     let scan = match scan_scripts(&dirs) {
         Ok(scan) => scan,
-        Err(_) => return,
+        Err(err) => {
+            if std::env::var_os("GQY_PI_DEBUG").is_some() {
+                eprintln!("[scripts] rescan failed: {err:#}");
+            }
+            return;
+        }
     };
+    if std::env::var_os("GQY_PI_DEBUG").is_some() {
+        let entry_ids = scan.entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>();
+        let unreg_ids = scan
+            .unregistered
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>();
+        eprintln!("[scripts] scanned entries: {entry_ids:?}, unregistered: {unreg_ids:?}");
+    }
     let specs = script_specs(&scan.entries, &paths.scripts_dir);
     let _ = registry.replace_script_tools(specs, scan.unregistered);
 }
@@ -116,6 +130,13 @@ fn scan_scripts(dirs: &[&Path]) -> Result<ScriptScanResult> {
 
         let index_path = scripts_dir.join("index.json");
         let index = read_script_index_for_scan(&index_path)?;
+        if std::env::var_os("GQY_PI_DEBUG").is_some() {
+            eprintln!(
+                "[scripts] dir={} index_ids={:?}",
+                scripts_dir.display(),
+                index.scripts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>()
+            );
+        }
 
         let mut disabled_ids = BTreeSet::new();
         let mut disabled_paths = BTreeSet::new();

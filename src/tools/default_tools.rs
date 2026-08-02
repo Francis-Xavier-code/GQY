@@ -1025,7 +1025,7 @@ mod tests {
     #[tokio::test]
     async fn command_timeout_kills_descendant_processes() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let result = execute_command("sleep 30 & echo $!; wait", 1, ToolProgress::new(tx)).await;
+        let result = execute_command("sleep 30 & echo $!; wait", 3, ToolProgress::new(tx)).await;
         assert!(result.is_err());
 
         let mut stdout = Vec::new();

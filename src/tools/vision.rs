@@ -299,6 +299,15 @@ pub async fn analyze_image_url_with_prompt(
 fn vision_provider(config: &AppConfig, _vision: &VisionPluginConfig) -> Result<ProviderConfig> {
     let (provider_id, model) = config.vision_provider_choice()?;
     let mut provider = config.provider(Some(&provider_id))?.clone();
+    if provider.is_pi() {
+        bail!(
+            "{}",
+            crate::i18n::text(
+                "vision is not available in pi mode yet (pi multimodal integration is a later step)",
+                "pi 模式下暂不支持视觉模型（pi 多模态接入属于后续步骤）",
+            )
+        );
+    }
     provider.default_model = model;
     if !provider
         .models

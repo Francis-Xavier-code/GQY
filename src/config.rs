@@ -28,6 +28,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub skills: SkillsConfig,
     #[serde(default)]
+    pub shell: ShellConfig,
+    #[serde(default)]
     pub display: DisplayConfig,
     #[serde(default)]
     pub prompt: PromptConfig,
@@ -254,6 +256,21 @@ pub struct McpServerConfig {
     pub timeout_seconds: u64,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// 终端 hook（zsh/fish/bash 命令未找到时的自然语言拦截）配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellConfig {
+    /// 自动拦截：命令未找到时，明显是自然语言的交给 GQY 回答。
+    /// 关闭后 hook 一律放行（系统报错），只用显式 `gqy <问句>` 对话。
+    #[serde(default = "default_true")]
+    pub auto: bool,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self { auto: default_true() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -557,6 +574,7 @@ impl Default for AppConfig {
             tools: ToolsConfig::default(),
             mcp: McpConfig::default(),
             skills: SkillsConfig::default(),
+            shell: ShellConfig::default(),
             display: DisplayConfig::default(),
             prompt: PromptConfig::default(),
             plugins: PluginsConfig::default(),
@@ -1173,7 +1191,10 @@ impl AppConfig {
         }
         if self
             .provider(None)
-            .map(|provider| provider.default_model.trim().is_empty())
+            .map(|provider| {
+                // pi 底座不需要 default_model（模型由 pi 自己管理）
+                !provider.is_pi() && provider.default_model.trim().is_empty()
+            })
             .unwrap_or(true)
         {
             self.active_provider = OPENCODE_PROVIDER_ID.to_string();

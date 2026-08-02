@@ -278,6 +278,8 @@ pub fn builtin_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     scripts::register(&mut registry, paths);
+    // 自主 agent 集群（Kimi 式）：模型可自建/管理命名子代理
+    crate::agents::register(&mut registry, paths.clone());
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
     }
