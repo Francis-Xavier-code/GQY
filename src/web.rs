@@ -6,8 +6,8 @@ use crate::memory::MemoryStore;
 use crate::paths::GqyPaths;
 use crate::question::{self, QuestionAnswers, QuestionRequest, QuestionResponse};
 use crate::state::{
-    ChannelSummary, ImageAsset, QueuedPrompt, StateStore, Turn, TurnFollowup, TurnStatus,
-    UsageSnapshot,
+    ChannelSummary, ConversationSummary, ImageAsset, QueuedPrompt, StateStore, Turn, TurnFollowup,
+    TurnStatus, UsageSnapshot,
 };
 use crate::tools::{self, CommandOutputStream};
 use anyhow::{Context, Result};
@@ -69,6 +69,8 @@ struct WebState {
     events: EventHub,
     questions: QuestionBroker,
     actor_tx: mpsc::UnboundedSender<ActorCommand>,
+    /// 余额查询缓存（60s 防抖：每次对话后刷新一次即可，避免频繁请求公开接口）
+    balance_cache: Arc<Mutex<Option<(std::time::Instant, serde_json::Value)>>>,
 }
 
 #[derive(Clone)]
@@ -779,6 +781,8 @@ struct BootstrapResponse {
     channel: String,
     /// 全部会话通道摘要（终端/网页/QQ/Telegram…），左侧通道列表
     channels: Vec<SafeChannelSummary>,
+    /// 当前通道的会话列表（含归档历史对话），左侧历史对话列表
+    conversations: Vec<SafeConversationSummary>,
     turns: Vec<SafeTurn>,
     queued_prompts: Vec<SafeQueuedPrompt>,
     models: Vec<SafeModel>,
@@ -797,6 +801,16 @@ struct SafeChannelSummary {
     snippet: String,
     timestamp: Option<String>,
     running: bool,
+}
+
+#[derive(Serialize)]
+struct SafeConversationSummary {
+    id: String,
+    title: String,
+    snippet: String,
+    timestamp: Option<String>,
+    turn_count: u64,
+    active: bool,
 }
 
 #[derive(Serialize)]
@@ -964,6 +978,7 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
         events,
         questions,
         actor_tx: actor_tx.clone(),
+        balance_cache: Arc::new(Mutex::new(None)),
     };
     let app = router(state);
     // 只有设置了密码才把局域网地址列出来（无密码时仅回环可达）
@@ -1021,6 +1036,11 @@ fn router(state: WebState) -> Router {
         .route("/api/usage/stats", get(usage_stats_web))
         .route("/api/usage/details", get(usage_details_web))
         .route("/api/channels/{channel_id}/turns", get(channel_turns_web))
+        .route(
+            "/api/conversations/{conversation_id}/turns",
+            get(conversation_turns_web),
+        )
+        .route("/api/balance", get(balance_web))
         .route("/api/alarms/{alarm_id}", delete(cancel_alarm_web))
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .with_state(state)
@@ -1245,6 +1265,63 @@ async fn usage_details_web(
     Ok(response)
 }
 
+/// 余额查询（DeepSeek 等公开接口）：60 秒缓存防抖，
+/// 前端每次对话完成后刷新一次即可，不做轮询。
+async fn balance_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+    const ERROR_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+    let cache = state.balance_cache.clone();
+    if let Some((at, value)) = cache.lock().unwrap().as_ref() {
+        let ttl = if value.get("error").is_some() {
+            ERROR_TTL
+        } else {
+            CACHE_TTL
+        };
+        if at.elapsed() < ttl {
+            return Ok(Json(json!({ "ok": true, "cached": true, "balance": value })).into_response());
+        }
+    }
+    let paths = state.paths.clone();
+    let manager = state.manager.clone();
+    let result = tokio::task::spawn_blocking(move || -> std::result::Result<serde_json::Value, anyhow::Error> {
+        let config = manager.lock().unwrap().config.clone();
+        let provider_id = config
+            .provider(None)
+            .map(|provider| provider.id.clone())
+            .unwrap_or_default();
+        match crate::balance::fetch_balance(&config, &paths) {
+            Ok(Some(infos)) => Ok(json!({
+                "provider": provider_id,
+                "balance": infos.iter().map(|info| json!({
+                    "currency": info.currency,
+                    "total": info.total_balance,
+                    "granted": info.granted_balance,
+                    "topped_up": info.topped_up_balance,
+                })).collect::<Vec<_>>(),
+            })),
+            Ok(None) => Ok(json!({ "provider": provider_id, "unsupported": true })),
+            Err(error) => Ok(json!({ "provider": provider_id, "error": format!("{error:#}") })),
+        }
+    })
+    .await
+    .map_err(ApiError::internal)?;
+    let payload = result.map_err(ApiError::internal)?;
+    {
+        let mut cache = cache.lock().unwrap();
+        *cache = Some((std::time::Instant::now(), payload.clone()));
+    }
+    let mut response =
+        Json(json!({ "ok": true, "cached": false, "balance": payload })).into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
 /// 取消定时任务（面板「取消」按钮）。
 async fn cancel_alarm_web(
     State(state): State<WebState>,
@@ -1322,9 +1399,57 @@ async fn channel_turns_web(
         .map_err(ApiError::internal)?
         .iter()
         .any(|turn| turn.status == TurnStatus::Running);
-    let mut response =
-        Json(json!({ "ok": true, "channel": channel_id, "running": running, "turns": turns }))
-            .into_response();
+    let conversations = state
+        .state_store
+        .conversation_summaries_for_channel(&channel_id)
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .map(safe_conversation_summary)
+        .collect::<Vec<_>>();
+    let mut response = Json(
+        json!({ "ok": true, "channel": channel_id, "running": running, "turns": turns, "conversations": conversations }),
+    )
+    .into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+/// 读取指定历史会话的 turns（当前通道内，含归档轮次；只读数据源）
+async fn conversation_turns_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Path(conversation_id): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let channel = state.state_store.channel().to_string();
+    let mut assets_by_turn = HashMap::<String, Vec<ImageAsset>>::new();
+    for asset in state
+        .state_store
+        .load_image_assets()
+        .map_err(ApiError::internal)?
+    {
+        assets_by_turn
+            .entry(asset.turn_id.clone())
+            .or_default()
+            .push(asset);
+    }
+    let turns: Vec<SafeTurn> = state
+        .state_store
+        .load_turns_for_conversation(&channel, &conversation_id)
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .filter(|turn| !turn.is_summary)
+        .map(|turn| {
+            let assets = assets_by_turn.remove(&turn.turn_id).unwrap_or_default();
+            SafeTurn::from_turn(turn, assets)
+        })
+        .collect();
+    let mut response = Json(
+        json!({ "ok": true, "channel": channel, "conversation_id": conversation_id, "turns": turns }),
+    )
+    .into_response();
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -1407,6 +1532,13 @@ async fn bootstrap(
         .into_iter()
         .map(safe_channel_summary)
         .collect();
+    let conversations = state
+        .state_store
+        .conversation_summaries()
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .map(safe_conversation_summary)
+        .collect();
     let mut response = Json(BootstrapResponse {
         version: env!("CARGO_PKG_VERSION"),
         boot_id: state.boot_id.to_string(),
@@ -1416,6 +1548,7 @@ async fn bootstrap(
         external_queue_available,
         channel,
         channels,
+        conversations,
         turns,
         queued_prompts,
         models: safe_models(&config),
@@ -3395,6 +3528,17 @@ fn first_line(value: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(str::to_string)
+}
+
+fn safe_conversation_summary(summary: ConversationSummary) -> SafeConversationSummary {
+    SafeConversationSummary {
+        id: summary.conversation_id,
+        title: summary.title,
+        snippet: summary.snippet,
+        timestamp: summary.timestamp,
+        turn_count: summary.turn_count,
+        active: summary.active,
+    }
 }
 
 impl SafeImageAsset {

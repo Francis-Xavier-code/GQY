@@ -92,6 +92,8 @@
     sidebarConnectionStatus: document.getElementById("sidebarConnectionStatus"),
     newChatButton: document.getElementById("newChatButton"),
     channelList: document.getElementById("channelList"),
+    conversationList: document.getElementById("conversationList"),
+    balanceChip: document.getElementById("balanceChip"),
     currentConversation: document.getElementById("currentConversation"),
     usageButton: document.getElementById("usageButton"),
     usageView: document.getElementById("usageView"),
@@ -197,6 +199,10 @@
     channels: [],
     viewingChannel: null,
     viewedTurns: [],
+    // 历史对话列表：当前通道会话摘要 + 正在浏览的历史会话
+    conversations: [],
+    viewingConversation: null,
+    balanceLastRefresh: 0,
     activeRunId: null,
     externalRunningTurnId: null,
     externalQueueAvailable: false,
@@ -1622,6 +1628,40 @@
 
   function updateRuntimeUsage() {}
 
+  // ─────────────────────────── 余额显示（每次对话完成后刷新一次，10s 防抖） ───────────────────────────
+
+  function refreshBalance() {
+    const now = Date.now();
+    if (now - state.balanceLastRefresh < 10_000) return;
+    state.balanceLastRefresh = now;
+    apiRequest("/api/balance")
+      .then((response) => response.json())
+      .then((data) => renderBalance(data?.balance))
+      .catch(() => renderBalance(null));
+  }
+
+  function renderBalance(payload) {
+    const chip = elements.balanceChip;
+    if (!chip) return;
+    const balance = Array.isArray(payload?.balance) ? payload.balance : [];
+    if (!payload || payload?.unsupported || payload?.error || !balance.length) {
+      chip.hidden = true;
+      chip.textContent = "";
+      chip.title = "";
+      return;
+    }
+    const parts = balance.map((info) => {
+      const currency = String(info?.currency || "");
+      const symbol = currency === "CNY" ? "¥" : currency === "USD" ? "$" : `${currency} `;
+      return `${symbol}${info?.total || "0"}`;
+    });
+    chip.textContent = `余额 ${parts.join(" / ")}`;
+    chip.title = balance
+      .map((info) => `${info?.currency} 总 ${info?.total} · 充值 ${info?.topped_up} · 赠送 ${info?.granted}`)
+      .join("\n");
+    chip.hidden = false;
+  }
+
   function updateCapabilities() {
     const values = [
       ["会话", state.capabilities?.multi_conversation ? "多会话" : "当前单一对话"],
@@ -1806,12 +1846,14 @@
   }
 
   function updateConversationChrome() {
-    if (state.viewingChannel) {
-      const title = `${channelLabel(state.viewingChannel)} 通道`;
+    if (state.viewingChannel || state.viewingConversation) {
+      const title = state.viewingConversation
+        ? "历史对话"
+        : `${channelLabel(state.viewingChannel)} 通道`;
       elements.conversationTitle.textContent = title;
-      elements.conversationTitle.title = "只读浏览其他通道的对话记录";
-      elements.sidebarConversationTitle.textContent = "返回网页对话";
-      elements.sidebarConversationTitle.title = "返回网页对话";
+      elements.conversationTitle.title = "只读浏览历史记录";
+      elements.sidebarConversationTitle.textContent = "返回当前对话";
+      elements.sidebarConversationTitle.title = "返回当前对话";
       elements.sidebarConversationSnippet.textContent = "点击返回当前对话";
       elements.sidebarConversationTime.textContent = "";
       elements.conversationMeta.textContent = "只读浏览";
@@ -1897,6 +1939,8 @@
       state.viewedTurns = Array.isArray(data?.turns)
         ? data.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq))
         : [];
+      state.conversations = Array.isArray(data?.conversations) ? data.conversations : [];
+      renderConversationList();
       renderConversation();
     } catch (error) {
       showToast(error.message || "通道记录加载失败", "error");
@@ -1908,6 +1952,73 @@
     state.viewingChannel = null;
     state.viewedTurns = [];
     renderChannelList();
+    loadBootstrap();
+  }
+
+  // ─────────────────────────── 历史对话列表（会话分组） ───────────────────────────
+
+  function renderConversationList() {
+    const conversations = Array.isArray(state.conversations) ? state.conversations : [];
+    const history = conversations.filter((conversation) => !conversation?.active);
+    elements.conversationList.replaceChildren();
+    if (!history.length) return;
+    const heading = document.createElement("div");
+    heading.className = "conversation-list-heading";
+    heading.textContent = "历史对话";
+    elements.conversationList.appendChild(heading);
+    const viewing = String(state.viewingConversation || "");
+    for (const conversation of history) {
+      const id = String(conversation?.id || "");
+      if (!id) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `conversation-item${viewing === id ? " active" : ""}`;
+      button.title = conversation?.title || "";
+      const copy = document.createElement("span");
+      copy.className = "session-copy";
+      const title = document.createElement("strong");
+      title.textContent = String(conversation?.title || "");
+      title.title = title.textContent;
+      const snippet = document.createElement("small");
+      snippet.textContent = String(conversation?.snippet || "");
+      snippet.title = snippet.textContent;
+      copy.append(title, snippet);
+      const meta = document.createElement("span");
+      meta.className = "session-time";
+      const count = asFiniteNumber(conversation?.turn_count, 0);
+      meta.textContent = count > 0
+        ? `${formatRelativeTime(conversation?.timestamp)} · ${count}条`
+        : formatRelativeTime(conversation?.timestamp);
+      button.append(copy, meta);
+      button.addEventListener("click", () => switchToConversation(id));
+      elements.conversationList.appendChild(button);
+    }
+  }
+
+  async function switchToConversation(conversationId) {
+    if (state.blocked || conversationRunning()) return;
+    state.viewingConversation = String(conversationId);
+    renderConversationList();
+    updateConversationChrome();
+    updateControlState();
+    try {
+      const response = await apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/turns`);
+      const data = await response.json();
+      if (state.viewingConversation !== String(conversationId)) return;
+      state.viewedTurns = Array.isArray(data?.turns)
+        ? data.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq))
+        : [];
+      renderConversation();
+    } catch (error) {
+      showToast(error.message || "历史对话加载失败", "error");
+      exitConversationView();
+    }
+  }
+
+  function exitConversationView() {
+    state.viewingConversation = null;
+    state.viewedTurns = [];
+    renderConversationList();
     loadBootstrap();
   }
 
@@ -1942,7 +2053,7 @@
     const queueAvailable = !state.externalRunningTurnId || state.externalQueueAvailable;
     const busy = state.adminBusy || state.submitting;
     const locked = state.blocked || state.adminBusy;
-    const readonly = Boolean(state.viewingChannel);
+    const readonly = Boolean(state.viewingChannel || state.viewingConversation);
     const inputCount = countCharacters(elements.composerInput.value.trim());
 
     elements.composerInput.disabled = locked || readonly;
@@ -1970,7 +2081,9 @@
     elements.stopButton.title = state.cancellationRequested ? "正在停止" : "停止回复";
     elements.stopButton.setAttribute("aria-label", elements.stopButton.title);
 
-    if (readonly) elements.composerState.textContent = `只读浏览 ${channelLabel(state.viewingChannel)} 通道，返回后即可继续对话`;
+    if (readonly) elements.composerState.textContent = state.viewingConversation
+      ? "只读浏览历史对话，返回后即可继续对话"
+      : `只读浏览 ${channelLabel(state.viewingChannel)} 通道，返回后即可继续对话`;
     else if (state.blocked) elements.composerState.textContent = "未授权";
     else if (state.cancellationRequested) elements.composerState.textContent = "正在停止";
     else if (hasPendingQuestion()) elements.composerState.textContent = "等待回答";
@@ -2837,19 +2950,20 @@
     elements.blockedState.hidden = true;
     clearQuestionDock();
     elements.timeline.replaceChildren();
-    if (state.viewingChannel) {
+    const viewing = state.viewingChannel || state.viewingConversation;
+    if (viewing) {
       elements.timeline.appendChild(createChannelViewBanner());
     }
-    const turnsSource = state.viewingChannel ? state.viewedTurns : state.turns;
+    const turnsSource = viewing ? state.viewedTurns : state.turns;
     const turns = [...turnsSource].sort((left, right) => asFiniteNumber(left?.seq) - asFiniteNumber(right?.seq));
-    if (state.viewingChannel) state.viewedTurns = turns;
+    if (viewing) state.viewedTurns = turns;
     else state.turns = turns;
     if (turns.length === 0) {
       elements.timeline.hidden = true;
       elements.emptyState.hidden = false;
-      if (state.viewingChannel) {
+      if (viewing) {
         const note = elements.emptyState.querySelector("p");
-        if (note) note.textContent = `${channelLabel(state.viewingChannel)} 通道还没有对话记录`;
+        if (note) note.textContent = viewingLabel(viewing) + "还没有消息";
       }
     } else {
       elements.emptyState.hidden = true;
@@ -2873,16 +2987,31 @@
     });
   }
 
+  function viewingLabel(viewing) {
+    if (viewing === state.viewingChannel && state.viewingChannel) return `${channelLabel(state.viewingChannel)} 通道`;
+    if (viewing === state.viewingConversation && state.viewingConversation) return "该历史对话";
+    return "";
+  }
+
   function createChannelViewBanner() {
     const banner = document.createElement("div");
     banner.className = "channel-view-banner";
     const text = document.createElement("span");
-    text.textContent = `正在查看 ${channelLabel(state.viewingChannel)} 通道的对话记录（只读，不影响各通道上下文）`;
+    if (state.viewingConversation) {
+      const conversation = (Array.isArray(state.conversations) ? state.conversations : [])
+        .find((item) => String(item?.id) === String(state.viewingConversation));
+      text.textContent = `正在查看历史对话「${conversation?.title || ""}」（只读，不影响当前对话）`;
+    } else {
+      text.textContent = `正在查看 ${channelLabel(state.viewingChannel)} 通道的对话记录（只读，不影响各通道上下文）`;
+    }
     const back = document.createElement("button");
     back.type = "button";
     back.className = "channel-view-back";
-    back.textContent = "返回网页对话";
-    back.addEventListener("click", exitChannelView);
+    back.textContent = "返回当前对话";
+    back.addEventListener("click", () => {
+      if (state.viewingConversation) exitConversationView();
+      else exitChannelView();
+    });
     banner.append(text, back);
     return banner;
   }
@@ -4084,6 +4213,7 @@
     state.live = null;
     updateContext();
     updateRuntimeUsage(data?.usage || null, Boolean(data?.usage_estimated));
+    if (kind === "completed") refreshBalance();
     updateConversationChrome();
     updateControlState();
     contentAdded();
@@ -4141,6 +4271,7 @@
       state.turns = nextTurns;
       state.channel = String(snapshot?.channel || state.channel || "webui");
       state.channels = Array.isArray(snapshot?.channels) ? snapshot.channels : state.channels;
+      state.conversations = Array.isArray(snapshot?.conversations) ? snapshot.conversations : state.conversations;
       state.queuedPrompts = Array.isArray(snapshot?.queued_prompts) ? snapshot.queued_prompts : state.queuedPrompts;
       state.models = Array.isArray(snapshot?.models) ? snapshot.models : state.models;
       state.display = snapshot?.display && typeof snapshot.display === "object" ? snapshot.display : state.display;
@@ -4156,7 +4287,9 @@
       if (forceRender || (previousExternalTurnId || nextExternalTurnId) && (turnsChanged || previousExternalTurnId !== nextExternalTurnId)) {
         renderConversation();
       }
+      if (previousExternalTurnId && !nextExternalTurnId) refreshBalance();
       renderChannelList();
+      renderConversationList();
       renderModelMenu();
       renderQueueTray();
       updateCapabilities();
@@ -4196,8 +4329,8 @@
   function handleRunEvent(name, data) {
     const runId = String(data?.run_id || "");
     if (!runId) return;
-    // 只读浏览其他通道时忽略运行事件，避免 live 文章插入只读视图
-    if (state.viewingChannel) return;
+    // 只读浏览其他通道/历史对话时忽略运行事件，避免 live 文章插入只读视图
+    if (state.viewingChannel || state.viewingConversation) return;
     if (state.activeRunId && state.activeRunId !== runId) return;
     if (!state.activeRunId && name !== "run.started" && state.live?.runId !== runId) return;
     const live = establishRun(runId);
@@ -4378,7 +4511,9 @@
     state.turns = Array.isArray(snapshot?.turns) ? snapshot.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq)) : [];
     state.channel = String(snapshot?.channel || "webui");
     state.channels = Array.isArray(snapshot?.channels) ? snapshot.channels : [];
+    state.conversations = Array.isArray(snapshot?.conversations) ? snapshot.conversations : [];
     state.viewingChannel = null;
+    state.viewingConversation = null;
     state.viewedTurns = [];
     state.queuedPrompts = Array.isArray(snapshot?.queued_prompts) ? snapshot.queued_prompts : [];
     state.models = Array.isArray(snapshot?.models) ? snapshot.models : [];
@@ -4404,6 +4539,7 @@
     elements.versionLabel.textContent = state.version ? `v${state.version}` : "--";
     clearInlineError();
     renderChannelList();
+    renderConversationList();
     renderConversation();
     renderModelMenu();
     renderQueueTray();
@@ -4560,7 +4696,7 @@
   }
 
   async function submitTurn() {
-    if (state.adminBusy || state.submitting || state.blocked || state.viewingChannel) return;
+    if (state.adminBusy || state.submitting || state.blocked || state.viewingChannel || state.viewingConversation) return;
     if (hasPendingQuestion() || (state.externalRunningTurnId && !state.externalQueueAvailable)) return;
     const queueing = conversationRunning();
     const content = elements.composerInput.value.trim();
@@ -4657,6 +4793,10 @@
   function requestNewConversation() {
     closeSidebar();
     hideUsageView();
+    if (state.viewingConversation) {
+      exitConversationView();
+      return;
+    }
     if (state.viewingChannel) {
       exitChannelView();
       return;
@@ -5087,6 +5227,10 @@
     elements.sidebarScrim.addEventListener("click", closeSidebar);
     elements.currentConversation.addEventListener("click", () => {
       closeSidebar();
+      if (state.viewingConversation) {
+        exitConversationView();
+        return;
+      }
       if (state.viewingChannel) {
         exitChannelView();
         return;
