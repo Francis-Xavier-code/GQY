@@ -92,6 +92,8 @@
     sidebarConnectionStatus: document.getElementById("sidebarConnectionStatus"),
     newChatButton: document.getElementById("newChatButton"),
     channelList: document.getElementById("channelList"),
+    sidebarSearchInput: document.getElementById("sidebarSearchInput"),
+    searchResults: document.getElementById("searchResults"),
     conversationList: document.getElementById("conversationList"),
     balanceChip: document.getElementById("balanceChip"),
     currentConversation: document.getElementById("currentConversation"),
@@ -101,6 +103,7 @@
     usageBackButton: document.getElementById("usageBackButton"),
     usageSummary: document.getElementById("usageSummary"),
     usageContribution: document.getElementById("usageContribution"),
+    usageBars: document.getElementById("usageBars"),
     usageModelTable: document.getElementById("usageModelTable"),
     usageModelDetail: document.getElementById("usageModelDetail"),
     usageRecentList: document.getElementById("usageRecentList"),
@@ -119,6 +122,7 @@
     modeSwitch: document.getElementById("modeSwitch"),
     modelMenuWrap: document.getElementById("modelMenuWrap"),
     modelButton: document.getElementById("modelButton"),
+    exportButton: document.getElementById("exportButton"),
     modelMark: document.getElementById("modelMark"),
     modelLabel: document.getElementById("modelLabel"),
     modelMenu: document.getElementById("modelMenu"),
@@ -141,6 +145,7 @@
     composerDock: document.getElementById("composerDock"),
     questionDock: document.getElementById("questionDock"),
     composerForm: document.getElementById("composerForm"),
+    imageTray: document.getElementById("imageTray"),
     composerInput: document.getElementById("composerInput"),
     queueTray: document.getElementById("queueTray"),
     composerState: document.getElementById("composerState"),
@@ -218,6 +223,13 @@
     submitting: false,
     cancellationRequested: false,
     pendingSubmission: null,
+    pendingImages: [],
+    piModels: [],
+    piCurrentModel: "",
+    piThinking: "",
+    engine: "",
+    searchResults: [],
+    searchQuery: "",
     bootstrapPromise: null,
     resyncing: false,
     nearBottom: true,
@@ -380,6 +392,119 @@
     elements.drawerScrim.tabIndex = -1;
     if (restoreFocus && state.settingsOpener instanceof HTMLElement) state.settingsOpener.focus();
     state.settingsOpener = null;
+  }
+
+  // pi 模式：模型选择器（单选）+ 思考级别
+  async function openPiModelMenu() {
+    if (state.engine !== "pi") return;
+    state.modelMenuError = "";
+    elements.modelMenu.replaceChildren();
+    const loading = document.createElement("p");
+    loading.className = "model-menu-empty";
+    loading.textContent = "加载 pi 模型列表…";
+    elements.modelMenu.appendChild(loading);
+    elements.modelMenu.hidden = false;
+    elements.modelButton.setAttribute("aria-expanded", "true");
+    try {
+      const [modelsResp, stateResp] = await Promise.all([
+        apiRequest("/api/pi/models"),
+        apiRequest("/api/pi/state"),
+      ]);
+      const modelsData = await modelsResp.json();
+      const stateData = await stateResp.json();
+      state.piModels = Array.isArray(modelsData?.data) ? modelsData.data : [];
+      state.piCurrentModel = String(stateData?.data?.model || "");
+      state.piThinking = String(stateData?.data?.thinking_level || "");
+      renderPiModelMenu();
+    } catch (error) {
+      state.modelMenuError = `加载失败：${error.message || error}`;
+      elements.modelMenu.replaceChildren();
+      const err = document.createElement("p");
+      err.className = "model-menu-empty is-error";
+      err.textContent = state.modelMenuError;
+      elements.modelMenu.appendChild(err);
+    }
+  }
+
+  function renderPiModelMenu() {
+    elements.modelMenu.replaceChildren();
+    const list = document.createElement("div");
+    list.className = "model-menu-list";
+    list.setAttribute("role", "group");
+    list.setAttribute("aria-label", "pi 可用模型");
+    const models = Array.isArray(state.piModels) ? state.piModels : [];
+    if (!models.length) {
+      const empty = document.createElement("p");
+      empty.className = "model-menu-empty";
+      empty.textContent = "暂无可用模型（pi 未登录？）";
+      list.appendChild(empty);
+    }
+    for (const model of models) {
+      const id = String(model?.id || model?.name || "");
+      const provider = String(model?.provider || "");
+      if (!id) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "model-menu-item";
+      button.setAttribute("role", "menuitemradio");
+      button.dataset.modelId = id;
+      const selected = id === state.piCurrentModel;
+      button.classList.toggle("selected", selected);
+      const mark = document.createElement("span");
+      mark.className = "model-mark";
+      mark.textContent = id.slice(0, 2).toUpperCase();
+      const copy = document.createElement("span");
+      const name = document.createElement("strong");
+      name.textContent = id;
+      const prov = document.createElement("small");
+      prov.textContent = provider || "";
+      copy.append(name, prov);
+      button.append(mark, copy);
+      button.addEventListener("click", async () => {
+        state.piCurrentModel = id;
+        renderPiModelMenu();
+        try {
+          await apiRequest("/api/pi/model", {
+            method: "POST",
+            body: JSON.stringify({ modelId: id }),
+          });
+          showToast(`已切换 pi 模型：${id}`, "info");
+          updateCurrentModelDisplay();
+        } catch (error) {
+          showToast(`切换失败：${error.message || error}`, "error");
+        }
+      });
+      list.appendChild(button);
+    }
+    // 思考级别
+    const thinkLabel = document.createElement("p");
+    thinkLabel.className = "model-menu-think-label";
+    thinkLabel.textContent = "思考级别";
+    list.appendChild(thinkLabel);
+    const thinkRow = document.createElement("div");
+    thinkRow.className = "model-menu-think-row";
+    for (const level of ["off", "low", "medium", "high", "xhigh", "max"]) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "model-menu-think" + (level === state.piThinking ? " active" : "");
+      btn.textContent = level;
+      btn.addEventListener("click", async () => {
+        state.piThinking = level;
+        renderPiModelMenu();
+        try {
+          await apiRequest("/api/pi/thinking", {
+            method: "POST",
+            body: JSON.stringify({ level }),
+          });
+          showToast(`思考级别：${level}`, "info");
+        } catch (error) {
+          showToast(`设置失败：${error.message || error}`, "error");
+        }
+      });
+      thinkRow.appendChild(btn);
+    }
+    list.appendChild(thinkRow);
+    elements.modelMenu.appendChild(list);
   }
 
   function openModelMenu() {
@@ -1534,7 +1659,18 @@
     oracle: "oracle",
     cloudflare: "cloudflare-icon",
     bedrock: "aws-bedrock",
-    aws: "aws-bedrock"
+    aws: "aws-bedrock",
+    pi: "pi",
+    minimax: "minimax",
+    xiaomi: "xiaomi",
+    openrouter: "openrouter",
+    kimi: "kimi",
+    moonshot: "moonshot",
+    lmstudio: "lmstudio",
+    "lm-studio": "lmstudio",
+    baidu: "baidu",
+    qwen: "qwen",
+    alibaba: "qwen"
   };
 
   let providerIconsReady = null;
@@ -1685,6 +1821,17 @@
   }
 
   function updateCurrentModelDisplay() {
+    if (state.engine === "pi") {
+      elements.modelMark.classList.remove("provider-logo");
+      elements.modelMark.textContent = "π";
+      elements.modelLabel.textContent = "pi 底座";
+      elements.modelLabel.title = "pi 底座模式：模型由 pi 自己管理";
+      const settingsMark = elements.settingsModelMark;
+      if (settingsMark) settingsMark.classList.remove("provider-logo");
+      if (elements.settingsModelName) elements.settingsModelName.textContent = "pi 底座";
+      if (elements.settingsModelProvider) elements.settingsModelProvider.textContent = "模型由 pi 管理";
+      return;
+    }
     const active = activeModels();
     if (active.length === 0) {
       elements.modelMark.classList.remove("provider-logo");
@@ -1995,6 +2142,96 @@
     }
   }
 
+  async function runConversationSearch() {
+    const query = elements.sidebarSearchInput.value.trim();
+    if (!query || state.blocked) return;
+    state.searchQuery = query;
+    elements.searchResults.hidden = false;
+    elements.searchResults.textContent = "搜索中…";
+    try {
+      const response = await apiRequest(`/api/search?q=${encodeURIComponent(query)}&limit=50`);
+      const data = await response.json();
+      const results = Array.isArray(data?.results) ? data.results : [];
+      state.searchResults = results;
+      renderSearchResults();
+      if (state.sidebarOpen === false && window.innerWidth <= 900) elements.sidebarScrim?.click();
+    } catch (error) {
+      elements.searchResults.textContent = `搜索失败：${error.message || error}`;
+    }
+  }
+
+  function clearConversationSearch() {
+    state.searchQuery = "";
+    state.searchResults = [];
+    elements.searchResults.hidden = true;
+    elements.searchResults.replaceChildren();
+  }
+
+  function renderSearchResults() {
+    const container = elements.searchResults;
+    container.replaceChildren();
+    if (!state.searchQuery) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    const heading = document.createElement("div");
+    heading.className = "search-results-heading";
+    const count = state.searchResults.length;
+    heading.textContent = `“${state.searchQuery}” · ${count} 条`;
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "search-results-clear";
+    clear.textContent = "清除";
+    clear.addEventListener("click", () => {
+      elements.sidebarSearchInput.value = "";
+      clearConversationSearch();
+      renderChannelList();
+      renderConversationList();
+    });
+    heading.appendChild(clear);
+    container.appendChild(heading);
+    if (!count) {
+      const empty = document.createElement("p");
+      empty.className = "search-results-empty";
+      empty.textContent = "没有匹配的对话";
+      container.appendChild(empty);
+      return;
+    }
+    for (const result of state.searchResults) {
+      const item = document.createElement("article");
+      item.className = "search-result";
+      const user = String(result.user_content || "").trim();
+      const assistant = String(result.assistant_content || "").trim();
+      const time = document.createElement("time");
+      time.textContent = formatTime(result.assistant_timestamp || result.user_timestamp);
+      const snippet = document.createElement("p");
+      snippet.className = "search-result-snippet";
+      snippet.textContent = (user || assistant || "").slice(0, 80) || "（空）";
+      snippet.appendChild(document.createElement("br"));
+      const detail = document.createElement("div");
+      detail.className = "search-result-detail";
+      detail.hidden = true;
+      if (user) {
+        const u = document.createElement("p");
+        u.className = "search-result-user";
+        u.textContent = `你：${user}`;
+        detail.appendChild(u);
+      }
+      if (assistant) {
+        const a = document.createElement("p");
+        a.className = "search-result-assistant";
+        a.textContent = `顾清影：${assistant}`;
+        detail.appendChild(a);
+      }
+      item.append(time, snippet, detail);
+      item.addEventListener("click", () => {
+        detail.hidden = !detail.hidden;
+      });
+      container.appendChild(item);
+    }
+  }
+
   async function switchToConversation(conversationId) {
     if (state.blocked || conversationRunning()) return;
     state.viewingConversation = String(conversationId);
@@ -2157,6 +2394,38 @@
     return copied;
   }
 
+  // 朗读按钮（浏览器 SpeechSynthesis，零后端）
+  function makeSpeakButton(textProvider, label = "朗读") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-action-button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    let speaking = false;
+    button.addEventListener("click", () => {
+      if (speaking) {
+        window.speechSynthesis?.cancel();
+        speaking = false;
+        button.textContent = "";
+        return;
+      }
+      const text = String(typeof textProvider === "function" ? textProvider() : textProvider || "").trim();
+      if (!text || !("speechSynthesis" in window)) {
+        showToast("当前浏览器不支持朗读", "error");
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "zh-CN";
+      utterance.onend = () => { speaking = false; button.textContent = ""; };
+      utterance.onerror = () => { speaking = false; button.textContent = ""; };
+      speaking = true;
+      button.textContent = "■";
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    });
+    return button;
+  }
+
   function makeCopyButton(textProvider, label = "复制") {
     const button = document.createElement("button");
     button.type = "button";
@@ -2278,6 +2547,103 @@
     flushPlain(text.length);
   }
 
+  // ---- 轻量语法高亮（零依赖） ----
+  const HL_CONFIG = {
+    _default: { keywords: "", comment: null, strings: true, numbers: true },
+    bash: {
+      keywords: "if then else elif fi for while do done case esac function in return local export readonly unset set echo printf source exit break continue cd ls pwd mkdir rm cp mv touch cat grep sed awk find curl wget sudo",
+      comment: "#",
+      strings: true,
+      numbers: false,
+    },
+    sh: null,
+    shell: null,
+    json: { keywords: "true false null", comment: null, strings: true, numbers: true },
+    rust: {
+      keywords: "fn let mut pub struct enum impl trait mod use crate super self Self as where match if else for while loop return break continue async await move ref const static type dyn in out unsafe",
+      comment: "//",
+      strings: true,
+      numbers: true,
+    },
+    js: {
+      keywords: "function const let var return if else for while do switch case break continue new class extends super this async await try catch finally throw typeof instanceof import export default null undefined true false",
+      comment: "//",
+      strings: true,
+      numbers: true,
+    },
+    typescript: "js",
+    ts: "js",
+    javascript: "js",
+    python: {
+      keywords: "def class return if elif else for while try except finally with as import from lambda pass break continue yield global nonlocal raise assert del in is not and or None True False self",
+      comment: "#",
+      strings: true,
+      numbers: true,
+    },
+    py: "python",
+    sql: {
+      keywords: "select insert update delete from where join left right inner outer on group by order having limit offset create alter drop table index view values set and or not like in between case when then else end as distinct count sum avg min max",
+      comment: "--",
+      strings: true,
+      numbers: true,
+    },
+    diff: { keywords: "", comment: null, strings: false, numbers: false, diff: true },
+    yaml: { keywords: "true false null yes no", comment: "#", strings: true, numbers: false },
+    yml: "yaml",
+    markdown: { keywords: "", comment: null, strings: false, numbers: false },
+    md: "markdown",
+  };
+
+  function escapeHtmlText(value) {
+    return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function highlightCode(codeText, language) {
+    const key = String(language || "").toLowerCase().replace(/^language-/, "");
+    let cfg = HL_CONFIG[key];
+    if (typeof cfg === "string") cfg = HL_CONFIG[cfg];
+    if (!cfg) cfg = HL_CONFIG._default;
+    const keywords = new Set(String(cfg.keywords || "").split(/\s+/).filter(Boolean));
+
+    if (cfg.diff) {
+      return codeText.split("\n").map((line) => {
+        const cls = line.startsWith("+") ? "hl-add" : line.startsWith("-") ? "hl-del" : "";
+        return cls ? `<span class="${cls}">${escapeHtmlText(line)}</span>` : escapeHtmlText(line);
+      }).join("\n");
+    }
+
+    const patterns = [];
+    if (cfg.comment === "#") patterns.push(["comment", /^#[^\n]*/]);
+    else if (cfg.comment === "//") patterns.push(["comment", /^\/\/[^\n]*|^\/\*[\s\S]*?\*\//]);
+    else if (cfg.comment === "--") patterns.push(["comment", /^--[^\n]*/]);
+    if (cfg.strings) patterns.push(["string", /^"(?:[^"\\\n]|\\.)*"|^'(?:[^'\\\n]|\\.)*'|^`(?:[^`\\]|\\.)*`/]);
+    if (cfg.numbers) patterns.push(["number", /^\b(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/]);
+    if (keywords.size) patterns.push(["keyword", new RegExp("^(?:" + [...keywords].join("|") + ")\\b")]);
+
+    let rest = String(codeText);
+    const pieces = [];
+    while (rest.length) {
+      let matched = false;
+      for (const [type, re] of patterns) {
+        const m = rest.match(re);
+        if (m) {
+          const raw = m[0];
+          pieces.push(type === "plain" ? escapeHtmlText(raw) : `<span class="hl-${type}">${escapeHtmlText(raw)}</span>`);
+          rest = rest.slice(raw.length);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        // 按字符前进，避免无限循环
+        const ch = rest[0];
+        pieces.push(escapeHtmlText(ch));
+        rest = rest.slice(1);
+      }
+    }
+    return pieces.join("");
+  }
+
   function codeBlock(language, codeText) {
     const wrapper = document.createElement("div");
     wrapper.className = "code-block";
@@ -2291,7 +2657,7 @@
     const pre = document.createElement("pre");
     const code = document.createElement("code");
     if (language) code.className = `language-${language}`;
-    code.textContent = codeText;
+    code.innerHTML = highlightCode(codeText, language);
     pre.appendChild(code);
     wrapper.append(toolbar, pre);
     return wrapper;
@@ -2547,14 +2913,62 @@
     const paragraph = document.createElement("p");
     paragraph.textContent = String(content || "");
     bubble.appendChild(paragraph);
+    const mediaImages = [];
+    if (Array.isArray(attributes.images)) {
+      for (const image of attributes.images) {
+        if (image && image.dataUrl) mediaImages.push({ src: image.dataUrl, alt: image.name || "图片" });
+      }
+    }
+    if (Array.isArray(attributes.assets)) {
+      for (const asset of attributes.assets) {
+        const url = safeAssetUrl(asset?.url);
+        if (url) mediaImages.push({ src: url, alt: asset?.alt || "图片" });
+      }
+    }
+    if (mediaImages.length) {
+      const media = document.createElement("div");
+      media.className = "user-media";
+      for (const image of mediaImages) {
+        const img = document.createElement("img");
+        img.src = image.src;
+        img.alt = image.alt;
+        img.loading = "lazy";
+        media.appendChild(img);
+      }
+      bubble.appendChild(media);
+    }
     const actions = document.createElement("div");
     actions.className = "message-actions";
     const time = document.createElement("span");
     time.textContent = formatTime(timestamp) || "刚刚";
     time.title = formatDateTime(timestamp);
     actions.append(time, makeCopyButton(String(content || ""), "复制消息"));
+    if (attributes.retryable && String(content || "").trim()) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "message-action-button";
+      retry.title = "重新生成回复";
+      retry.setAttribute("aria-label", "重新生成回复");
+      retry.addEventListener("click", () => retryTurn(String(content || ""), retry));
+      actions.appendChild(retry);
+    }
     article.append(bubble, actions);
     return article;
+  }
+
+  // 重试/重新生成：剥离注入的 [Image N 的描述] 块后重发该轮内容
+  async function retryTurn(content, button) {
+    const clean = String(content || "").replace(/\n?\[Image \d+ 的描述\][\s\S]*?(?=\n\[Image \d+ 的描述\]|$)/g, "").trim() || String(content || "").trim();
+    if (button) {
+      button.disabled = true;
+      button.textContent = "…";
+    }
+    const ok = await sendTurnContent(clean, "normal", []);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "";
+    }
+    if (!ok) showToast("重试未能受理，请稍后再试", "error");
   }
 
   function safeAssetUrl(value) {
@@ -2820,6 +3234,7 @@
       const spacer = document.createElement("span");
       spacer.className = "meta-spacer";
       meta.append(spacer, makeCopyButton(copyValue, "复制回复"));
+      meta.appendChild(makeSpeakButton(copyValue));
     }
     if (meta.childNodes.length) article.appendChild(meta);
     return article;
@@ -2890,9 +3305,14 @@
     return status;
   }
 
-  function renderPersistedTurn(turn) {
+  function renderPersistedTurn(turn, isLast = false) {
     const turnId = String(turn?.id || "");
-    elements.timeline.appendChild(createUserMessage(turn?.user_content || "", turn?.user_timestamp, { turnId }));
+    const userAssets = Array.isArray(turn?.assets)
+      ? turn.assets.filter((asset) => String(asset?.source || "tool") === "user")
+      : [];
+    const status = String(turn?.status || "");
+    const retryable = isLast || status === "interrupted" || status === "failed";
+    elements.timeline.appendChild(createUserMessage(turn?.user_content || "", turn?.user_timestamp, { turnId, assets: userAssets, retryable }));
 
     const exchanges = Array.isArray(turn?.question_exchanges) ? turn.question_exchanges : [];
     for (const exchange of exchanges) elements.timeline.appendChild(createPersistedQuestion(exchange, turnId));
@@ -2975,7 +3395,7 @@
           elements.timeline.appendChild(createDayDivider(turn?.user_timestamp));
           previousDay = currentDay;
         }
-        renderPersistedTurn(turn);
+        renderPersistedTurn(turn, index === turns.length - 1);
       }
     }
     state.nearBottom = true;
@@ -3123,15 +3543,15 @@
     elements.timeline.hidden = false;
   }
 
-  function ensureLiveUser(content, runId) {
+  function ensureLiveUser(content, runId, images = []) {
     const live = establishRun(runId);
     if (!live || live.userRendered) return;
     const text = String(content || live.userText || "");
-    if (!text.trim()) return;
+    if (!text.trim() && images.length === 0) return;
     live.userText = text;
     ensureTimelineVisible();
     appendDayDividerIfNeeded(new Date());
-    const message = createUserMessage(text, new Date(), { runId });
+    const message = createUserMessage(text, new Date(), { runId, images });
     if (live.article?.isConnected) elements.timeline.insertBefore(message, live.article);
     else elements.timeline.appendChild(message);
     live.userRendered = true;
@@ -3518,11 +3938,27 @@
       argumentsDetail.content.textContent = argumentText;
       argumentsDetail.wrapper.hidden = false;
     }
-    body.append(argumentsDetail.wrapper, progressDetail.wrapper, stdoutDetail.wrapper, stderrDetail.wrapper, resultDetail.wrapper);
+    const rerunButton = document.createElement("button");
+    rerunButton.type = "button";
+    rerunButton.className = "tool-rerun-button";
+    rerunButton.textContent = "重跑";
+    rerunButton.hidden = true;
+    rerunButton.title = "重新执行这个工具";
+    body.append(
+      argumentsDetail.wrapper,
+      progressDetail.wrapper,
+      stdoutDetail.wrapper,
+      stderrDetail.wrapper,
+      resultDetail.wrapper,
+      rerunButton
+    );
     card.append(head, body);
     const tool = {
       id: toolId,
       name: String(data?.name || ""),
+      rawName: String(data?.name || ""),
+      toolArgs: data?.arguments || "",
+      rerunButton,
       card,
       head,
       body,
@@ -3592,9 +4028,17 @@
       updateToolSummary(tool);
     } else if (name === "tool.progress") {
       const message = String(data?.message || "");
-      tool.progressDetail.raw = message;
-      tool.progressDetail.content.textContent = message;
-      tool.progressDetail.wrapper.hidden = !message;
+      if (message) {
+        // 追加式滚动（agent 思考/回复流需要），带长度上限
+        tool.progressDetail.raw = tool.progressDetail.raw
+          ? boundedAppend(tool.progressDetail.raw, `\n${message}`)
+          : message;
+        tool.progressDetail.content.textContent = tool.progressDetail.raw;
+        tool.progressDetail.wrapper.hidden = false;
+        if (tool.progressDetail.wrapper.scrollTop > 0) {
+          tool.progressDetail.wrapper.scrollTop = tool.progressDetail.wrapper.scrollHeight;
+        }
+      }
       if (!tool.subject && message) tool.subject = compactLine(message);
       updateToolStatus(tool, "运行中", "loader-circle");
       updateToolSummary(tool);
@@ -3615,15 +4059,55 @@
       const ok = Boolean(data?.ok);
       updateToolStatus(tool, ok ? "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
       updateToolSummary(tool);
-      if (ok) {
-        tool.card.classList.add("collapsed");
-        tool.head.setAttribute("aria-expanded", "false");
-      } else {
-        tool.card.classList.add("collapsed");
-        tool.head.setAttribute("aria-expanded", "false");
+      // 桥接工具（gqy_*）支持一键重跑
+      if (tool.rawName.startsWith("gqy_") && tool.toolArgs && tool.rerunButton) {
+        tool.rerunButton.hidden = false;
+        tool.rerunButton.onclick = () => rerunTool(tool, tool.rerunButton);
       }
+      tool.card.classList.add("collapsed");
+      tool.head.setAttribute("aria-expanded", "false");
     }
     contentAdded();
+  }
+
+  // 一键重跑工具：gqy_ 前缀剥掉，经 /api/tools/call 走 GQY 注册表执行
+  async function rerunTool(tool, button) {
+    const gqyName = tool.rawName.replace(/^gqy_/, "");
+    if (!gqyName) return;
+    let args = {};
+    try {
+      args = tool.toolArgs ? JSON.parse(tool.toolArgs) : {};
+    } catch (_) {
+      args = {};
+    }
+    button.disabled = true;
+    button.textContent = "重跑中…";
+    tool.card.classList.remove("collapsed");
+    tool.head.setAttribute("aria-expanded", "true");
+    tool.resultDetail.raw = "";
+    tool.resultDetail.content.textContent = "重跑中…";
+    tool.resultDetail.wrapper.hidden = false;
+    updateToolStatus(tool, "重跑中", "loader-circle");
+    try {
+      const response = await apiRequest("/api/tools/call", {
+        method: "POST",
+        body: JSON.stringify({ name: gqyName, arguments: args }),
+      });
+      const data = await response.json();
+      const output = String(data?.output || (data?.ok ? "" : data?.error || "执行失败"));
+      tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
+      tool.resultDetail.content.textContent = tool.resultDetail.raw;
+      tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
+      updateToolStatus(tool, data?.ok ? "重跑完成" : "重跑失败", data?.ok ? "check" : "circle-alert", data?.ok ? "is-success" : "is-failure");
+    } catch (error) {
+      tool.resultDetail.raw = `重跑失败：${error.message || error}`;
+      tool.resultDetail.content.textContent = tool.resultDetail.raw;
+      tool.resultDetail.wrapper.hidden = false;
+      updateToolStatus(tool, "重跑失败", "circle-alert", "is-failure");
+    } finally {
+      button.disabled = false;
+      button.textContent = "重跑";
+    }
   }
 
   function updateQuestionOptionClasses(questionState) {
@@ -4161,6 +4645,26 @@
     }
   }
 
+  function requestNotificationPermission() {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      try { Notification.requestPermission().catch(() => {}); } catch (_) {}
+    }
+  }
+
+  function notifyRunCompleted(live) {
+    if (!("Notification" in window)) return;
+    if (document.visibilityState !== "hidden") return;
+    if (Notification.permission !== "granted") return;
+    try {
+      const text = String(live?.assistantText || "").trim();
+      new Notification("顾清影", {
+        body: text ? (text.length > 120 ? `${text.slice(0, 120)}…` : text) : "回复完成",
+        tag: `gqy-run-${live?.runId || ""}`,
+      });
+    } catch (_) {}
+  }
+
   function finishLiveRun(kind, data) {
     const runId = String(data?.run_id || "");
     const live = state.live?.runId === runId ? state.live : establishRun(runId);
@@ -4172,6 +4676,7 @@
     if (state.terminalRunIds.size > 30) state.terminalRunIds.delete(state.terminalRunIds.values().next().value);
 
     if (kind === "completed") {
+      notifyRunCompleted(live);
       if (live.headerStatus) live.headerStatus.textContent = "刚刚";
       if (live.meta) {
         const total = effectiveUsageTotal(data?.usage);
@@ -4278,6 +4783,7 @@
       state.context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : state.context;
       state.usage = snapshot?.usage && typeof snapshot.usage === "object" ? snapshot.usage : state.usage;
       state.capabilities = snapshot?.capabilities && typeof snapshot.capabilities === "object" ? snapshot.capabilities : state.capabilities;
+      state.engine = String(snapshot?.engine || "");
       state.version = snapshot?.version ?? state.version;
       state.externalRunningTurnId = nextExternalTurnId;
       state.externalQueueAvailable = Boolean(nextExternalTurnId && snapshot?.external_queue_available);
@@ -4521,6 +5027,7 @@
     state.context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : { tokens: 0, window: null };
     state.usage = snapshot?.usage && typeof snapshot.usage === "object" ? snapshot.usage : {};
     state.capabilities = snapshot?.capabilities && typeof snapshot.capabilities === "object" ? snapshot.capabilities : {};
+    state.engine = String(snapshot?.engine || "");
     state.version = snapshot?.version ?? null;
     state.activeRunId = typeof snapshot?.active_run_id === "string" && snapshot.active_run_id ? snapshot.active_run_id : null;
     state.externalRunningTurnId = !state.activeRunId && typeof snapshot?.running_turn_id === "string" && snapshot.running_turn_id
@@ -4695,11 +5202,89 @@
     }
   }
 
+  let pendingImageSeq = 0;
+
+  function addPendingImageFile(file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const id = `img-${++pendingImageSeq}`;
+      state.pendingImages.push({
+        id,
+        mime: file.type || "image/png",
+        dataUrl: String(reader.result || ""),
+        name: file.name || "图片",
+      });
+      renderImageTray();
+      updateControlState();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function addPendingImageDataUrl(dataUrl, name = "图片") {
+    const match = /^data:([^;]+);base64,/.exec(String(dataUrl || ""));
+    if (!match) return;
+    const id = `img-${++pendingImageSeq}`;
+    state.pendingImages.push({ id, mime: match[1], dataUrl, name });
+    renderImageTray();
+    updateControlState();
+  }
+
+  function removePendingImage(id) {
+    state.pendingImages = state.pendingImages.filter((image) => image.id !== id);
+    renderImageTray();
+    updateControlState();
+  }
+
+  function renderImageTray() {
+    const tray = elements.imageTray;
+    tray.textContent = "";
+    if (state.pendingImages.length === 0) {
+      tray.hidden = true;
+      return;
+    }
+    tray.hidden = false;
+    for (const image of state.pendingImages) {
+      const chip = document.createElement("figure");
+      chip.className = "image-chip";
+      const img = document.createElement("img");
+      img.src = image.dataUrl;
+      img.alt = image.name;
+      img.title = image.name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "image-chip-remove";
+      remove.title = "移除图片";
+      remove.setAttribute("aria-label", "移除图片");
+      remove.textContent = "×";
+      remove.addEventListener("click", () => removePendingImage(image.id));
+      chip.append(img, remove);
+      tray.appendChild(chip);
+    }
+  }
+
+  function pendingImagesPayload() {
+    return state.pendingImages.map((image) => {
+      const comma = image.dataUrl.indexOf(",");
+      return {
+        mime: image.mime,
+        data_base64: comma >= 0 ? image.dataUrl.slice(comma + 1) : "",
+      };
+    });
+  }
+
+  function collectPendingImages() {
+    const images = state.pendingImages.slice();
+    state.pendingImages = [];
+    renderImageTray();
+    return images;
+  }
+
   async function submitTurn() {
     if (state.adminBusy || state.submitting || state.blocked || state.viewingChannel || state.viewingConversation) return;
     if (hasPendingQuestion() || (state.externalRunningTurnId && !state.externalQueueAvailable)) return;
-    const queueing = conversationRunning();
     const content = elements.composerInput.value.trim();
+    const attachedImages = state.pendingImages.slice();
     const count = countCharacters(content);
     if (!content) {
       elements.composerState.textContent = "消息不能为空";
@@ -4711,14 +5296,44 @@
       elements.composerState.classList.add("is-error");
       return;
     }
+    if (!(await sendTurnContent(content, state.mode, attachedImages))) {
+      return;
+    }
+    elements.composerInput.value = "";
+    resizeComposer();
+    if (attachedImages.length) collectPendingImages();
+    updateRuntimeUsage();
+    updateConversationChrome();
+  }
+
+  // 发送一条消息（重试/重新生成也走这里）。images 为 {mime, dataUrl} 列表。
+  // 返回是否成功受理。
+  async function sendTurnContent(content, mode, images = []) {
+    if (state.adminBusy || state.submitting || state.blocked || state.viewingChannel || state.viewingConversation) return false;
+    if (hasPendingQuestion() || (state.externalRunningTurnId && !state.externalQueueAvailable)) return false;
+    const queueing = conversationRunning();
+    requestNotificationPermission();
     state.submitting = true;
-    if (!queueing) state.pendingSubmission = { content, mode: state.mode };
+    if (!queueing) state.pendingSubmission = { content, mode };
     clearInlineError();
     updateControlState();
     try {
+      const payloadImages = images
+        .filter((image) => image && image.dataUrl)
+        .map((image) => {
+          const comma = String(image.dataUrl).indexOf(",");
+          return {
+            mime: image.mime || "image/png",
+            data_base64: comma >= 0 ? String(image.dataUrl).slice(comma + 1) : "",
+          };
+        });
       const response = await apiRequest(queueing ? "/api/queue" : "/api/turns", {
         method: "POST",
-        body: JSON.stringify(queueing ? { content } : { content, mode: state.mode })
+        body: JSON.stringify(
+          queueing
+            ? { content, images: payloadImages }
+            : { content, mode, images: payloadImages }
+        )
       });
       const payload = await response.json();
       const queuedPrompt = queueing ? payload : payload?.queued ? payload.prompt : null;
@@ -4733,12 +5348,10 @@
           state.externalQueueAvailable = Boolean(state.externalRunningTurnId);
           if (fallbackRunId) state.activeRunId = fallbackRunId;
         }
-        elements.composerInput.value = "";
-        resizeComposer();
         renderQueueTray();
         if (!queueing && state.activeRunId) await loadBootstrap();
         else scheduleExternalSync();
-        return;
+        return true;
       }
       const runId = String(payload?.run_id || "");
       if (!runId) throw new ApiError("服务未返回运行标识", response.status);
@@ -4749,12 +5362,9 @@
         const live = state.live?.runId === runId ? state.live : createLiveState(runId, { userText: content });
         live.userText = content;
         state.live = live;
-        ensureLiveUser(content, runId);
-        elements.composerInput.value = "";
-        resizeComposer();
-        updateRuntimeUsage();
-        updateConversationChrome();
+        ensureLiveUser(content, runId, images);
       }
+      return true;
     } catch (error) {
       if (!queueing) state.pendingSubmission = null;
       showInlineError(error.status === 409
@@ -4762,6 +5372,7 @@
         : error.message);
       showToast(error.status === 409 ? "回复状态已同步，请重新发送" : error.message, "error");
       if (error.status === 409) await loadBootstrap();
+      return false;
     } finally {
       state.submitting = false;
       updateControlState();
@@ -4862,7 +5473,8 @@
       const stats = data?.stats;
       if (!stats) return;
       renderUsageSummary(stats);
-      renderUsageContribution(stats);
+      renderUsageBars(stats);
+      renderUsageMonths(stats);
       renderUsageModelTable(stats);
       elements.usageSubtitle.textContent = `共 ${formatTokens(stats.total?.total_tokens)} token · ${formatInteger(stats.total?.requests || 0)} 次请求`;
       loadUsageDetails();
@@ -4908,60 +5520,141 @@
     }
   }
 
-  // GitHub 风格贡献图：7 行（周）网格，按天着色，月份标签
-  function renderUsageContribution(stats) {
+  // 图表跟随鼠标 tooltip（DeepSeek 用量页风格）
+  function chartTooltip(col, lines) {
+    col.classList.add("has-tooltip");
+    col.title = "";
+    col.addEventListener("mouseenter", () => {
+      let tip = document.querySelector(".usage-chart-tooltip");
+      if (!tip) {
+        tip = document.createElement("div");
+        tip.className = "usage-chart-tooltip";
+        document.body.appendChild(tip);
+      }
+      tip.replaceChildren();
+      for (const line of lines) {
+        const p = document.createElement("p");
+        p.textContent = line;
+        tip.appendChild(p);
+      }
+      tip.hidden = false;
+    });
+    col.addEventListener("mousemove", (event) => {
+      const tip = document.querySelector(".usage-chart-tooltip");
+      if (!tip) return;
+      const pad = 14;
+      let left = event.clientX + pad;
+      let top = event.clientY + pad;
+      const rect = tip.getBoundingClientRect();
+      if (left + rect.width > window.innerWidth - 8) left = event.clientX - rect.width - pad;
+      if (top + rect.height > window.innerHeight - 8) top = event.clientY - rect.height - pad;
+      tip.style.left = `${left}px`;
+      tip.style.top = `${top}px`;
+    });
+    col.addEventListener("mouseleave", () => {
+      const tip = document.querySelector(".usage-chart-tooltip");
+      if (tip) tip.hidden = true;
+    });
+  }
+
+  // 近 30 天趋势柱状图
+  function renderUsageBars(stats) {
     const daily = Array.isArray(stats.daily) ? stats.daily : [];
-    if (!daily.length) {
-      elements.usageContribution.textContent = "暂无消耗数据";
+    const recent = daily.slice(-30);
+    const container = elements.usageBars;
+    container.replaceChildren();
+    if (!recent.length) {
+      container.textContent = "暂无消耗数据";
       return;
     }
-    const maxTokens = daily.reduce((max, day) => Math.max(max, asFiniteNumber(day.tokens, 0)), 0);
-    // 第一天的星期偏移（周日=0），保证首列对齐到周日
-    const firstDate = new Date(`${daily[0].date}T00:00:00`);
-    const leading = firstDate.getDay();
-    const totalCells = daily.length + leading;
-    const columns = Math.ceil(totalCells / 7);
-
-    elements.usageContribution.replaceChildren();
-    const months = document.createElement("div");
-    months.className = "contribution-months";
-    const grid = document.createElement("div");
-    grid.className = "contribution-grid";
-    grid.style.gridTemplateColumns = `repeat(${columns}, var(--cell-size))`;
-
-    // 月份标签：标记「该列包含某月第一天的列」。
-    // 用列的最后一个单元格（周六）所在月份判断 —— 若本周跨月，周六所在月即本列开始的新月，
-    // 避免按列首（周日）判断导致的整列错位；首列也显示标签。
-    let previousMonth = null;
-    for (let col = 0; col < columns; col++) {
-      const colDate = new Date(firstDate);
-      colDate.setDate(colDate.getDate() + col * 7 - leading + 6);
-      if (colDate.getMonth() !== previousMonth) {
-        const label = document.createElement("span");
-        label.textContent = `${colDate.getMonth() + 1}月`;
-        months.appendChild(label);
-      }
-      previousMonth = colDate.getMonth();
+    const maxTokens = Math.max(1, ...recent.map((day) => asFiniteNumber(day.tokens, 0)));
+    const chart = document.createElement("div");
+    chart.className = "usage-bars-chart";
+    for (const day of recent) {
+      const tokens = asFiniteNumber(day.tokens, 0);
+      const col = document.createElement("div");
+      col.className = "usage-bar-col";
+      col.title = `${day.date} · ${formatTokens(tokens)} token${day.requests ? `（${formatInteger(day.requests)} 次）` : ""}`;
+      chartTooltip(col, [
+        day.date,
+        `Token：${formatTokens(tokens)}`,
+        day.requests ? `请求：${formatInteger(day.requests)} 次` : "请求：无",
+      ]);
+      const bar = document.createElement("i");
+      bar.className = "usage-bar" + (tokens === 0 ? " is-zero" : "");
+      bar.style.height = tokens === 0 ? "2px" : `${Math.max(6, (tokens / maxTokens) * 100)}%`;
+      const label = document.createElement("span");
+      label.className = "usage-bar-date";
+      const date = new Date(`${day.date}T00:00:00`);
+      label.textContent = `${date.getMonth() + 1}/${date.getDate()}`;
+      col.append(bar, label);
+      chart.appendChild(col);
     }
-    for (let col = 0; col < columns; col++) {
-      for (let row = 0; row < 7; row++) {
-        const index = col * 7 + row - leading;
-        const day = daily[index];
-        if (!day) {
-          const empty = document.createElement("i");
-          empty.className = "cell cell-empty";
-          grid.appendChild(empty);
-          continue;
-        }
-        const tokens = asFiniteNumber(day.tokens, 0);
-        const level = tokens === 0 ? 0 : maxTokens > 0 ? Math.max(1, Math.ceil((tokens / maxTokens) * 4)) : 0;
-        const cell = document.createElement("i");
-        cell.className = `cell cell-level-${level}`;
-        cell.title = `${day.date} · ${formatTokens(tokens)} token${day.requests ? `（${formatInteger(day.requests)} 次）` : ""}`;
-        grid.appendChild(cell);
-      }
+    container.appendChild(chart);
+    const statsLine = document.createElement("div");
+    statsLine.className = "usage-bars-stats";
+    const peak = recent.reduce((max, day) => (asFiniteNumber(day.tokens, 0) > max.tokens ? day : max), { tokens: 0 });
+    const total = recent.reduce((sum, day) => sum + asFiniteNumber(day.tokens, 0), 0);
+    const avg = Math.round(total / recent.length);
+    statsLine.textContent = `峰值 ${peak.date} · ${formatTokens(peak.tokens)}　日均 ${formatTokens(avg)}　合计 ${formatTokens(total)}`;
+    container.appendChild(statsLine);
+  }
+
+  // 近 12 个月月度柱状图：每月总 token（比 365 天贡献网格更直观、有标注、不溢出）
+  function renderUsageMonths(stats) {
+    const daily = Array.isArray(stats.daily) ? stats.daily : [];
+    const container = elements.usageContribution;
+    container.replaceChildren();
+    if (!daily.length) {
+      container.textContent = "暂无消耗数据";
+      return;
     }
-    elements.usageContribution.append(months, grid);
+    const byMonth = new Map();
+    for (const day of daily) {
+      const key = String(day.date || "").slice(0, 7);
+      if (!key) continue;
+      const entry = byMonth.get(key) || { tokens: 0, requests: 0 };
+      entry.tokens += asFiniteNumber(day.tokens, 0);
+      entry.requests += asFiniteNumber(day.requests, 0);
+      byMonth.set(key, entry);
+    }
+    const months = Array.from(byMonth.entries()).slice(-12);
+    const maxTokens = Math.max(1, ...months.map(([, v]) => v.tokens));
+
+    const chart = document.createElement("div");
+    chart.className = "usage-months-chart";
+    for (const [key, value] of months) {
+      const [year, month] = key.split("-");
+      const col = document.createElement("div");
+      col.className = "usage-month-col";
+      const bar = document.createElement("i");
+      bar.className = "usage-month-bar" + (value.tokens === 0 ? " is-zero" : "");
+      bar.style.height = value.tokens === 0 ? "2px" : `${Math.max(8, (value.tokens / maxTokens) * 100)}%`;
+      const valueLabel = document.createElement("span");
+      valueLabel.className = "usage-month-value";
+      valueLabel.textContent = value.tokens === 0 ? "0" : formatTokens(value.tokens);
+      const label = document.createElement("span");
+      label.className = "usage-month-label";
+      label.textContent = `${month}月`;
+      if (year && year !== String(new Date().getFullYear())) label.textContent = `${month}/${year.slice(2)}`;
+      chartTooltip(col, [
+        `${year}-${month}`,
+        `Token：${formatTokens(value.tokens)}`,
+        `请求：${formatInteger(value.requests)} 次`,
+      ]);
+      col.append(bar, valueLabel, label);
+      chart.appendChild(col);
+    }
+    container.appendChild(chart);
+    const legend = document.createElement("div");
+    legend.className = "usage-legend";
+    legend.append(
+      Object.assign(document.createElement("span"), { textContent: "少" }),
+      Object.assign(document.createElement("i"), { className: "cell-level-1", ariaHidden: "true" }),
+      Object.assign(document.createElement("i"), { className: "cell-level-3", ariaHidden: "true" }),
+      Object.assign(document.createElement("span"), { textContent: "多" }),
+    );
+    container.appendChild(legend);
   }
 
   function renderUsageModelTable(stats) {
@@ -5289,10 +5982,29 @@
     }
     document.querySelectorAll("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => setTheme(button.dataset.themeChoice)));
     elements.modeSwitch.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+    elements.exportButton.addEventListener("click", async () => {
+      try {
+        const response = await apiRequest("/api/export");
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "gqy-export.md";
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast("对话已导出为 markdown", "info");
+      } catch (error) {
+        showToast(`导出失败：${error.message || error}`, "error");
+      }
+    });
     elements.modelButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (elements.modelMenu.hidden) openModelMenu();
-      else closeModelMenu({ restoreFocus: true });
+      if (elements.modelMenu.hidden) {
+        if (state.engine === "pi") openPiModelMenu();
+        else openModelMenu();
+      } else {
+        closeModelMenu({ restoreFocus: true });
+      }
     });
     elements.modelMenu.addEventListener("keydown", (event) => {
       const items = Array.from(elements.modelMenu.querySelectorAll("button:not(:disabled)"));
@@ -5327,6 +6039,16 @@
     elements.composerInput.addEventListener("compositionend", () => {
       state.composing = false;
     });
+    elements.sidebarSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runConversationSearch();
+      }
+      if (event.key === "Escape") {
+        elements.sidebarSearchInput.value = "";
+        clearConversationSearch();
+      }
+    });
     elements.composerInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !state.composing && event.keyCode !== 229) {
         event.preventDefault();
@@ -5337,6 +6059,35 @@
       event.preventDefault();
       submitTurn();
     });
+    elements.composerInput.addEventListener("paste", (event) => {
+      const items = event.clipboardData?.items || [];
+      let added = false;
+      for (const item of items) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            addPendingImageFile(file);
+            added = true;
+          }
+        }
+      }
+      if (added) event.preventDefault();
+    });
+    const composerDock = document.getElementById("composerDock");
+    if (composerDock) {
+      composerDock.addEventListener("dragover", (event) => {
+        if (Array.from(event.dataTransfer?.types || []).includes("Files")) {
+          event.preventDefault();
+          composerDock.classList.add("is-dragging");
+        }
+      });
+      composerDock.addEventListener("dragleave", () => composerDock.classList.remove("is-dragging"));
+      composerDock.addEventListener("drop", (event) => {
+        event.preventDefault();
+        composerDock.classList.remove("is-dragging");
+        for (const file of Array.from(event.dataTransfer?.files || [])) addPendingImageFile(file);
+      });
+    }
     elements.stopButton.addEventListener("click", cancelActiveRun);
     elements.loginForm.addEventListener("submit", (event) => {
       event.preventDefault();
