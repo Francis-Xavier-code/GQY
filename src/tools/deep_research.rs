@@ -4,7 +4,7 @@ use super::subagent_runner::{
 use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, DeepResearchPluginConfig};
 use crate::i18n::{is_zh, text as t};
-use crate::llm::{ChatMessage, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage};
+use crate::llm::{ChatMessage, ChatStreamChunk, ChatStreamKind, LlmClient, Usage};
 use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use chrono::Local;
@@ -190,7 +190,7 @@ async fn run_deep_research(
     } else {
         plugin.max_tool_steps_per_round
     };
-    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
+    let client = LlmClient::from_config(&context.config, &context.paths)?
         .for_subagent_output(sa_mode == ProgressMode::Full);
     let state = Arc::new(Mutex::new(ResearchState::default()));
     let mut draft = String::new();

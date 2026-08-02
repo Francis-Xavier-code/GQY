@@ -424,6 +424,11 @@ impl StateStore {
         self.conv_db.load_visible_turns_for_channel(channel)
     }
 
+    /// 全文搜索对话（跨通道）
+    pub fn search_turns(&self, query: &str, limit: usize) -> Result<Vec<Turn>> {
+        self.conv_db.search_turns(query, limit)
+    }
+
     /// 全部通道摘要（WebUI 左侧通道列表）
     pub fn channel_summaries(&self) -> Result<Vec<ChannelSummary>> {
         self.conv_db.channel_summaries()

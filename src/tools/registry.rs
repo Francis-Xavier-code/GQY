@@ -366,6 +366,18 @@ impl ToolRegistry {
     }
 
     pub async fn call(&self, name: &str, arguments: &str) -> Result<String> {
+        self.call_with_progress(name, arguments, &ToolProgress::default())
+            .await
+    }
+
+    /// 同 [`ToolRegistry::call`]，但允许外部注入进度事件通道
+    /// （pi 工具桥用它把图片/输出事件回传给主进程）。
+    pub async fn call_with_progress(
+        &self,
+        name: &str,
+        arguments: &str,
+        progress: &ToolProgress,
+    ) -> Result<String> {
         let Some(tool) = self.tools.get(name) else {
             bail!("unknown tool: {name}");
         };
@@ -377,7 +389,7 @@ impl ToolRegistry {
         if name == "load_tools" {
             return super::load_tools::execute(args, self);
         }
-        tool.call(args, ToolProgress::default()).await
+        tool.call(args, progress.clone()).await
     }
 
     pub fn call_with_progress_future(
@@ -412,6 +424,11 @@ impl ToolRegistry {
 
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+
+    /// 是否为导入的用户脚本工具（`gqy tools import` 的产物，pi 工具桥需要放行）
+    pub fn is_script_tool(&self, name: &str) -> bool {
+        self.script_tool_names.contains(name)
     }
 
     pub(crate) fn loadable_tools(&self, loaded: &BTreeSet<String>) -> Vec<&ToolSpec> {

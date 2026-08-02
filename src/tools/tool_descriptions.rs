@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoadPolicy {
     Summary,
@@ -14,6 +14,22 @@ pub enum LoadPolicy {
 impl Default for LoadPolicy {
     fn default() -> Self {
         Self::Summary
+    }
+}
+
+/// 兼容旧导入清单：`""` / 未知值 → Summary（早期 `gqy tools import` 会写入空字符串，
+/// 若在此报错会让整个工具条目在扫描时被静默丢弃）。
+impl<'de> serde::Deserialize<'de> for LoadPolicy {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.trim().to_ascii_lowercase().as_str() {
+            "group" => Self::Group,
+            "hidden" => Self::Hidden,
+            _ => Self::Summary,
+        })
     }
 }
 

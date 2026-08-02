@@ -1,4 +1,5 @@
 mod activity;
+mod agents;
 mod agent;
 mod alarm;
 mod backup;
@@ -12,10 +13,12 @@ mod default_models;
 mod i18n;
 mod learning;
 mod llm;
+mod menubar;
 mod logging;
 mod memory;
 mod models_cache;
 mod paths;
+mod pi_bridge;
 mod prompts;
 mod question;
 mod question_tui;

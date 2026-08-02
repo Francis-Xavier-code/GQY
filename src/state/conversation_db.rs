@@ -817,6 +817,27 @@ impl ConversationDb {
     }
 
     /// 读取指定通道的可见对话（供 WebUI 切换查看其他终端/通信通道）
+    /// 全文搜索对话（LIKE 匹配用户/助手内容，跨通道），按 seq 倒序，返回匹配轮次。
+    pub fn search_turns(&self, query: &str, limit: usize) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        let pattern = format!("%{}%", query);
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                    assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
+             FROM turns
+             WHERE hidden = 0 AND is_summary = 0
+               AND (user_content LIKE ?1 OR assistant_content LIKE ?1)
+             ORDER BY seq DESC
+             LIMIT ?2",
+        )?;
+        let mut turns = stmt
+            .query_map(params![pattern, limit as i64], map_turn_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_turn_children_locked(&conn, &mut turns)?;
+        Ok(turns)
+    }
+
     pub fn load_visible_turns_for_channel(&self, channel: &str) -> Result<Vec<Turn>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

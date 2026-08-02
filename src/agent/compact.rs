@@ -1,4 +1,4 @@
-use crate::llm::{ChatMessage, ChatResult, ChatStreamChunk, OpenAiCompatibleClient, Usage};
+use crate::llm::{ChatMessage, ChatResult, ChatStreamChunk, LlmClient, Usage};
 use crate::prompts::COMPACT_SYSTEM_PROMPT;
 use crate::state::{StateStore, Turn};
 use anyhow::{bail, Result};
@@ -9,7 +9,7 @@ const COMPACT_PROMPT_OVERHEAD: usize = 2000;
 const MAX_MERGE_ROUNDS: usize = 5;
 
 pub struct Compactor {
-    client: OpenAiCompatibleClient,
+    client: LlmClient,
     state: StateStore,
     context_window: usize,
     reserved_tokens: usize,
@@ -28,7 +28,7 @@ struct CompactTextResult {
 
 impl Compactor {
     pub fn new(
-        client: OpenAiCompatibleClient,
+        client: LlmClient,
         state: StateStore,
         context_window: usize,
         reserved_tokens: usize,
@@ -189,7 +189,7 @@ fn build_compact_prompt(history: &str, previous_summary: Option<&str>) -> String
 }
 
 async fn compact_single_pass<F>(
-    client: &OpenAiCompatibleClient,
+    client: &LlmClient,
     history: &str,
     previous_summary: Option<&str>,
     on_chunk: &mut F,
@@ -209,7 +209,7 @@ where
 }
 
 async fn compact_single_pass_text<F>(
-    client: &OpenAiCompatibleClient,
+    client: &LlmClient,
     text: &str,
     previous_summary: Option<&str>,
     on_chunk: &mut F,
@@ -303,7 +303,7 @@ fn turn_to_text(turn: &Turn) -> String {
 }
 
 async fn merge_summaries_tree<F>(
-    client: &OpenAiCompatibleClient,
+    client: &LlmClient,
     summaries: &[String],
     previous_summary: Option<&str>,
     usable_tokens: usize,

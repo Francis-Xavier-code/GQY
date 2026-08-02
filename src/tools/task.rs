@@ -2,7 +2,7 @@ use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner, Sub
 use super::{ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
 use crate::i18n::agent_text as t;
-use crate::llm::OpenAiCompatibleClient;
+use crate::llm::{LlmClient, OpenAiCompatibleClient};
 use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -293,10 +293,10 @@ fn subagent_client(
     context: &TaskContext,
     model_arg: Option<&str>,
     mode: ProgressMode,
-) -> Result<OpenAiCompatibleClient> {
+) -> Result<LlmClient> {
     let model = model_arg.map(str::trim).filter(|value| !value.is_empty());
     let Some(model) = model else {
-        return OpenAiCompatibleClient::from_config(&context.config, &context.paths);
+        return LlmClient::from_config(&context.config, &context.paths);
     };
     let (provider_id, model_name) = match model.split_once('/') {
         Some((provider, model)) => (Some(provider.trim().to_string()), model.trim()),
@@ -315,5 +315,7 @@ fn subagent_client(
     }
     provider.default_model = model_name.to_string();
     let _ = mode;
-    OpenAiCompatibleClient::new(&provider, &context.config, &context.paths)
+    Ok(LlmClient::OpenAi(
+        OpenAiCompatibleClient::new(&provider, &context.config, &context.paths)?,
+    ))
 }
