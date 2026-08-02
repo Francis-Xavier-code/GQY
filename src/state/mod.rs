@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 #[allow(unused_imports)]
 pub use conversation_db::{
-    interrupted_text, pending_placeholder, ChannelSummary, ConversationDb, ImageAsset,
-    ImageAssetData, QueuedPrompt, QueuedPromptAttachment, Turn, TurnFollowup, TurnStatus,
+    interrupted_text, pending_placeholder, ChannelSummary, ConversationDb, ConversationSummary,
+    ImageAsset, ImageAssetData, QueuedPrompt, QueuedPromptAttachment, Turn, TurnFollowup,
+    TurnStatus,
 };
 pub use usage::UsageSnapshot;
 
@@ -426,6 +427,29 @@ impl StateStore {
     /// 全部通道摘要（WebUI 左侧通道列表）
     pub fn channel_summaries(&self) -> Result<Vec<ChannelSummary>> {
         self.conv_db.channel_summaries()
+    }
+
+    /// 当前通道的会话列表（含归档历史，WebUI 左侧历史对话列表）
+    pub fn conversation_summaries(&self) -> Result<Vec<ConversationSummary>> {
+        self.conv_db.conversation_summaries()
+    }
+
+    /// 指定通道的会话列表（浏览其他通道时展示）
+    pub fn conversation_summaries_for_channel(
+        &self,
+        channel: &str,
+    ) -> Result<Vec<ConversationSummary>> {
+        self.conv_db.conversation_summaries_for_channel(channel)
+    }
+
+    /// 指定会话的全部 turns（含归档轮次；'legacy' 为旧数据会话）
+    pub fn load_turns_for_conversation(
+        &self,
+        channel: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<Turn>> {
+        self.conv_db
+            .load_turns_for_conversation(channel, conversation_id)
     }
 
     pub fn load_visible_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {

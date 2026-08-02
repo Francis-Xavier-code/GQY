@@ -2834,7 +2834,7 @@ fn regex_matches_secret_key(key: &str) -> bool {
 
 fn run_balance(paths: &GqyPaths) -> Result<()> {
     let config = AppConfig::load(paths)?;
-    match crate::balance::fetch_balance(&config)? {
+    match crate::balance::fetch_balance(&config, paths)? {
         Some(infos) => {
             println!("{}", crate::balance::format_balances(&infos));
             Ok(())

@@ -22,9 +22,15 @@ struct BalanceResponse {
 }
 
 /// 查询当前激活 provider 的余额；不支持时返回 Ok(None)。
-pub fn fetch_balance(config: &AppConfig) -> Result<Option<Vec<BalanceInfo>>> {
+/// API key 支持 `$env:NAME` 引用（与模型请求一致的解析方式）。
+pub fn fetch_balance(config: &AppConfig, paths: &crate::paths::GqyPaths) -> Result<Option<Vec<BalanceInfo>>> {
     let provider = config.provider(None)?;
-    let Some(api_key) = provider.api_key.as_deref().filter(|key| !key.is_empty()) else {
+    let Some(api_key) = provider
+        .resolved_api_keys(paths)
+        .ok()
+        .and_then(|keys| keys.into_iter().next().map(|key| key.value))
+        .filter(|key| !key.is_empty())
+    else {
         return Ok(None);
     };
     let base = provider.base_url.trim_end_matches('/');

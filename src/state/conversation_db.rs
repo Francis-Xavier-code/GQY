@@ -71,6 +71,19 @@ pub struct ChannelSummary {
     pub recent: Option<(String, String, String, Option<String>, String, i64)>,
 }
 
+/// 会话摘要（WebUI 左侧历史对话列表）：标题/摘要/时间/条数/是否当前会话
+#[derive(Debug, Clone)]
+pub struct ConversationSummary {
+    /// 会话 id；旧数据（conversation_id 为 NULL）统一为 "legacy"
+    pub conversation_id: String,
+    pub title: String,
+    pub snippet: String,
+    pub timestamp: Option<String>,
+    pub turn_count: u64,
+    /// 组内存在未归档 turns 即为当前会话
+    pub active: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueuedPromptAttachment {
@@ -246,6 +259,7 @@ impl ConversationDb {
             "channel",
             "TEXT NOT NULL DEFAULT 'terminal'",
         )?;
+        add_column_if_missing(&conn, "turns", "conversation_id", "TEXT")?;
         add_column_if_missing(&conn, "queued_prompts", "queue_session_id", "TEXT")?;
         add_column_if_missing(&conn, "queued_prompts", "owner_pid", "INTEGER")?;
         add_column_if_missing(
@@ -261,6 +275,8 @@ impl ConversationDb {
                  ON turns(is_summary, hidden, seq);
              CREATE INDEX IF NOT EXISTS idx_turns_channel_visible_seq
                  ON turns(channel, hidden, seq);
+             CREATE INDEX IF NOT EXISTS idx_turns_channel_conversation
+                 ON turns(channel, conversation_id, hidden, seq);
              CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_status_seq
                  ON queued_prompts(queue_session_id, status, seq);",
         )?;
@@ -294,9 +310,31 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let seq = self.next_seq_locked(&conn)?;
         let now = Utc::now().to_rfc3339();
+        // 会话分组：沿用该通道未归档最近 turn 的 conversation_id（进程重启后恢复会话）；
+        // 无未归档 turns（如刚「新对话」归档过）则开新会话
+        let conversation_id: Option<String> = conn
+            .query_row(
+                "SELECT conversation_id FROM turns
+                 WHERE channel = ?1 AND hidden = 0
+                 ORDER BY seq DESC LIMIT 1",
+                params![self.channel],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten()
+            .or_else(|| {
+                Some(format!(
+                    "conv_{}_{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0),
+                    rand::random::<u32>()
+                ))
+            });
         conn.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid, queue_session_id, channel)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8)",
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid, queue_session_id, channel, conversation_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8, ?9)",
             params![
                 turn_id,
                 seq,
@@ -305,7 +343,8 @@ impl ConversationDb {
                 PENDING_PLACEHOLDER,
                 owner_pid as i64,
                 queue_session_id,
-                self.channel
+                self.channel,
+                conversation_id
             ],
         )?;
         Ok(())
@@ -841,6 +880,107 @@ impl ConversationDb {
         Ok(summaries)
     }
 
+    /// 当前通道的会话列表（含归档的历史对话），按最近活跃降序，当前会话在前
+    pub fn conversation_summaries(&self) -> Result<Vec<ConversationSummary>> {
+        self.conversation_summaries_for_channel(&self.channel)
+    }
+
+    /// 指定通道的会话列表（WebUI 浏览其他通道时展示该通道的历史对话）
+    pub fn conversation_summaries_for_channel(
+        &self,
+        channel: &str,
+    ) -> Result<Vec<ConversationSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(conversation_id, 'legacy') AS group_id,
+                    COUNT(*) AS turn_count,
+                    MAX(CASE WHEN hidden = 0 THEN 1 ELSE 0 END) AS has_active,
+                    MAX(seq) AS last_seq
+             FROM turns
+             WHERE channel = ?1
+             GROUP BY group_id
+             ORDER BY has_active DESC, last_seq DESC",
+        )?;
+        let groups: Vec<(String, i64, i64, i64)> = stmt
+            .query_map(params![channel], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let mut summaries = Vec::with_capacity(groups.len());
+        for (group_id, turn_count, has_active, _last_seq) in groups {
+            let first: Option<String> = conn
+                .query_row(
+                    "SELECT user_content FROM turns
+                     WHERE channel = ?1 AND COALESCE(conversation_id, 'legacy') = ?2
+                     ORDER BY seq ASC LIMIT 1",
+                    params![channel, group_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let last: Option<(String, String, String, Option<String>)> = conn
+                .query_row(
+                    "SELECT user_content, assistant_content, user_timestamp, assistant_timestamp
+                     FROM turns
+                     WHERE channel = ?1 AND COALESCE(conversation_id, 'legacy') = ?2
+                     ORDER BY seq DESC LIMIT 1",
+                    params![channel, group_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?;
+            let title = first
+                .as_deref()
+                .and_then(first_line)
+                .unwrap_or_else(|| "(无标题对话)".to_string());
+            let (snippet, timestamp) = match &last {
+                Some((user_content, assistant_content, user_timestamp, assistant_timestamp)) => {
+                    let snippet = first_line(assistant_content)
+                        .or_else(|| first_line(user_content))
+                        .unwrap_or_default();
+                    (
+                        snippet,
+                        assistant_timestamp
+                            .clone()
+                            .or_else(|| Some(user_timestamp.clone())),
+                    )
+                }
+                None => (String::new(), None),
+            };
+            summaries.push(ConversationSummary {
+                conversation_id: group_id,
+                title,
+                snippet,
+                timestamp,
+                turn_count: turn_count as u64,
+                active: has_active > 0,
+            });
+        }
+        Ok(summaries)
+    }
+
+    /// 读取指定会话的全部 turns（含已归档轮次；'legacy' 对应旧数据 conversation_id IS NULL）
+    pub fn load_turns_for_conversation(
+        &self,
+        channel: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                    assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
+             FROM turns
+             WHERE channel = ?1
+               AND (conversation_id = ?2 OR (?2 = 'legacy' AND conversation_id IS NULL))
+             ORDER BY seq ASC",
+        )?;
+        let mut turns = stmt
+            .query_map(params![channel, conversation_id], map_turn_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_turn_children_locked(&conn, &mut turns)?;
+        Ok(turns)
+    }
+
     #[allow(dead_code)]
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
@@ -871,10 +1011,32 @@ impl ConversationDb {
         let now = Utc::now().to_rfc3339();
         let token_total = token_total.unwrap_or(0) as i64;
         let token_usage_estimated = i64::from(token_usage_estimated);
+        // summary 归入当前可见最近 turn 的会话分组，保持对话列表一致
+        let conversation_id: Option<String> = conn
+            .query_row(
+                "SELECT conversation_id FROM turns
+                 WHERE channel = ?1 AND hidden = 0
+                 ORDER BY seq DESC LIMIT 1",
+                params![self.channel],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
         conn.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, channel)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, ?9)",
-            params![turn_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, self.channel],
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, channel, conversation_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, ?9, ?10)",
+            params![
+                turn_id,
+                seq,
+                "[conversation summary]",
+                now,
+                summary,
+                now,
+                token_total,
+                token_usage_estimated,
+                self.channel,
+                conversation_id
+            ],
         )?;
         Ok(())
     }
@@ -1041,17 +1203,39 @@ impl ConversationDb {
         let tx = conn.transaction()?;
         let current_turn_ids = {
             let mut stmt = tx.prepare(
-                "SELECT turn_id FROM turns
+                "SELECT turn_id, conversation_id FROM turns
                  WHERE channel = ?1 AND hidden = 0 ORDER BY seq ASC",
             )?;
-            let turn_ids = stmt
-                .query_map(params![self.channel], |row| row.get::<_, String>(0))?
+            let rows: Vec<(String, Option<String>)> = stmt
+                .query_map(params![self.channel], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            turn_ids
+            rows
         };
-        if current_turn_ids != visible_turn_ids {
+        if current_turn_ids.len() != visible_turn_ids.len()
+            || current_turn_ids
+                .iter()
+                .zip(visible_turn_ids)
+                .any(|((turn_id, _), expected)| turn_id != expected)
+        {
             bail!("conversation changed while compact was running");
         }
+        // summary 归入被压缩对话的会话分组
+        let conversation_id = current_turn_ids
+            .iter()
+            .find_map(|(_, conversation_id)| conversation_id.clone())
+            .or_else(|| {
+                tx.query_row(
+                    "SELECT conversation_id FROM turns
+                     WHERE channel = ?1 AND hidden = 0
+                     ORDER BY seq DESC LIMIT 1",
+                    params![self.channel],
+                    |row| row.get(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+                .flatten()
+            });
         let parent_summary_seq: Option<i64> = tx.query_row(
             "SELECT MAX(seq) FROM turns
                  WHERE channel = ?1 AND hidden = 0 AND is_summary = 1 AND seq <= ?2",
@@ -1081,9 +1265,21 @@ impl ConversationDb {
         let token_total = token_total.unwrap_or(0) as i64;
         let token_usage_estimated = i64::from(token_usage_estimated);
         tx.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, compact_reversible, compact_parent_summary_seq, channel)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, 1, ?9, ?10)",
-            params![turn_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, parent_summary_seq, self.channel],
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, compact_reversible, compact_parent_summary_seq, channel, conversation_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, 1, ?9, ?10, ?11)",
+            params![
+                turn_id,
+                seq,
+                "[conversation summary]",
+                now,
+                summary,
+                now,
+                token_total,
+                token_usage_estimated,
+                parent_summary_seq,
+                self.channel,
+                conversation_id
+            ],
         )?;
         tx.commit()?;
         Ok(())
@@ -1452,9 +1648,17 @@ fn verify_loaded_tool_sources(
     Ok(())
 }
 
+/// 文本首行（去空白），用于会话/通道摘要
+fn first_line(value: &str) -> Option<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
 #[allow(dead_code)]
-fn turn_chars(turn: &Turn) -> usize {
-    turn.user_content.chars().count()
+fn turn_chars(turn: &Turn) -> usize {    turn.user_content.chars().count()
         + turn.assistant_content.chars().count()
         + turn
             .assistant_reasoning

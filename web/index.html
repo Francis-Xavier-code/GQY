@@ -19,7 +19,7 @@
           <img src="/assets/gqy-logo.png" alt="顾清影" class="brand-avatar">
           <div>
             <strong>顾清影</strong>
-            <span><i class="status-dot is-connecting" id="sidebarStatusDot"></i><span id="sidebarConnectionStatus">连接中</span></span>
+            <span><i class="status-dot is-connecting" id="sidebarStatusDot"></i><span id="sidebarConnectionStatus">连接中</span><span class="balance-chip" id="balanceChip" hidden></span></span>
           </div>
         </div>
         <button class="icon-button sidebar-close" id="sidebarClose" type="button" title="关闭会话栏" aria-label="关闭会话栏">
@@ -44,6 +44,7 @@
           </span>
           <span class="session-time" id="sidebarConversationTime"></span>
         </button>
+        <div class="conversation-list" id="conversationList" aria-label="历史对话"></div>
       </nav>
 
       <footer class="sidebar-footer">
