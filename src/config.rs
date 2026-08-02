@@ -168,6 +168,9 @@ pub struct ProviderConfig {
     pub anthropic_max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_body: Option<serde_json::Map<String, serde_json::Value>>,
+    /// 是否发送 prompt caching（Anthropic cache_control）；默认开启，None 视为 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_caching: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -878,6 +881,7 @@ impl ProviderConfig {
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
             extra_body: None,
+        prompt_caching: None,
         }
     }
 
@@ -896,6 +900,7 @@ impl ProviderConfig {
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
             extra_body: None,
+        prompt_caching: None,
         }
     }
 
@@ -938,6 +943,7 @@ impl ProviderConfig {
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
             extra_body: None,
+        prompt_caching: None,
         }
     }
 
@@ -956,6 +962,7 @@ impl ProviderConfig {
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
             extra_body: None,
+        prompt_caching: None,
         }
     }
 
@@ -2665,6 +2672,7 @@ mod tests {
             })
             .as_object()
             .cloned(),
+            prompt_caching: None,
         };
 
         let serialized = serde_json::to_string(&original).unwrap();

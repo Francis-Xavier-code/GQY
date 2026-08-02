@@ -6,7 +6,8 @@ use crate::memory::MemoryStore;
 use crate::paths::GqyPaths;
 use crate::question::{self, QuestionAnswers, QuestionRequest, QuestionResponse};
 use crate::state::{
-    ImageAsset, QueuedPrompt, StateStore, Turn, TurnFollowup, TurnStatus, UsageSnapshot,
+    ChannelSummary, ImageAsset, QueuedPrompt, StateStore, Turn, TurnFollowup, TurnStatus,
+    UsageSnapshot,
 };
 use crate::tools::{self, CommandOutputStream};
 use anyhow::{Context, Result};
@@ -774,6 +775,10 @@ struct BootstrapResponse {
     active_run_id: Option<String>,
     running_turn_id: Option<String>,
     external_queue_available: bool,
+    /// 本 WebUI 会话所属通道（默认 webui，GQY_CHANNEL 可覆盖）
+    channel: String,
+    /// 全部会话通道摘要（终端/网页/QQ/Telegram…），左侧通道列表
+    channels: Vec<SafeChannelSummary>,
     turns: Vec<SafeTurn>,
     queued_prompts: Vec<SafeQueuedPrompt>,
     models: Vec<SafeModel>,
@@ -781,6 +786,17 @@ struct BootstrapResponse {
     context: ContextSnapshot,
     usage: SafeUsageSnapshot,
     capabilities: Capabilities,
+}
+
+#[derive(Serialize)]
+struct SafeChannelSummary {
+    id: String,
+    turn_count: u64,
+    last_seq: i64,
+    title: String,
+    snippet: String,
+    timestamp: Option<String>,
+    running: bool,
 }
 
 #[derive(Serialize)]
@@ -875,6 +891,11 @@ struct ModelResponse {
 }
 
 pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
+    // WebUI 面板默认在独立的 webui 通道对话（与终端/QQ/Telegram 各自独立上下文）；
+    // 终端显式设置 GQY_CHANNEL 可覆盖
+    if std::env::var_os("GQY_CHANNEL").is_none() {
+        unsafe { std::env::set_var("GQY_CHANNEL", "webui") };
+    }
     let password = resolve_web_password(&args)?;
     let bind_ip: IpAddr = args
         .host
@@ -998,6 +1019,8 @@ fn router(state: WebState) -> Router {
         .route("/api/alarms", get(list_alarms_web))
         .route("/api/state", get(session_state))
         .route("/api/usage/stats", get(usage_stats_web))
+        .route("/api/usage/details", get(usage_details_web))
+        .route("/api/channels/{channel_id}/turns", get(channel_turns_web))
         .route("/api/alarms/{alarm_id}", delete(cancel_alarm_web))
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .with_state(state)
@@ -1205,6 +1228,23 @@ async fn usage_stats_web(
     Ok(Json(json!({ "ok": true, "stats": stats })).into_response())
 }
 
+/// 最近调用明细（时间/模型/输入/输出/缓存命中/是否记忆辅助），供用量页列表与模型详情。
+async fn usage_details_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let details = state
+        .state_store
+        .usage_details(500)
+        .map_err(ApiError::internal)?;
+    let mut response = Json(json!({ "ok": true, "records": details })).into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
 /// 取消定时任务（面板「取消」按钮）。
 async fn cancel_alarm_web(
     State(state): State<WebState>,
@@ -1244,6 +1284,51 @@ async fn list_alarms_web(
         })
         .collect::<Vec<_>>();
     Ok(Json(json!({ "ok": true, "alarms": alarms })).into_response())
+}
+
+/// 读取指定通道的历史对话（WebUI 左侧通道列表点击切换查看；
+/// 非本进程通道只读展示，不影响各自上下文）
+async fn channel_turns_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Path(channel_id): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let mut assets_by_turn = HashMap::<String, Vec<ImageAsset>>::new();
+    for asset in state
+        .state_store
+        .load_image_assets()
+        .map_err(ApiError::internal)?
+    {
+        assets_by_turn
+            .entry(asset.turn_id.clone())
+            .or_default()
+            .push(asset);
+    }
+    let turns: Vec<SafeTurn> = state
+        .state_store
+        .load_visible_turns_for_channel(&channel_id)
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .filter(|turn| !turn.is_summary)
+        .map(|turn| {
+            let assets = assets_by_turn.remove(&turn.turn_id).unwrap_or_default();
+            SafeTurn::from_turn(turn, assets)
+        })
+        .collect();
+    let running = state
+        .state_store
+        .load_visible_turns_for_channel(&channel_id)
+        .map_err(ApiError::internal)?
+        .iter()
+        .any(|turn| turn.status == TurnStatus::Running);
+    let mut response =
+        Json(json!({ "ok": true, "channel": channel_id, "running": running, "turns": turns }))
+            .into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 async fn bootstrap(
@@ -1314,6 +1399,14 @@ async fn bootstrap(
     let running_turn_id = running_target.as_ref().map(|target| target.turn_id.clone());
     let external_queue_available = external_target
         .is_some_and(|target| target.queue_session_id.is_some() && target.owner_pid.is_some());
+    let channel = state.state_store.channel().to_string();
+    let channels = state
+        .state_store
+        .channel_summaries()
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .map(safe_channel_summary)
+        .collect();
     let mut response = Json(BootstrapResponse {
         version: env!("CARGO_PKG_VERSION"),
         boot_id: state.boot_id.to_string(),
@@ -1321,6 +1414,8 @@ async fn bootstrap(
         active_run_id,
         running_turn_id,
         external_queue_available,
+        channel,
+        channels,
         turns,
         queued_prompts,
         models: safe_models(&config),
@@ -1328,7 +1423,7 @@ async fn bootstrap(
         context,
         usage,
         capabilities: Capabilities {
-            multi_conversation: false,
+            multi_conversation: true,
             attachments: false,
             queue: true,
         },
@@ -3256,6 +3351,50 @@ impl SafeTurn {
             assets,
         }
     }
+}
+
+/// 通道摘要 → 前端列表项（标题取首条用户消息首行，摘要取最新可见消息）
+fn safe_channel_summary(summary: ChannelSummary) -> SafeChannelSummary {
+    let (title, snippet, timestamp, running) = match &summary.recent {
+        Some((user_content, assistant_content, user_timestamp, assistant_timestamp, status, _)) => {
+            let title = first_line(user_content)
+                .filter(|line| !line.trim().is_empty())
+                .unwrap_or_else(|| "（无标题）".to_string());
+            let snippet = if *status == "running" {
+                "正在回复…".to_string()
+            } else {
+                first_line(assistant_content)
+                    .filter(|line| !line.trim().is_empty())
+                    .unwrap_or_else(|| first_line(user_content).unwrap_or_default())
+            };
+            (
+                title,
+                snippet,
+                assistant_timestamp
+                    .clone()
+                    .or_else(|| Some(user_timestamp.clone())),
+                *status == "running",
+            )
+        }
+        None => ("（空对话）".to_string(), String::new(), None, false),
+    };
+    SafeChannelSummary {
+        id: summary.channel,
+        turn_count: summary.turn_count,
+        last_seq: summary.last_seq,
+        title,
+        snippet,
+        timestamp,
+        running,
+    }
+}
+
+fn first_line(value: &str) -> Option<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
 }
 
 impl SafeImageAsset {

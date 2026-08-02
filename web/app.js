@@ -91,6 +91,7 @@
     sidebarStatusDot: document.getElementById("sidebarStatusDot"),
     sidebarConnectionStatus: document.getElementById("sidebarConnectionStatus"),
     newChatButton: document.getElementById("newChatButton"),
+    channelList: document.getElementById("channelList"),
     currentConversation: document.getElementById("currentConversation"),
     usageButton: document.getElementById("usageButton"),
     usageView: document.getElementById("usageView"),
@@ -99,6 +100,8 @@
     usageSummary: document.getElementById("usageSummary"),
     usageContribution: document.getElementById("usageContribution"),
     usageModelTable: document.getElementById("usageModelTable"),
+    usageModelDetail: document.getElementById("usageModelDetail"),
+    usageRecentList: document.getElementById("usageRecentList"),
     conversationStage: document.getElementById("conversationStage"),
     sidebarConversationTitle: document.getElementById("sidebarConversationTitle"),
     sidebarConversationSnippet: document.getElementById("sidebarConversationSnippet"),
@@ -185,8 +188,15 @@
     },
     context: { tokens: 0, window: null },
     usage: {},
+    usageRecords: [],
+    usageDetailModel: null,
     capabilities: {},
     version: null,
+    // 多通道会话：本 WebUI 所属通道 + 全部通道摘要 + 当前浏览通道（null = 本通道）
+    channel: "webui",
+    channels: [],
+    viewingChannel: null,
+    viewedTurns: [],
     activeRunId: null,
     externalRunningTurnId: null,
     externalQueueAvailable: false,
@@ -1796,6 +1806,17 @@
   }
 
   function updateConversationChrome() {
+    if (state.viewingChannel) {
+      const title = `${channelLabel(state.viewingChannel)} 通道`;
+      elements.conversationTitle.textContent = title;
+      elements.conversationTitle.title = "只读浏览其他通道的对话记录";
+      elements.sidebarConversationTitle.textContent = "返回网页对话";
+      elements.sidebarConversationTitle.title = "返回网页对话";
+      elements.sidebarConversationSnippet.textContent = "点击返回当前对话";
+      elements.sidebarConversationTime.textContent = "";
+      elements.conversationMeta.textContent = "只读浏览";
+      return;
+    }
     const details = deriveConversationDetails();
     elements.conversationTitle.textContent = details.title;
     elements.conversationTitle.title = details.title;
@@ -1810,6 +1831,84 @@
 
   function conversationRunning() {
     return Boolean(state.activeRunId || state.externalRunningTurnId);
+  }
+
+  // ─────────────────────────── 多通道会话（终端/网页/QQ/Telegram） ───────────────────────────
+
+  function channelLabel(id) {
+    const labels = { terminal: "终端", webui: "网页", qq: "QQ", tg: "Telegram" };
+    return labels[String(id || "")] || String(id || "");
+  }
+
+  function channelIconName(id) {
+    const icons = { terminal: "terminal", webui: "globe", qq: "message-circle", tg: "send" };
+    return icons[String(id || "")] || "message-circle";
+  }
+
+  function renderChannelList() {
+    const channels = Array.isArray(state.channels) ? state.channels : [];
+    elements.channelList.replaceChildren();
+    const currentId = String(state.channel || "webui");
+    const viewing = String(state.viewingChannel || "");
+    for (const channel of channels) {
+      const id = String(channel?.id || "");
+      if (!id || id === currentId) continue; // 当前通道由「当前对话」入口展示
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `channel-item${viewing === id ? " active" : ""}`;
+      button.title = `${channelLabel(id)} 通道对话记录`;
+      button.setAttribute("aria-label", `${channelLabel(id)} 通道`);
+      const icon = document.createElement("span");
+      icon.className = "icon-slot";
+      icon.setAttribute("aria-hidden", "true");
+      icon.appendChild(createIcon(channelIconName(id)));
+      const copy = document.createElement("span");
+      copy.className = "session-copy";
+      const title = document.createElement("strong");
+      title.textContent = channelLabel(id);
+      const snippet = document.createElement("small");
+      snippet.textContent = String(channel?.snippet || "");
+      snippet.title = snippet.textContent;
+      copy.append(title, snippet);
+      const meta = document.createElement("span");
+      meta.className = "session-time";
+      if (channel?.running) meta.textContent = "回复中";
+      else if (channel?.timestamp) meta.textContent = formatRelativeTime(channel.timestamp);
+      button.append(icon, copy, meta);
+      button.addEventListener("click", () => switchToChannel(id));
+      elements.channelList.appendChild(button);
+    }
+  }
+
+  async function switchToChannel(channelId) {
+    if (state.blocked || conversationRunning()) return;
+    if (String(channelId) === String(state.channel || "webui")) {
+      exitChannelView();
+      return;
+    }
+    state.viewingChannel = String(channelId);
+    renderChannelList();
+    updateConversationChrome();
+    updateControlState();
+    try {
+      const response = await apiRequest(`/api/channels/${encodeURIComponent(channelId)}/turns`);
+      const data = await response.json();
+      if (state.viewingChannel !== String(channelId)) return;
+      state.viewedTurns = Array.isArray(data?.turns)
+        ? data.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq))
+        : [];
+      renderConversation();
+    } catch (error) {
+      showToast(error.message || "通道记录加载失败", "error");
+      exitChannelView();
+    }
+  }
+
+  function exitChannelView() {
+    state.viewingChannel = null;
+    state.viewedTurns = [];
+    renderChannelList();
+    loadBootstrap();
   }
 
   function hasPendingQuestion() {
@@ -1843,17 +1942,18 @@
     const queueAvailable = !state.externalRunningTurnId || state.externalQueueAvailable;
     const busy = state.adminBusy || state.submitting;
     const locked = state.blocked || state.adminBusy;
+    const readonly = Boolean(state.viewingChannel);
     const inputCount = countCharacters(elements.composerInput.value.trim());
 
-    elements.composerInput.disabled = locked;
-    elements.composerForm.classList.toggle("is-disabled", locked);
-    elements.newChatButton.disabled = state.blocked || running || busy;
+    elements.composerInput.disabled = locked || readonly;
+    elements.composerForm.classList.toggle("is-disabled", locked || readonly);
+    elements.newChatButton.disabled = state.blocked || running || busy || readonly;
     elements.modelButton.disabled = state.blocked || running || busy || state.models.length === 0;
     elements.modeSwitch.querySelectorAll("button").forEach((button) => {
-      button.disabled = state.blocked || running || busy;
+      button.disabled = state.blocked || running || busy || readonly;
     });
     elements.promptGrid.querySelectorAll("button").forEach((button) => {
-      button.disabled = state.blocked || running || busy;
+      button.disabled = state.blocked || running || busy || readonly;
     });
     elements.modelMenu.querySelectorAll(".model-menu-item").forEach((button) => {
       button.disabled = state.blocked || running || busy;
@@ -1864,13 +1964,14 @@
     elements.sendButton.querySelector(".icon-slot").replaceChildren(createIcon("arrow-up"));
     elements.sendButton.title = running ? "加入队列" : "发送消息";
     elements.sendButton.setAttribute("aria-label", elements.sendButton.title);
-    elements.sendButton.disabled = state.blocked || state.adminBusy || state.submitting || hasPendingQuestion() || (running && !queueAvailable) || inputCount === 0 || inputCount > MAX_CONTENT_CHARS;
+    elements.sendButton.disabled = state.blocked || state.adminBusy || state.submitting || readonly || hasPendingQuestion() || (running && !queueAvailable) || inputCount === 0 || inputCount > MAX_CONTENT_CHARS;
     elements.stopButton.hidden = !cancellable;
     elements.stopButton.disabled = !cancellable || state.cancellationRequested || state.adminBusy;
     elements.stopButton.title = state.cancellationRequested ? "正在停止" : "停止回复";
     elements.stopButton.setAttribute("aria-label", elements.stopButton.title);
 
-    if (state.blocked) elements.composerState.textContent = "未授权";
+    if (readonly) elements.composerState.textContent = `只读浏览 ${channelLabel(state.viewingChannel)} 通道，返回后即可继续对话`;
+    else if (state.blocked) elements.composerState.textContent = "未授权";
     else if (state.cancellationRequested) elements.composerState.textContent = "正在停止";
     else if (hasPendingQuestion()) elements.composerState.textContent = "等待回答";
     else if (busy) elements.composerState.textContent = state.submitting ? (running ? "正在加入队列" : "正在发送") : "正在处理";
@@ -2736,11 +2837,20 @@
     elements.blockedState.hidden = true;
     clearQuestionDock();
     elements.timeline.replaceChildren();
-    const turns = [...state.turns].sort((left, right) => asFiniteNumber(left?.seq) - asFiniteNumber(right?.seq));
-    state.turns = turns;
+    if (state.viewingChannel) {
+      elements.timeline.appendChild(createChannelViewBanner());
+    }
+    const turnsSource = state.viewingChannel ? state.viewedTurns : state.turns;
+    const turns = [...turnsSource].sort((left, right) => asFiniteNumber(left?.seq) - asFiniteNumber(right?.seq));
+    if (state.viewingChannel) state.viewedTurns = turns;
+    else state.turns = turns;
     if (turns.length === 0) {
       elements.timeline.hidden = true;
       elements.emptyState.hidden = false;
+      if (state.viewingChannel) {
+        const note = elements.emptyState.querySelector("p");
+        if (note) note.textContent = `${channelLabel(state.viewingChannel)} 通道还没有对话记录`;
+      }
     } else {
       elements.emptyState.hidden = true;
       elements.timeline.hidden = false;
@@ -2761,6 +2871,20 @@
     window.requestAnimationFrame(() => {
       elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
     });
+  }
+
+  function createChannelViewBanner() {
+    const banner = document.createElement("div");
+    banner.className = "channel-view-banner";
+    const text = document.createElement("span");
+    text.textContent = `正在查看 ${channelLabel(state.viewingChannel)} 通道的对话记录（只读，不影响各通道上下文）`;
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "channel-view-back";
+    back.textContent = "返回网页对话";
+    back.addEventListener("click", exitChannelView);
+    banner.append(text, back);
+    return banner;
   }
 
   function createLiveState(runId, options = {}) {
@@ -3966,7 +4090,9 @@
     window.requestAnimationFrame(() => {
       if (!state.blocked && !elements.settingsDrawer.classList.contains("open")) elements.composerInput.focus();
     });
-    window.setTimeout(syncBootstrapSnapshot, 120);
+    // 运行结束后强制用服务端数据对账重渲染：
+    // 直播期间若有事件丢失（如思考后正文未显示），这里补齐为完整记录
+    window.setTimeout(() => syncBootstrapSnapshot(true), 120);
   }
 
   function clearExternalSyncTimer() {
@@ -3984,7 +4110,7 @@
     }, 1_000);
   }
 
-  async function syncBootstrapSnapshot() {
+  async function syncBootstrapSnapshot(forceRender = false) {
     if (state.blocked) return;
     if (state.resyncing) {
       scheduleExternalSync();
@@ -4013,6 +4139,8 @@
         : state.turns;
       const turnsChanged = JSON.stringify(nextTurns) !== JSON.stringify(state.turns);
       state.turns = nextTurns;
+      state.channel = String(snapshot?.channel || state.channel || "webui");
+      state.channels = Array.isArray(snapshot?.channels) ? snapshot.channels : state.channels;
       state.queuedPrompts = Array.isArray(snapshot?.queued_prompts) ? snapshot.queued_prompts : state.queuedPrompts;
       state.models = Array.isArray(snapshot?.models) ? snapshot.models : state.models;
       state.display = snapshot?.display && typeof snapshot.display === "object" ? snapshot.display : state.display;
@@ -4023,9 +4151,12 @@
       state.externalRunningTurnId = nextExternalTurnId;
       state.externalQueueAvailable = Boolean(nextExternalTurnId && snapshot?.external_queue_available);
       elements.versionLabel.textContent = state.version ? `v${state.version}` : "--";
-      if ((previousExternalTurnId || nextExternalTurnId) && (turnsChanged || previousExternalTurnId !== nextExternalTurnId)) {
+      // forceRender：运行结束后强制用服务端真实数据重渲染，避免直播期间
+      // 事件丢失（如思考后正文未显示）导致界面与服务端不一致
+      if (forceRender || (previousExternalTurnId || nextExternalTurnId) && (turnsChanged || previousExternalTurnId !== nextExternalTurnId)) {
         renderConversation();
       }
+      renderChannelList();
       renderModelMenu();
       renderQueueTray();
       updateCapabilities();
@@ -4065,6 +4196,8 @@
   function handleRunEvent(name, data) {
     const runId = String(data?.run_id || "");
     if (!runId) return;
+    // 只读浏览其他通道时忽略运行事件，避免 live 文章插入只读视图
+    if (state.viewingChannel) return;
     if (state.activeRunId && state.activeRunId !== runId) return;
     if (!state.activeRunId && name !== "run.started" && state.live?.runId !== runId) return;
     const live = establishRun(runId);
@@ -4120,6 +4253,15 @@
     }
     const eventId = Math.max(0, asFiniteNumber(event.lastEventId));
     if (!eventShouldBeHandled(name, data, eventId)) return;
+    try {
+      dispatchSseEvent(name, data);
+    } catch (error) {
+      // 单个事件处理异常不影响后续事件（如 reasoning/正文渲染出错时仍能完成对账）
+      console.warn("SSE event handler failed", name, error);
+    }
+  }
+
+  function dispatchSseEvent(name, data) {
     if (name === "resync_required") {
       if (!state.resyncing) {
         state.resyncing = true;
@@ -4234,6 +4376,10 @@
     state.bootId = String(snapshot?.boot_id || "");
     state.latestEventId = Math.max(0, asFiniteNumber(snapshot?.latest_event_id));
     state.turns = Array.isArray(snapshot?.turns) ? snapshot.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq)) : [];
+    state.channel = String(snapshot?.channel || "webui");
+    state.channels = Array.isArray(snapshot?.channels) ? snapshot.channels : [];
+    state.viewingChannel = null;
+    state.viewedTurns = [];
     state.queuedPrompts = Array.isArray(snapshot?.queued_prompts) ? snapshot.queued_prompts : [];
     state.models = Array.isArray(snapshot?.models) ? snapshot.models : [];
     state.display = snapshot?.display && typeof snapshot.display === "object" ? snapshot.display : state.display;
@@ -4257,6 +4403,7 @@
     setLoginSubmitting(false);
     elements.versionLabel.textContent = state.version ? `v${state.version}` : "--";
     clearInlineError();
+    renderChannelList();
     renderConversation();
     renderModelMenu();
     renderQueueTray();
@@ -4413,7 +4560,7 @@
   }
 
   async function submitTurn() {
-    if (state.adminBusy || state.submitting || state.blocked) return;
+    if (state.adminBusy || state.submitting || state.blocked || state.viewingChannel) return;
     if (hasPendingQuestion() || (state.externalRunningTurnId && !state.externalQueueAvailable)) return;
     const queueing = conversationRunning();
     const content = elements.composerInput.value.trim();
@@ -4510,6 +4657,10 @@
   function requestNewConversation() {
     closeSidebar();
     hideUsageView();
+    if (state.viewingChannel) {
+      exitChannelView();
+      return;
+    }
     if (!hasHistory()) {
       elements.composerInput.focus();
       return;
@@ -4574,9 +4725,23 @@
       renderUsageContribution(stats);
       renderUsageModelTable(stats);
       elements.usageSubtitle.textContent = `共 ${formatTokens(stats.total?.total_tokens)} token · ${formatInteger(stats.total?.requests || 0)} 次请求`;
+      loadUsageDetails();
     } catch (error) {
       elements.usageSubtitle.textContent = "加载失败";
       showToast(error.message, "error");
+    }
+  }
+
+  async function loadUsageDetails() {
+    try {
+      const response = await apiRequest("/api/usage/details");
+      const data = await response.json();
+      const records = Array.isArray(data?.records) ? data.records : [];
+      state.usageRecords = records;
+      renderUsageRecentList(records);
+      if (state.usageDetailModel) renderUsageModelDetail(state.usageDetailModel, records);
+    } catch (_) {
+      elements.usageRecentList.textContent = "明细加载失败";
     }
   }
 
@@ -4624,11 +4789,14 @@
     grid.className = "contribution-grid";
     grid.style.gridTemplateColumns = `repeat(${columns}, var(--cell-size))`;
 
+    // 月份标签：标记「该列包含某月第一天的列」。
+    // 用列的最后一个单元格（周六）所在月份判断 —— 若本周跨月，周六所在月即本列开始的新月，
+    // 避免按列首（周日）判断导致的整列错位；首列也显示标签。
     let previousMonth = null;
     for (let col = 0; col < columns; col++) {
       const colDate = new Date(firstDate);
-      colDate.setDate(colDate.getDate() + col * 7 - leading);
-      if (previousMonth !== null && colDate.getMonth() !== previousMonth) {
+      colDate.setDate(colDate.getDate() + col * 7 - leading + 6);
+      if (colDate.getMonth() !== previousMonth) {
         const label = document.createElement("span");
         label.textContent = `${colDate.getMonth() + 1}月`;
         months.appendChild(label);
@@ -4714,10 +4882,161 @@
       shareWrap.append(bar, shareText);
       shareCell.appendChild(shareWrap);
       row.append(nameCell, requests, prompt, completion, total, shareCell);
+      row.classList.add("usage-model-row");
+      row.tabIndex = 0;
+      row.title = `查看 ${model.model} 的每日消耗与调用明细`;
+      const openDetail = () => renderUsageModelDetail(model, state.usageRecords);
+      row.addEventListener("click", openDetail);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openDetail();
+        }
+      });
       body.appendChild(row);
     }
     table.appendChild(body);
     elements.usageModelTable.appendChild(table);
+  }
+
+  // 模型详情：该模型按日消耗柱状图 + 该模型最近调用明细
+  function renderUsageModelDetail(model, records) {
+    state.usageDetailModel = model;
+    const detail = elements.usageModelDetail;
+    detail.hidden = false;
+    detail.replaceChildren();
+
+    const header = document.createElement("header");
+    header.className = "usage-detail-header";
+    const copy = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = `${model?.model || "(未标注)"} · 每日消耗`;
+    const provider = document.createElement("small");
+    provider.textContent = `${model?.provider_id || ""} · 累计 ${formatTokens(model?.total_tokens)} token · ${formatInteger(model?.requests || 0)} 次请求`;
+    copy.append(name, provider);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "secondary-button compact-button";
+    close.textContent = "收起";
+    close.addEventListener("click", () => {
+      detail.hidden = true;
+      state.usageDetailModel = null;
+    });
+    header.append(copy, close);
+    detail.appendChild(header);
+
+    const list = Array.isArray(records) ? records : [];
+    const modelRecords = list.filter((record) =>
+      String(record?.model || "") === String(model?.model || "") &&
+      String(record?.provider || "") === String(model?.provider_id || "")
+    );
+    const days = new Map();
+    for (const record of modelRecords) {
+      const date = recordDayKey(record?.ts);
+      const entry = days.get(date) || { tokens: 0, requests: 0 };
+      entry.tokens += asFiniteNumber(record?.total, 0);
+      entry.requests += 1;
+      days.set(date, entry);
+    }
+    const maxDayTokens = Math.max(1, ...Array.from(days.values()).map((entry) => entry.tokens));
+    const chart = document.createElement("div");
+    chart.className = "usage-detail-bars";
+    if (days.size === 0) {
+      const empty = document.createElement("p");
+      empty.className = "settings-empty";
+      empty.textContent = "最近调用明细中暂无该模型记录";
+      chart.appendChild(empty);
+    } else {
+      for (const [date, entry] of Array.from(days.entries()).sort()) {
+        const bar = document.createElement("div");
+        bar.className = "usage-detail-bar";
+        bar.title = `${date} · ${formatTokens(entry.tokens)} token（${entry.requests} 次）`;
+        const fill = document.createElement("i");
+        const height = Math.max(4, Math.round((entry.tokens / maxDayTokens) * 96));
+        fill.style.height = `${height}%`;
+        const dayLabel = document.createElement("span");
+        dayLabel.textContent = date.slice(5);
+        bar.append(fill, dayLabel);
+        chart.appendChild(bar);
+      }
+    }
+    detail.appendChild(chart);
+
+    if (modelRecords.length) {
+      const listTitle = document.createElement("h4");
+      listTitle.className = "usage-detail-list-title";
+      listTitle.textContent = "调用明细（最近）";
+      detail.appendChild(listTitle);
+      detail.appendChild(createUsageRecordsList(modelRecords.slice(0, 100)));
+    }
+  }
+
+  function recordDayKey(ts) {
+    const value = asFiniteNumber(ts, 0);
+    if (!value) return "unknown";
+    const date = new Date(value * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  function createUsageRecordsList(records) {
+    const list = document.createElement("div");
+    list.className = "usage-records-list";
+    for (const record of records) {
+      const row = document.createElement("div");
+      row.className = "usage-record-row";
+      const time = document.createElement("span");
+      time.className = "usage-record-time";
+      time.textContent = formatDateTime(new Date(asFiniteNumber(record?.ts, 0) * 1000));
+      time.title = time.textContent;
+      const model = document.createElement("span");
+      model.className = "usage-record-model";
+      model.textContent = `${record?.model || "(未标注)"}${record?.provider ? ` · ${record.provider}` : ""}`;
+      model.title = model.textContent;
+      const tokens = document.createElement("span");
+      tokens.className = "usage-record-tokens";
+      const parts = [];
+      if (asFiniteNumber(record?.prompt, 0) > 0) parts.push(`入 ${formatTokens(record.prompt)}`);
+      if (asFiniteNumber(record?.completion, 0) > 0) parts.push(`出 ${formatTokens(record.completion)}`);
+      if (parts.length) tokens.textContent = parts.join(" / ");
+      const cacheRead = asFiniteNumber(record?.cache_read, 0);
+      const cacheCreation = asFiniteNumber(record?.cache_creation, 0);
+      if (cacheRead > 0 || cacheCreation > 0) {
+        const cache = document.createElement("span");
+        cache.className = "usage-record-cache";
+        if (cacheRead > 0) cache.textContent = `缓存命中 ${formatTokens(cacheRead)}`;
+        else if (cacheCreation > 0) cache.textContent = `新建缓存 ${formatTokens(cacheCreation)}`;
+        cache.title = `缓存命中 ${formatTokens(cacheRead)} · 新建缓存 ${formatTokens(cacheCreation)}`;
+        tokens.after(cache);
+      }
+      const total = document.createElement("strong");
+      total.className = "usage-record-total";
+      total.textContent = formatTokens(record?.total || 0);
+      if (record?.aux) {
+        const badge = document.createElement("span");
+        badge.className = "usage-record-aux";
+        badge.textContent = "记忆";
+        badge.title = "记忆归档/压缩等辅助调用";
+        total.before(badge);
+      }
+      row.append(time, model, tokens, total);
+      list.appendChild(row);
+    }
+    return list;
+  }
+
+  // 最近调用明细列表（用量页底部；含记忆/压缩等辅助消耗）
+  function renderUsageRecentList(records) {
+    const list = Array.isArray(records) ? records : [];
+    elements.usageRecentList.replaceChildren();
+    if (!list.length) {
+      const empty = document.createElement("p");
+      empty.className = "settings-empty";
+      empty.textContent = "暂无调用记录";
+      elements.usageRecentList.appendChild(empty);
+      return;
+    }
+    elements.usageRecentList.appendChild(createUsageRecordsList(list.slice(0, 60)));
   }
 
 
@@ -4768,6 +5087,10 @@
     elements.sidebarScrim.addEventListener("click", closeSidebar);
     elements.currentConversation.addEventListener("click", () => {
       closeSidebar();
+      if (state.viewingChannel) {
+        exitChannelView();
+        return;
+      }
       scrollToBottom({ force: true, smooth: true });
     });
     elements.settingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));

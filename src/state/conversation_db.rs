@@ -61,6 +61,16 @@ pub struct Turn {
     pub token_usage_estimated: bool,
 }
 
+/// 通道摘要（WebUI 左侧通道列表）：最近可见消息 + 条数 + 运行状态
+#[derive(Debug, Clone)]
+pub struct ChannelSummary {
+    pub channel: String,
+    pub turn_count: u64,
+    pub last_seq: i64,
+    /// (user_content, assistant_content, user_timestamp, assistant_timestamp, status, token_total)
+    pub recent: Option<(String, String, String, Option<String>, String, i64)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueuedPromptAttachment {
@@ -111,6 +121,8 @@ pub struct ImageAssetData {
 
 pub struct ConversationDb {
     conn: Mutex<Connection>,
+    /// 本进程所属会话通道（terminal/webui/qq/tg…），来自 GQY_CHANNEL 环境变量
+    channel: String,
 }
 
 impl std::fmt::Debug for ConversationDb {
@@ -228,6 +240,12 @@ impl ConversationDb {
         add_column_if_missing(&conn, "turns", "compact_parent_summary_seq", "INTEGER")?;
         add_column_if_missing(&conn, "turns", "assistant_provider_id", "TEXT")?;
         add_column_if_missing(&conn, "turns", "assistant_model", "TEXT")?;
+        add_column_if_missing(
+            &conn,
+            "turns",
+            "channel",
+            "TEXT NOT NULL DEFAULT 'terminal'",
+        )?;
         add_column_if_missing(&conn, "queued_prompts", "queue_session_id", "TEXT")?;
         add_column_if_missing(&conn, "queued_prompts", "owner_pid", "INTEGER")?;
         add_column_if_missing(
@@ -241,12 +259,29 @@ impl ConversationDb {
             "CREATE INDEX IF NOT EXISTS idx_turns_visible_seq ON turns(hidden, seq);
              CREATE INDEX IF NOT EXISTS idx_turns_visible_summary_seq
                  ON turns(is_summary, hidden, seq);
+             CREATE INDEX IF NOT EXISTS idx_turns_channel_visible_seq
+                 ON turns(channel, hidden, seq);
              CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_status_seq
                  ON queued_prompts(queue_session_id, status, seq);",
         )?;
+        let channel = std::env::var("GQY_CHANNEL")
+            .unwrap_or_else(|_| "terminal".to_string())
+            .trim()
+            .to_string();
+        let channel = if channel.is_empty() {
+            "terminal".to_string()
+        } else {
+            channel
+        };
         Ok(Self {
             conn: Mutex::new(conn),
+            channel,
         })
+    }
+
+    /// 本进程所属通道
+    pub fn channel(&self) -> &str {
+        &self.channel
     }
 
     pub fn start_turn(
@@ -260,8 +295,8 @@ impl ConversationDb {
         let seq = self.next_seq_locked(&conn)?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid, queue_session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7)",
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid, queue_session_id, channel)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8)",
             params![
                 turn_id,
                 seq,
@@ -269,7 +304,8 @@ impl ConversationDb {
                 now,
                 PENDING_PLACEHOLDER,
                 owner_pid as i64,
-                queue_session_id
+                queue_session_id,
+                self.channel
             ],
         )?;
         Ok(())
@@ -681,10 +717,10 @@ impl ConversationDb {
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns ORDER BY seq ASC",
+             FROM turns WHERE channel = ?1 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
-            .query_map([], map_turn_row)?
+            .query_map(params![self.channel], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         attach_turn_children_locked(&conn, &mut turns)?;
         Ok(turns)
@@ -697,10 +733,10 @@ impl ConversationDb {
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns WHERE turn_id != ?1 ORDER BY seq ASC",
+             FROM turns WHERE channel = ?1 AND turn_id != ?2 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
-            .query_map(params![exclude_turn_id], map_turn_row)?
+            .query_map(params![self.channel, exclude_turn_id], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         attach_turn_children_locked(&conn, &mut turns)?;
         Ok(turns)
@@ -717,10 +753,10 @@ impl ConversationDb {
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns WHERE hidden = 0 ORDER BY seq ASC",
+             FROM turns WHERE channel = ?1 AND hidden = 0 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
-            .query_map([], map_turn_row)?
+            .query_map(params![self.channel], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         attach_turn_children_locked(&conn, &mut turns)?;
         Ok(turns)
@@ -732,19 +768,86 @@ impl ConversationDb {
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns WHERE hidden = 0 AND turn_id != ?1 ORDER BY seq ASC",
+             FROM turns WHERE channel = ?1 AND hidden = 0 AND turn_id != ?2 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
-            .query_map(params![exclude_turn_id], map_turn_row)?
+            .query_map(params![self.channel, exclude_turn_id], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         attach_turn_children_locked(&conn, &mut turns)?;
         Ok(turns)
     }
 
+    /// 读取指定通道的可见对话（供 WebUI 切换查看其他终端/通信通道）
+    pub fn load_visible_turns_for_channel(&self, channel: &str) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                    assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
+             FROM turns WHERE channel = ?1 AND hidden = 0 ORDER BY seq ASC",
+        )?;
+        let mut turns = stmt
+            .query_map(params![channel], map_turn_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_turn_children_locked(&conn, &mut turns)?;
+        Ok(turns)
+    }
+
+    /// 全部通道摘要：每个通道的最近消息、条数与运行状态，供 WebUI 左侧列表展示
+    pub fn channel_summaries(&self) -> Result<Vec<ChannelSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT channel,
+                    COUNT(*) AS turn_count,
+                    COALESCE(MAX(CASE WHEN hidden = 0 THEN seq END), 0) AS last_visible_seq,
+                    COALESCE(SUM(CASE WHEN hidden = 0 THEN 1 ELSE 0 END), 0) AS visible_count
+             FROM turns
+             GROUP BY channel
+             ORDER BY last_visible_seq DESC",
+        )?;
+        let rows: Vec<(String, i64, i64, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let mut summaries = Vec::with_capacity(rows.len());
+        for (channel, _turn_count, last_visible_seq, visible_count) in rows {
+            // 每个通道的最近一条可见 turn（标题/摘要/时间/状态）
+            let recent: Option<(String, String, String, Option<String>, String, i64)> = conn
+                .query_row(
+                    "SELECT user_content, assistant_content, user_timestamp, assistant_timestamp, status, token_total
+                     FROM turns
+                     WHERE channel = ?1 AND hidden = 0
+                     ORDER BY seq DESC LIMIT 1",
+                    params![channel],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            summaries.push(ChannelSummary {
+                channel,
+                turn_count: visible_count as u64,
+                last_seq: last_visible_seq,
+                recent,
+            });
+        }
+        Ok(summaries)
+    }
+
     #[allow(dead_code)]
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let affected = conn.execute("UPDATE turns SET hidden = 1 WHERE seq <= ?1", params![seq])?;
+        let affected = conn.execute(
+            "UPDATE turns SET hidden = 1 WHERE channel = ?1 AND seq <= ?2",
+            params![self.channel, seq],
+        )?;
         Ok(affected)
     }
 
@@ -769,9 +872,9 @@ impl ConversationDb {
         let token_total = token_total.unwrap_or(0) as i64;
         let token_usage_estimated = i64::from(token_usage_estimated);
         conn.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8)",
-            params![turn_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated],
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, channel)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, ?9)",
+            params![turn_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, self.channel],
         )?;
         Ok(())
     }
@@ -782,16 +885,23 @@ impl ConversationDb {
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns WHERE is_summary = 1 AND hidden = 0 ORDER BY seq DESC LIMIT 1",
+             FROM turns WHERE channel = ?1 AND is_summary = 1 AND hidden = 0 ORDER BY seq DESC LIMIT 1",
         )?;
-        let turn = stmt.query_map([], map_turn_row)?.next().transpose()?;
+        let turn = stmt
+            .query_map(params![self.channel], map_turn_row)?
+            .next()
+            .transpose()?;
         Ok(turn)
     }
 
     #[allow(dead_code)]
     pub fn count_turns(&self) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM turns", [], |row| row.get(0))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM turns WHERE channel = ?1",
+            params![self.channel],
+            |row| row.get(0),
+        )?;
         Ok(count)
     }
 
@@ -808,10 +918,10 @@ impl ConversationDb {
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns WHERE is_summary = 0 ORDER BY seq ASC LIMIT ?1",
+             FROM turns WHERE channel = ?1 AND is_summary = 0 ORDER BY seq ASC LIMIT ?2",
         )?;
         let mut to_remove: Vec<Turn> = stmt
-            .query_map(params![count as i64], map_turn_row)?
+            .query_map(params![self.channel, count as i64], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(stmt);
         attach_turn_children_locked(&conn, &mut to_remove)?;
@@ -831,12 +941,12 @@ impl ConversationDb {
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
              FROM turns
-             WHERE hidden = 0 AND is_summary = 0 AND status != 'running'
-             ORDER BY seq ASC LIMIT ?1",
+             WHERE channel = ?1 AND hidden = 0 AND is_summary = 0 AND status != 'running'
+             ORDER BY seq ASC LIMIT ?2",
         )?;
         let count = i64::try_from(count).unwrap_or(i64::MAX);
         let mut turns = stmt
-            .query_map(params![count], map_turn_row)?
+            .query_map(params![self.channel, count], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         attach_turn_children_locked(&conn, &mut turns)?;
         Ok(turns)
@@ -932,10 +1042,10 @@ impl ConversationDb {
         let current_turn_ids = {
             let mut stmt = tx.prepare(
                 "SELECT turn_id FROM turns
-                 WHERE hidden = 0 ORDER BY seq ASC",
+                 WHERE channel = ?1 AND hidden = 0 ORDER BY seq ASC",
             )?;
             let turn_ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
+                .query_map(params![self.channel], |row| row.get::<_, String>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             turn_ids
         };
@@ -944,13 +1054,13 @@ impl ConversationDb {
         }
         let parent_summary_seq: Option<i64> = tx.query_row(
             "SELECT MAX(seq) FROM turns
-                 WHERE hidden = 0 AND is_summary = 1 AND seq <= ?1",
-            params![last_seq],
+                 WHERE channel = ?1 AND hidden = 0 AND is_summary = 1 AND seq <= ?2",
+            params![self.channel, last_seq],
             |row| row.get(0),
         )?;
         let hidden = tx.execute(
-            "UPDATE turns SET hidden = 1 WHERE hidden = 0 AND seq <= ?1",
-            params![last_seq],
+            "UPDATE turns SET hidden = 1 WHERE channel = ?1 AND hidden = 0 AND seq <= ?2",
+            params![self.channel, last_seq],
         )?;
         if hidden == 0 {
             bail!("conversation changed before compact could be saved");
@@ -971,9 +1081,9 @@ impl ConversationDb {
         let token_total = token_total.unwrap_or(0) as i64;
         let token_usage_estimated = i64::from(token_usage_estimated);
         tx.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, compact_reversible, compact_parent_summary_seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, 1, ?9)",
-            params![turn_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, parent_summary_seq],
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, compact_reversible, compact_parent_summary_seq, channel)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, 1, ?9, ?10)",
+            params![turn_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, parent_summary_seq, self.channel],
         )?;
         tx.commit()?;
         Ok(())
@@ -983,7 +1093,10 @@ impl ConversationDb {
     /// 面板从空会话开始，历史/记忆读取仍可查到归档内容。
     pub fn reset(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("UPDATE turns SET hidden = 1 WHERE hidden = 0", [])?;
+        conn.execute(
+            "UPDATE turns SET hidden = 1 WHERE channel = ?1 AND hidden = 0",
+            params![self.channel],
+        )?;
         conn.execute("DELETE FROM queued_prompts", [])?;
         conn.execute("DELETE FROM session_loaded_items", [])?;
         Ok(())
@@ -991,7 +1104,7 @@ impl ConversationDb {
 
     pub fn reset_history(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM turns", [])?;
+        conn.execute("DELETE FROM turns WHERE channel = ?1", params![self.channel])?;
         conn.execute("DELETE FROM session_loaded_items", [])?;
         Ok(())
     }
@@ -1000,8 +1113,8 @@ impl ConversationDb {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let running: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM turns WHERE hidden = 0 AND status = 'running'",
-            [],
+            "SELECT COUNT(*) FROM turns WHERE channel = ?1 AND hidden = 0 AND status = 'running'",
+            params![self.channel],
             |row| row.get(0),
         )?;
         if running > 0 {
@@ -1012,8 +1125,8 @@ impl ConversationDb {
             .query_row(
                 "SELECT turn_id, seq, user_content, is_summary,
                         compact_reversible, compact_parent_summary_seq
-                 FROM turns WHERE hidden = 0 ORDER BY seq DESC LIMIT 1",
-                [],
+                 FROM turns WHERE channel = ?1 AND hidden = 0 ORDER BY seq DESC LIMIT 1",
+                params![self.channel],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -1040,15 +1153,15 @@ impl ConversationDb {
                 let restorable: i64 = match parent_summary_seq {
                     Some(previous_seq) => tx.query_row(
                         "SELECT COUNT(*) FROM turns
-                         WHERE hidden = 1 AND seq < ?1
-                           AND (seq = ?2 OR (is_summary = 0 AND seq > ?2))",
-                        params![summary_seq, previous_seq],
+                         WHERE channel = ?1 AND hidden = 1 AND seq < ?2
+                           AND (seq = ?3 OR (is_summary = 0 AND seq > ?3))",
+                        params![self.channel, summary_seq, previous_seq],
                         |row| row.get(0),
                     )?,
                     None => tx.query_row(
                         "SELECT COUNT(*) FROM turns
-                         WHERE hidden = 1 AND is_summary = 0 AND seq < ?1",
-                        params![summary_seq],
+                         WHERE channel = ?1 AND hidden = 1 AND is_summary = 0 AND seq < ?2",
+                        params![self.channel, summary_seq],
                         |row| row.get(0),
                     )?,
                 };
@@ -1062,16 +1175,16 @@ impl ConversationDb {
                     Some(previous_seq) => {
                         tx.execute(
                             "UPDATE turns SET hidden = 0
-                             WHERE hidden = 1 AND seq < ?1
-                               AND (seq = ?2 OR (is_summary = 0 AND seq > ?2))",
-                            params![summary_seq, previous_seq],
+                             WHERE channel = ?1 AND hidden = 1 AND seq < ?2
+                               AND (seq = ?3 OR (is_summary = 0 AND seq > ?3))",
+                            params![self.channel, summary_seq, previous_seq],
                         )?;
                     }
                     None => {
                         tx.execute(
                             "UPDATE turns SET hidden = 0
-                             WHERE hidden = 1 AND is_summary = 0 AND seq < ?1",
-                            params![summary_seq],
+                             WHERE channel = ?1 AND hidden = 1 AND is_summary = 0 AND seq < ?2",
+                            params![self.channel, summary_seq],
                         )?;
                     }
                 }
@@ -1086,8 +1199,8 @@ impl ConversationDb {
     pub fn has_running_turns(&self) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM turns WHERE status = 'running'",
-            [],
+            "SELECT COUNT(*) FROM turns WHERE channel = ?1 AND status = 'running'",
+            params![self.channel],
             |row| row.get(0),
         )?;
         Ok(count > 0)
@@ -1110,10 +1223,10 @@ impl ConversationDb {
                     ),
                     turns.owner_pid
                FROM turns
-              WHERE turns.status = 'running'
+              WHERE turns.status = 'running' AND turns.channel = ?1
               ORDER BY turns.seq DESC
               LIMIT 1",
-            [],
+            params![self.channel],
             |row| {
                 let owner_pid = row
                     .get::<_, Option<i64>>(2)?
@@ -1129,9 +1242,9 @@ impl ConversationDb {
     pub fn running_turn_summaries(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT user_content FROM turns WHERE status = 'running' ORDER BY seq ASC")?;
+            .prepare("SELECT user_content FROM turns WHERE channel = ?1 AND status = 'running' ORDER BY seq ASC")?;
         let summaries = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map(params![self.channel], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(summaries)
     }
@@ -1139,10 +1252,10 @@ impl ConversationDb {
     pub fn running_turn_summaries_excluding(&self, exclude_turn_id: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT user_content FROM turns WHERE status = 'running' AND turn_id != ?1 ORDER BY seq ASC",
+            "SELECT user_content FROM turns WHERE channel = ?1 AND status = 'running' AND turn_id != ?2 ORDER BY seq ASC",
         )?;
         let summaries = stmt
-            .query_map(params![exclude_turn_id], |row| row.get::<_, String>(0))?
+            .query_map(params![self.channel, exclude_turn_id], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(summaries)
     }

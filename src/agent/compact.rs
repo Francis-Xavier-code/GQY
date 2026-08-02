@@ -256,6 +256,7 @@ fn compact_text_result(result: ChatResult, messages: &[ChatMessage]) -> CompactT
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            ..Default::default()
         },
         usage_estimated: true,
     }

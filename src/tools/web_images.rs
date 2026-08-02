@@ -1979,6 +1979,7 @@ mod tests {
             temperature: 0.2,
             anthropic_max_tokens: 4096,
             extra_body: None,
+            prompt_caching: None,
         }
     }
 

@@ -1,17 +1,17 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
-#import <WebKit/WebKit.h>
 #import <Carbon/Carbon.h>
 #import <unistd.h>
 
 /**
  * 顾清影 菜单栏 App
  * - 左键点击状态栏图标弹出菜单（保持习惯）
- * - 「面板」是独立 App 窗口（NSPanel + WKWebView），可拖动缩放，不依赖浏览器
+ * - 「打开面板」在默认浏览器打开 WebUI（http://127.0.0.1:4096），
+ *   不再维护独立的 NSPanel/WKWebView 窗口，避免与 WebUI 双份界面冗余
  * - 状态栏图标随状态变化（空闲 sparkles / 备份中 clock）
  * - 菜单含状态区（模型/记忆/备份时间，异步刷新）+ 常用功能
  */
-@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate>
+@interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSTask *webTask;
 @property(nonatomic, strong) NSTask *backupTask;
@@ -20,8 +20,6 @@
 @property(nonatomic, strong) NSMenuItem *statusModelItem;
 @property(nonatomic, strong) NSMenuItem *statusMemoryItem;
 @property(nonatomic, strong) NSMenuItem *statusBackupItem;
-@property(nonatomic, strong) NSWindow *panelWindow;
-@property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, assign) BOOL backupInProgress;
 @property(nonatomic, strong) NSImage *statusItemIcon;
 @end
@@ -46,7 +44,7 @@
         self.statusItem.button.image = appIcon;
     }
     self.statusItemIcon = appIcon;
-    self.statusItem.button.toolTip = @"顾清影 —— 点开菜单（⌥H 面板）";
+    self.statusItem.button.toolTip = @"顾清影 —— 点开菜单（⌥H 打开 WebUI）";
 
     NSMenu *menu = [[NSMenu alloc] init];
 
@@ -83,7 +81,7 @@
     [menu addItem:[NSMenuItem separatorItem]];
 
     // ── 功能 ──
-    NSMenuItem *panelItem = [self itemWithTitle:@"打开面板"
+    NSMenuItem *panelItem = [self itemWithTitle:@"打开 WebUI"
                                          symbol:@"square.grid.2x2"
                                          action:@selector(openWebPanel:)];
     [menu addItem:panelItem];
@@ -123,7 +121,7 @@
     [self registerGlobalHotkey];
 }
 
-// 全局快捷键：⌥H = 完整面板
+// 全局快捷键：⌥H = 在浏览器打开面板
 static EventHotKeyRef g_panel_hotkey_ref = NULL;
 static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
                                    EventRef event,
@@ -135,13 +133,8 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     if (GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID,
                           NULL, sizeof(hotkey_id), NULL, &hotkey_id) == noErr) {
         if (hotkey_id.id == 2) {
-            // ⌥H：面板
-            if (delegate.panelWindow.isVisible) {
-                [delegate.panelWindow orderOut:nil];
-                [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-            } else {
-                [delegate openWebPanel:nil];
-            }
+            // ⌥H：在默认浏览器打开 WebUI
+            [delegate openWebPanel:nil];
             return noErr;
         }
     }
@@ -163,13 +156,78 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
                         GetEventDispatcherTarget(), 0, &g_panel_hotkey_ref);
 }
 
+// 重启面板服务：杀掉占用 4096 端口的全部旧 gqy web 进程（不限自己 spawn 的），
+// 立即用当前二进制重新启动，轮询健康检查通过后才提示成功。
 - (void)restartWebServer:(id)sender {
     (void)sender;
     if (self.webTask.isRunning) {
         [self.webTask terminate];
     }
     self.webTask = nil;
-    [self showInfo:@"面板服务已重启" detail:@"下次打开面板时自动重新启动，并加载最新配置。"];
+    [self terminateGqyWebOnPort:4096];
+    [self ensureWebServer:^(BOOL ready) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (ready) {
+                [self showInfo:@"面板服务已重启"
+                        detail:@"已加载最新版本与配置，点击「打开 WebUI」即可使用。"];
+            } else {
+                [self showError:[NSError errorWithDomain:@"GQYMenuBar"
+                                                    code:2
+                                                userInfo:@{
+                                                    NSLocalizedDescriptionKey:
+                                                        @"面板服务重启失败，请稍后重试。"
+                                                }]];
+            }
+        });
+    }];
+}
+
+// 找到并终止监听指定端口的 gqy web 进程（可能是旧版 App 自启或手动启动的残留）
+- (void)terminateGqyWebOnPort:(uint16_t)port {
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/sbin/lsof"];
+    task.arguments = @[
+        [NSString stringWithFormat:@"-tiTCP:%u", port],
+        @"-sTCP:LISTEN",
+    ];
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = [NSPipe pipe];
+    if (![task launchAndReturnError:nil]) {
+        return;
+    }
+    [task waitUntilExit];
+    NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
+    NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    for (NSString *line in [output componentsSeparatedByString:@"\n"]) {
+        NSString *pidText = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (pidText.length == 0) {
+            continue;
+        }
+        pid_t pid = pidText.intValue;
+        if (pid <= 0) {
+            continue;
+        }
+        // 只杀 gqy 进程，避免误伤占用同端口的其他程序
+        NSTask *ps = [[NSTask alloc] init];
+        ps.executableURL = [NSURL fileURLWithPath:@"/bin/ps"];
+        ps.arguments = @[@"-p", pidText, @"-o", @"comm="];
+        NSPipe *psPipe = [NSPipe pipe];
+        ps.standardOutput = psPipe;
+        ps.standardError = [NSPipe pipe];
+        if (![ps launchAndReturnError:nil]) {
+            continue;
+        }
+        [ps waitUntilExit];
+        NSData *psData = [psPipe.fileHandleForReading readDataToEndOfFile];
+        NSString *comm = [[NSString alloc] initWithData:psData encoding:NSUTF8StringEncoding];
+        if ([comm rangeOfString:@"gqy"].location == NSNotFound) {
+            continue;
+        }
+        kill(pid, SIGTERM);
+    }
+    // 等旧进程退出释放端口，避免新进程 bind 失败
+    usleep(400 * 1000);
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
@@ -331,7 +389,7 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     [NSWorkspace.sharedWorkspace openURL:launcher];
 }
 
-// ─────────────────────────── 独立窗口面板（WKWebView） ───────────────────────────
+// ─────────────────────────── 打开 WebUI（默认浏览器） ───────────────────────────
 
 - (NSURL *)panelURL {
     return [NSURL URLWithString:@"http://127.0.0.1:4096"];
@@ -342,21 +400,13 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     [self openPanelWithSettings:NO];
 }
 
-// 打开面板并直接展开配置抽屉（等价于终端里的 gqy config，GUI 版）
+// 打开 WebUI 并直接展开配置抽屉（等价于终端里的 gqy config，GUI 版）
 - (void)openConfigPanel:(id)sender {
     (void)sender;
     [self openPanelWithSettings:YES];
 }
 
 - (void)openPanelWithSettings:(BOOL)settings {
-    if (self.panelWindow.isVisible) {
-        [self.panelWindow makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
-        if (settings) {
-            [self.webView evaluateJavaScript:@"window.__gqyOpenSettings && window.__gqyOpenSettings()" completionHandler:nil];
-        }
-        return;
-    }
     [self ensureWebServer:^(BOOL ready) {
         if (!ready) {
             [self showError:[NSError errorWithDomain:@"GQYMenuBar"
@@ -367,59 +417,14 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
                                             }]];
             return;
         }
-        [self showPanelWithSettings:settings];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *urlString = self.panelURL.absoluteString;
+            if (settings) {
+                urlString = [urlString stringByAppendingString:@"?open=settings"];
+            }
+            [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:urlString]];
+        });
     }];
-}
-
-// 面板是独立 App 窗口：可拖动、可缩放、独立于状态栏存在；
-// 打开时切换到 Regular 激活策略，Dock 出现图标；关闭时切回 Accessory
-- (void)showPanelWithSettings:(BOOL)settings {
-    if (!self.panelWindow) {
-        NSRect frame = NSMakeRect(0, 0, 720, 680);
-        self.panelWindow = [[NSPanel alloc]
-            initWithContentRect:frame
-                      styleMask:(NSWindowStyleMaskTitled |
-                                 NSWindowStyleMaskClosable |
-                                 NSWindowStyleMaskResizable |
-                                 NSWindowStyleMaskFullSizeContentView)
-                        backing:NSBackingStoreBuffered
-                          defer:NO];
-        self.panelWindow.title = @"顾清影 · 面板";
-        self.panelWindow.minSize = NSMakeSize(560, 480);
-        self.panelWindow.delegate = self;
-        self.panelWindow.releasedWhenClosed = NO;
-
-        WKWebView *webView = [[WKWebView alloc] initWithFrame:self.panelWindow.contentView.bounds];
-        webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        webView.allowsMagnification = YES;
-        self.webView = webView;
-        self.panelWindow.contentView = webView;
-        [self.panelWindow center];
-    }
-    [self.panelWindow makeKeyAndOrderFront:nil];
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    [NSApp activateIgnoringOtherApps:YES];
-    NSString *urlString = self.panelURL.absoluteString;
-    if (settings) {
-        urlString = [urlString stringByAppendingString:@"?open=settings"];
-    }
-    if (![self.webView.URL.absoluteString hasPrefix:urlString]) {
-        [self.webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:urlString]]];
-    } else {
-        [self.webView reload];
-    }
-}
-
-- (void)windowWillClose:(NSNotification *)notification {
-    if (notification.object == self.panelWindow) {
-        // 关窗口不杀 web 服务（下次秒开），同时 Dock 图标收回
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-    }
-}
-
-- (BOOL)windowShouldClose:(NSWindow *)sender {
-    (void)sender;
-    return YES;
 }
 
 // 确保 gqy web 已启动：轮询 /api/health 直到就绪（替代写死的 800ms 延迟）
