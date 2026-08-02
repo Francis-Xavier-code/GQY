@@ -39,6 +39,10 @@ pub fn install(paths: &GqyPaths) -> Result<()> {
     let home_apps = dirs_applications_dir()?;
     let app_dir = home_apps.join("顾清影.app");
 
+    // 清理旧实例：先退出正在运行的菜单栏（无论新旧），并卸载旧 LaunchAgent，
+    // 避免「打开面板」跑到旧 App/旧二进制上（升级场景最常见的坑）。
+    cleanup_old_instances();
+
     println!(
         "{}: {} → {}",
         crate::i18n::text("building menu bar app", "编译菜单栏 App"),
@@ -128,14 +132,44 @@ pub fn install(paths: &GqyPaths) -> Result<()> {
         crate::i18n::text("installed", "已安装"),
         app_dir.display()
     );
+    // 安装后直接拉起新菜单栏（无需用户手动双击）
+    let _ = Command::new("open").arg(&app_dir).status();
     println!(
         "{}",
         crate::i18n::text(
-            "open it once; the menu bar appears after launch (⌥H opens the WebUI)",
-            "打开一次即可在菜单栏出现（⌥H 打开 WebUI）"
+            "menu bar launched; ⌥H opens the WebUI",
+            "菜单栏已启动（⌥H 打开 WebUI）"
         )
     );
+    // 若 /Applications 存在旧 cask 版，提示清理，避免误开旧版
+    let system_app = Path::new("/Applications").join("顾清影.app");
+    if system_app.is_dir() {
+        println!(
+            "{}",
+            crate::i18n::text(
+                "note: /Applications/顾清影.app is an older cask install; remove it with `brew uninstall --cask gqy` or manually, then re-run `gqy menubar --install`",
+                "提示：/Applications/顾清影.app 是旧版 cask 安装；请 `brew uninstall --cask gqy` 或手动删除后重跑 `gqy menubar --install`"
+            )
+        );
+    }
     Ok(())
+}
+
+/// 退出正在运行的菜单栏（pkill GQYMenuBar）并卸载旧 LaunchAgent。
+fn cleanup_old_instances() {
+    let _ = Command::new("pkill")
+        .args(["-f", "GQYMenuBar"])
+        .status();
+    if let Ok(home) = std::env::var("HOME") {
+        let uid = unsafe { libc::getuid() };
+        let _ = Command::new("/bin/launchctl")
+            .args(["bootout", &format!("gui/{uid}"), "dev.gqy.menubar"])
+            .status();
+        let plist = std::path::Path::new(&home)
+            .join("Library/LaunchAgents/dev.gqy.menubar.plist");
+        let _ = std::fs::remove_file(plist);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
 }
 
 fn dirs_applications_dir() -> Result<PathBuf> {
