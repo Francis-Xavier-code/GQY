@@ -1462,6 +1462,7 @@ impl OpenAiCompatibleClient {
         thinking: bool,
     ) -> AnthropicRequest {
         let (variant_thinking, variant_extra) = self.anthropic_variant(thinking);
+        let caching = prompt_caching_enabled(&self.provider);
         let extra_body = merge_extra_body(
             sanitize_extra_body(
                 self.provider.extra_body.clone(),
@@ -1471,9 +1472,9 @@ impl OpenAiCompatibleClient {
         );
         AnthropicRequest {
             model: self.provider.default_model.clone(),
-            system: lower_anthropic_system(&messages),
-            messages: lower_anthropic_messages(messages),
-            tools: (!tools.is_empty()).then(|| lower_anthropic_tools(tools)),
+            system: lower_anthropic_system(&messages, caching),
+            messages: lower_anthropic_messages(messages, caching),
+            tools: (!tools.is_empty()).then(|| lower_anthropic_tools(tools, caching)),
             stream: true,
             max_tokens: self.provider.anthropic_max_tokens,
             temperature: Some(self.provider.temperature),
@@ -1890,7 +1891,7 @@ fn default_responses_reasoning(summary: &str) -> ResponsesReasoning {
 struct AnthropicRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Vec<AnthropicSystemBlock>>,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
@@ -1905,6 +1906,34 @@ struct AnthropicRequest {
     extra_body: Option<Map<String, Value>>,
 }
 
+/// Anthropic system 块：system 前缀稳定（人格 + 记忆 + 摘要），
+/// 加 cache_control 让多轮对话命中前缀缓存，省 prompt token。
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum AnthropicSystemBlock {
+    #[serde(rename = "text")]
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+fn ephemeral_cache_control() -> AnthropicCacheControl {
+    AnthropicCacheControl { kind: "ephemeral" }
+}
+
+/// provider.prompt_caching 未显式关闭即启用（None 视为开启）
+fn prompt_caching_enabled(provider: &ProviderConfig) -> bool {
+    provider.prompt_caching != Some(false)
+}
+
 #[derive(Debug, Serialize)]
 struct AnthropicMessage {
     role: String,
@@ -1915,7 +1944,11 @@ struct AnthropicMessage {
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
+    },
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
     #[serde(rename = "tool_use")]
@@ -1928,6 +1961,8 @@ enum AnthropicContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
     },
 }
 
@@ -1945,6 +1980,8 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2045,8 +2082,8 @@ fn lower_responses_tools(tools: Vec<ToolDefinition>) -> Vec<Value> {
         .collect()
 }
 
-fn lower_anthropic_system(messages: &[ChatMessage]) -> Option<String> {
-    messages
+fn lower_anthropic_system(messages: &[ChatMessage], caching: bool) -> Option<Vec<AnthropicSystemBlock>> {
+    let text = messages
         .iter()
         .take_while(|message| message.role == "system")
         .map(|message| chat_content_text_ref(message.content.as_ref()))
@@ -2054,11 +2091,18 @@ fn lower_anthropic_system(messages: &[ChatMessage]) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
-        .to_string()
-        .into_non_empty()
+        .to_string();
+    if text.is_empty() {
+        return None;
+    }
+    // system 前缀每轮稳定不变 → 加缓存断点，后续轮次命中 KV 缓存
+    Some(vec![AnthropicSystemBlock::Text {
+        cache_control: caching.then(ephemeral_cache_control),
+        text,
+    }])
 }
 
-fn lower_anthropic_messages(messages: Vec<ChatMessage>) -> Vec<AnthropicMessage> {
+fn lower_anthropic_messages(messages: Vec<ChatMessage>, caching: bool) -> Vec<AnthropicMessage> {
     let mut output = Vec::new();
     let mut skipped_initial_system = true;
     for message in messages {
@@ -2080,20 +2124,48 @@ fn lower_anthropic_messages(messages: Vec<ChatMessage>) -> Vec<AnthropicMessage>
                 content: vec![AnthropicContentBlock::ToolResult {
                     tool_use_id: message.tool_call_id.unwrap_or_default(),
                     content: chat_content_text(message.content),
+                    cache_control: None,
                 }],
             }),
             "system" => output.push(AnthropicMessage {
                 role: "user".to_string(),
                 content: vec![AnthropicContentBlock::Text {
                     text: wrap_system_update(chat_content_text(message.content)),
+                    cache_control: None,
                 }],
             }),
             _ => output.push(AnthropicMessage {
                 role: "user".to_string(),
                 content: vec![AnthropicContentBlock::Text {
                     text: chat_content_text(message.content),
+                    cache_control: None,
                 }],
             }),
+        }
+    }
+    if caching && output.len() >= 2 {
+        // 在「上一轮的最后一条消息」上放缓存断点：整段历史前缀命中缓存，
+        // 只有当前输入保持新鲜（断点不能放在最后一条消息上）
+        let breakpoint_index = output.len() - 2;
+        if let Some(message) = output.get_mut(breakpoint_index) {
+            for block in message.content.iter_mut().rev() {
+                let cacheable = matches!(
+                    block,
+                    AnthropicContentBlock::Text { .. } | AnthropicContentBlock::ToolResult { .. }
+                );
+                if cacheable {
+                    match block {
+                        AnthropicContentBlock::Text { cache_control, .. }
+                        | AnthropicContentBlock::ToolResult { cache_control, .. } => {
+                            if cache_control.is_none() {
+                                *cache_control = Some(ephemeral_cache_control());
+                            }
+                        }
+                        _ => {}
+                    }
+                    break;
+                }
+            }
         }
     }
     output
@@ -2104,15 +2176,22 @@ fn lower_anthropic_user_content(content: Option<super::ChatContent>) -> Vec<Anth
         Some(super::ChatContent::Parts(parts)) => parts
             .into_iter()
             .filter_map(|part| match part {
-                super::ChatContentPart::Text { text } => Some(AnthropicContentBlock::Text { text }),
+                super::ChatContentPart::Text { text } => Some(AnthropicContentBlock::Text {
+                    text,
+                    cache_control: None,
+                }),
                 super::ChatContentPart::ImageUrl { image_url } => {
                     lower_anthropic_image_url(&image_url.url)
                 }
             })
             .collect(),
-        Some(super::ChatContent::Text(text)) => vec![AnthropicContentBlock::Text { text }],
+        Some(super::ChatContent::Text(text)) => vec![AnthropicContentBlock::Text {
+            text,
+            cache_control: None,
+        }],
         None => vec![AnthropicContentBlock::Text {
             text: String::new(),
+            cache_control: None,
         }],
     }
 }
@@ -2139,7 +2218,10 @@ fn lower_anthropic_assistant_content(message: ChatMessage) -> Vec<AnthropicConte
     let mut content = Vec::new();
     let text = chat_content_text(message.content);
     if !text.trim().is_empty() {
-        content.push(AnthropicContentBlock::Text { text });
+        content.push(AnthropicContentBlock::Text {
+            text,
+            cache_control: None,
+        });
     }
     if let Some(tool_calls) = message.tool_calls {
         content.extend(
@@ -2156,20 +2238,29 @@ fn lower_anthropic_assistant_content(message: ChatMessage) -> Vec<AnthropicConte
     if content.is_empty() {
         content.push(AnthropicContentBlock::Text {
             text: String::new(),
+            cache_control: None,
         });
     }
     content
 }
 
-fn lower_anthropic_tools(tools: Vec<ToolDefinition>) -> Vec<AnthropicTool> {
-    tools
+fn lower_anthropic_tools(tools: Vec<ToolDefinition>, caching: bool) -> Vec<AnthropicTool> {
+    let mut lowered: Vec<AnthropicTool> = tools
         .into_iter()
         .map(|tool| AnthropicTool {
             name: tool.function.name,
             description: tool.function.description,
             input_schema: tool.function.parameters,
+            cache_control: None,
         })
-        .collect()
+        .collect();
+    if caching {
+        // 工具定义稳定 → 在最后一个工具上放缓存断点
+        if let Some(last) = lowered.last_mut() {
+            last.cache_control = Some(ephemeral_cache_control());
+        }
+    }
+    lowered
 }
 
 fn wrap_system_update(text: String) -> String {
@@ -2179,16 +2270,6 @@ fn wrap_system_update(text: String) -> String {
             .replace('<', "&lt;")
             .replace('>', "&gt;")
     )
-}
-
-trait IntoNonEmpty {
-    fn into_non_empty(self) -> Option<String>;
-}
-
-impl IntoNonEmpty for String {
-    fn into_non_empty(self) -> Option<String> {
-        (!self.trim().is_empty()).then_some(self)
-    }
 }
 
 fn chat_content_text_ref(content: Option<&super::ChatContent>) -> String {
@@ -2281,9 +2362,57 @@ struct ChatStreamResponse {
     #[serde(default, deserialize_with = "null_as_default")]
     choices: Vec<ChatStreamChoice>,
     #[serde(default, deserialize_with = "null_as_default")]
-    usage: Option<Usage>,
+    usage: Option<ChatStreamUsage>,
     #[serde(default, deserialize_with = "null_as_default")]
     error: Option<Value>,
+}
+
+/// OpenAI 兼容 usage：DeepSeek 的 prompt_cache_hit_tokens / prompt_tokens_details.cached_tokens、
+/// Anthropic 风格代理透传的 cache_read_input_tokens 都归一化进 Usage。
+#[derive(Debug, Default, Deserialize)]
+struct ChatStreamUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    total_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u64>,
+    /// DeepSeek 新版 miss 计数（与 hit 对称，仅作兼容解析保留）
+    #[serde(default)]
+    #[allow(dead_code)]
+    prompt_cache_miss_tokens: Option<u64>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+}
+
+impl From<ChatStreamUsage> for Usage {
+    fn from(value: ChatStreamUsage) -> Self {
+        let cached = value
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens)
+            .filter(|v| *v > 0)
+            .or_else(|| value.prompt_cache_hit_tokens.filter(|v| *v > 0));
+        Usage {
+            prompt_tokens: value.prompt_tokens,
+            completion_tokens: value.completion_tokens,
+            total_tokens: value.total_tokens,
+            cache_read_input_tokens: cached.or(value.cache_read_input_tokens),
+            cache_creation_input_tokens: value.cache_creation_input_tokens,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2385,6 +2514,10 @@ struct ResponsesUsage {
     total_tokens: u64,
     #[serde(default)]
     output_tokens_details: Option<ResponsesOutputTokenDetails>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2451,6 +2584,10 @@ struct AnthropicUsage {
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2870,7 +3007,7 @@ where
         );
     }
     if let Some(next_usage) = response.usage {
-        *usage = Some(next_usage);
+        *usage = Some(next_usage.into());
     }
     for choice in response.choices {
         if let Some(next_finish_reason) = choice.finish_reason {
@@ -3188,6 +3325,8 @@ where
                     prompt_tokens: next_usage.input_tokens,
                     completion_tokens: next_usage.output_tokens,
                     total_tokens,
+                    cache_read_input_tokens: next_usage.cache_read_input_tokens,
+                    cache_creation_input_tokens: next_usage.cache_creation_input_tokens,
                 });
             }
             flush_buffer(
@@ -3470,10 +3609,24 @@ fn merge_anthropic_usage(current: &mut Option<Usage>, usage: AnthropicUsage) {
     } else {
         previous.completion_tokens
     };
+    let latest_nonzero = |value: Option<u64>, previous: Option<u64>| {
+        match value {
+            Some(v) if v > 0 => Some(v),
+            _ => previous,
+        }
+    };
     *current = Some(Usage {
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        cache_creation_input_tokens: latest_nonzero(
+            usage.cache_creation_input_tokens,
+            previous.cache_creation_input_tokens,
+        ),
+        cache_read_input_tokens: latest_nonzero(
+            usage.cache_read_input_tokens,
+            previous.cache_read_input_tokens,
+        ),
     });
 }
 
@@ -5116,6 +5269,7 @@ mod tests {
             temperature: 0.7,
             anthropic_max_tokens: 4096,
             extra_body: None,
+            prompt_caching: None,
         }
     }
 
@@ -5442,12 +5596,15 @@ mod tests {
         let value = serde_json::to_value(&request).unwrap();
 
         assert_eq!(value["metadata"]["user_id"], "123");
-        assert_eq!(value["system"], "You are helpful");
+        // system 现在是以 cache_control 块数组下发（prompt caching）
+        assert_eq!(value["system"][0]["type"], "text");
+        assert_eq!(value["system"][0]["text"], "You are helpful");
+        assert_eq!(value["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(value["thinking"]["type"], "adaptive");
         assert_eq!(value["model"], "claude-3-opus");
         assert_eq!(value["max_tokens"], 4096);
         assert!(value.get("extra_body").is_none());
-        assert_eq!(serialized.matches("\"system\":").count(), 1);
+        assert_eq!(serialized.matches("\"system\"").count(), 1);
         assert_eq!(serialized.matches("\"max_tokens\":").count(), 1);
         assert_eq!(serialized.matches("\"thinking\":").count(), 1);
     }

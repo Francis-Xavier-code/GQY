@@ -2015,6 +2015,7 @@ fn edit_provider_form(
             temperature: temperature,
             anthropic_max_tokens: provider.anthropic_max_tokens,
             extra_body,
+            prompt_caching: provider.prompt_caching,
         }));
     }
 }

@@ -89,7 +89,7 @@ async function handleMessage(event) {
     // 串行处理：同一会话的消息排队，避免并发 gqy 进程竞态与回复乱序
     const reply = await enqueueSession(sessionKey, async () => {
       const extraEnv = ensureSession(sessionHome, LOG_FILE);
-      return askGqy(text.slice(0, 2000), sessionHome, extraEnv, LOG_FILE);
+      return askGqy(text.slice(0, 2000), sessionHome, extraEnv, LOG_FILE, 'qq');
     });
     const send = {
       action: message_type === 'group' ? 'send_group_msg' : 'send_private_msg',

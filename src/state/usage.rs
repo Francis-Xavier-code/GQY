@@ -128,6 +128,12 @@ struct UsageRecord {
     total: u64,
     #[serde(default)]
     aux: bool,
+    /// 命中缓存读取的输入 token（Anthropic cache_read / DeepSeek cached_tokens 等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cache_read: Option<u64>,
+    /// 本次新建缓存写入的输入 token
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cache_creation: Option<u64>,
 }
 
 /// 追加一条调用记录（token 明细），供贡献图/模型统计使用。
@@ -160,6 +166,8 @@ fn record_usage_at(
         completion: usage.completion_tokens,
         total: usage.effective_total_tokens(),
         aux: auxiliary,
+        cache_read: usage.cache_read_input_tokens,
+        cache_creation: usage.cache_creation_input_tokens,
     };
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -322,6 +330,65 @@ pub fn usage_stats(path: &Path) -> Result<UsageStats> {
     })
 }
 
+/// 最近调用明细记录（用量页列表 / 模型详情）
+#[derive(Serialize)]
+pub struct UsageDetailRecord {
+    pub ts: i64,
+    pub provider: String,
+    pub model: String,
+    pub prompt: u64,
+    pub completion: u64,
+    pub total: u64,
+    pub aux: bool,
+    pub cache_read: Option<u64>,
+    pub cache_creation: Option<u64>,
+}
+
+/// 读取最近 N 条调用明细（新→旧），供用量页「最近调用」与模型详情展示。
+pub fn usage_details(path: &Path, limit: usize) -> Result<Vec<UsageDetailRecord>> {
+    use std::io::{BufRead, BufReader};
+
+    let mut records: Vec<UsageRecord> = Vec::new();
+    if path.exists() {
+        let file = std::fs::File::open(path)?;
+        let reader = BufReader::new(file).lines();
+        for line in reader {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(record) = serde_json::from_str::<UsageRecord>(&line) {
+                records.push(record);
+            }
+        }
+    }
+    records.truncate(limit);
+    let mut details = records
+        .into_iter()
+        .map(|record| UsageDetailRecord {
+            ts: record.ts,
+            provider: if record.provider.is_empty() {
+                "unknown".to_string()
+            } else {
+                record.provider
+            },
+            model: if record.model.is_empty() {
+                "(未标注)".to_string()
+            } else {
+                record.model
+            },
+            prompt: record.prompt,
+            completion: record.completion,
+            total: record.total,
+            aux: record.aux,
+            cache_read: record.cache_read,
+            cache_creation: record.cache_creation,
+        })
+        .collect::<Vec<_>>();
+    details.reverse(); // 新→旧
+    Ok(details)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +401,7 @@ mod tests {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+        ..Default::default()
         };
 
         add_usage(&path, &usage).unwrap();
@@ -374,6 +442,7 @@ mod tests {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 total_tokens: prompt + completion,
+            ..Default::default()
             };
             record_usage_at(&path, &usage, provider, model, false, ts).unwrap();
         }
@@ -412,6 +481,7 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 20,
                 total_tokens: 120,
+            ..Default::default()
             },
         )
         .unwrap();
@@ -421,6 +491,7 @@ mod tests {
                 prompt_tokens: 5,
                 completion_tokens: 2,
                 total_tokens: 7,
+            ..Default::default()
             },
         )
         .unwrap();
@@ -442,6 +513,7 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 3,
                 total_tokens: 0,
+            ..Default::default()
             },
         )
         .unwrap();

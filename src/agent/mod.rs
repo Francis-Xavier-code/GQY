@@ -1596,6 +1596,7 @@ impl UsageAccumulator {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens: prompt_tokens.saturating_add(completion_tokens),
+                ..Default::default()
             },
             true,
         );
@@ -1617,6 +1618,7 @@ impl UsageAccumulator {
             prompt_tokens: self.prompt_tokens,
             completion_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
+            ..Default::default()
         })
     }
 }
@@ -3671,6 +3673,7 @@ mod tests {
                 temperature: 0.0,
                 anthropic_max_tokens: 4096,
                 extra_body: None,
+                prompt_caching: None,
             }],
             ..AppConfig::default()
         };

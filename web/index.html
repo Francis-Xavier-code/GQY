@@ -33,6 +33,7 @@
       </button>
 
       <nav class="session-list" aria-label="会话">
+        <div class="channel-list" id="channelList" aria-label="对话通道"></div>
         <button class="session-item active" id="currentConversation" type="button">
           <span class="session-item-main">
             <span class="icon-slot" data-icon="message-circle" aria-hidden="true"><span class="icon-fallback">●</span></span>
@@ -221,8 +222,16 @@
             </div>
           </div>
           <div class="usage-models">
-            <h3>模型消耗明细</h3>
+            <h3>模型消耗明细<span class="usage-models-hint">点击行查看详情</span></h3>
             <div class="usage-model-table-wrap" id="usageModelTable"></div>
+            <div class="usage-model-detail" id="usageModelDetail" hidden></div>
+          </div>
+          <div class="usage-recent">
+            <div class="usage-section-heading">
+              <h3>最近调用</h3>
+              <span class="usage-chart-hint">含记忆/压缩等辅助消耗</span>
+            </div>
+            <div class="usage-recent-list" id="usageRecentList"></div>
           </div>
         </div>
       </section>

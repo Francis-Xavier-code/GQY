@@ -76,7 +76,7 @@ async function handleCallbackQuery(update) {
       const { sessionHome, sessionKey } = sessionFor(chatType, chatId, userId);
       const reply = await enqueueSession(sessionKey, async () => {
         const extraEnv = ensureSession(sessionHome, LOG_FILE);
-        return askGqy('继续我们刚才的话题，换个角度再说说，说点新的。', sessionHome, extraEnv, LOG_FILE);
+        return askGqy('继续我们刚才的话题，换个角度再说说，说点新的。', sessionHome, extraEnv, LOG_FILE, 'tg');
       });
       await sendChunks(chatId, reply, null);
     }
@@ -162,7 +162,7 @@ async function handleUpdate(update) {
     api('sendChatAction', { chat_id: chat.id, action: 'typing' }).catch(() => {});
     const reply = await enqueueSession(sessionKey, async () => {
       const extraEnv = ensureSession(sessionHome, LOG_FILE);
-      return askGqy(question, sessionHome, extraEnv, LOG_FILE);
+      return askGqy(question, sessionHome, extraEnv, LOG_FILE, 'tg');
     });
     await sendChunks(chat.id, reply, msg.message_id);
     log(LOG_FILE, `回复 ${chat.id}: ${reply.slice(0, 120)}`);

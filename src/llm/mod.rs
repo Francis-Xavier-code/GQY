@@ -133,6 +133,12 @@ pub struct Usage {
     pub completion_tokens: u64,
     #[serde(default)]
     pub total_tokens: u64,
+    /// 命中的前缀缓存 token（Anthropic cache_read_input_tokens / DeepSeek prompt_cache_hit_tokens 等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    /// 本次新建的缓存 token（Anthropic cache_creation_input_tokens）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 impl Usage {

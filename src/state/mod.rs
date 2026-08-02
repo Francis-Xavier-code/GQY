@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 #[allow(unused_imports)]
 pub use conversation_db::{
-    interrupted_text, pending_placeholder, ConversationDb, ImageAsset, ImageAssetData,
-    QueuedPrompt, QueuedPromptAttachment, Turn, TurnFollowup, TurnStatus,
+    interrupted_text, pending_placeholder, ChannelSummary, ConversationDb, ImageAsset,
+    ImageAssetData, QueuedPrompt, QueuedPromptAttachment, Turn, TurnFollowup, TurnStatus,
 };
 pub use usage::UsageSnapshot;
 
@@ -413,6 +413,21 @@ impl StateStore {
         self.conv_db.load_visible_turns()
     }
 
+    /// 本进程所属会话通道（terminal/webui/qq/tg）
+    pub fn channel(&self) -> &str {
+        self.conv_db.channel()
+    }
+
+    /// 读取指定通道的可见对话（WebUI 切换查看其他终端/通信通道）
+    pub fn load_visible_turns_for_channel(&self, channel: &str) -> Result<Vec<Turn>> {
+        self.conv_db.load_visible_turns_for_channel(channel)
+    }
+
+    /// 全部通道摘要（WebUI 左侧通道列表）
+    pub fn channel_summaries(&self) -> Result<Vec<ChannelSummary>> {
+        self.conv_db.channel_summaries()
+    }
+
     pub fn load_visible_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
         self.conv_db.load_visible_turns_excluding(exclude_turn_id)
     }
@@ -509,6 +524,11 @@ impl StateStore {
 
     pub fn usage_stats(&self) -> Result<usage::UsageStats> {
         usage::usage_stats(&self.usage_history_file())
+    }
+
+    /// 最近调用明细（新→旧），供 WebUI 用量页列表与模型详情
+    pub fn usage_details(&self, limit: usize) -> Result<Vec<usage::UsageDetailRecord>> {
+        usage::usage_details(&self.usage_history_file(), limit)
     }
 
     #[allow(dead_code)]

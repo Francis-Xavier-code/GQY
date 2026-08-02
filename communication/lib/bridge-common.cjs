@@ -133,7 +133,7 @@ function ensureSession(sessionHome, logFile) {
 }
 
 /** 调用 gqy ask；会话密钥经 extraEnv 注入，避免子进程环境里出现明文 */
-function askGqy(question, sessionHome, extraEnv, logFile) {
+function askGqy(question, sessionHome, extraEnv, logFile, channel) {
   return new Promise((resolve) => {
     const started = Date.now();
     log(logFile, `ask 开始: ${question.slice(0, 60)}`);
@@ -142,6 +142,8 @@ function askGqy(question, sessionHome, extraEnv, logFile) {
         ...process.env,
         NO_COLOR: '1',
         ...(sessionHome ? { GQY_HOME: sessionHome } : {}),
+        // 每个通信通道独立上下文（QQ/Telegram 各有各的对话记忆）
+        ...(channel ? { GQY_CHANNEL: channel } : {}),
         ...(extraEnv || {}),
       },
       stdio: ['pipe', 'pipe', 'pipe'],

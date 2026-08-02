@@ -294,6 +294,76 @@ textarea:disabled {
   scrollbar-width: thin;
 }
 
+/* 多通道会话列表（终端/网页/QQ/Telegram） */
+.channel-list {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 6px;
+}
+
+.channel-item {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  gap: 8px;
+  text-align: left;
+}
+
+.channel-item:hover {
+  background: var(--surface-2);
+}
+
+.channel-item.active {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.channel-item > .icon-slot {
+  width: 15px;
+  height: 15px;
+  color: var(--text-faint);
+}
+
+.channel-item.active > .icon-slot {
+  color: var(--accent);
+}
+
+.channel-item .session-copy strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* 只读浏览其他通道的横幅 */
+.channel-view-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.channel-view-back {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .session-item {
   position: relative;
   display: grid;
@@ -3475,6 +3545,13 @@ textarea.config-input {
   font-weight: 600;
 }
 
+.usage-models-hint {
+  margin-left: 8px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 400;
+}
+
 .usage-chart-hint {
   color: var(--text-faint);
   font-size: 10px;
@@ -3630,6 +3707,172 @@ textarea.config-input {
   color: var(--text-faint);
   font-size: 10px;
   white-space: nowrap;
+}
+
+/* 模型行可点击 */
+.usage-model-row {
+  cursor: pointer;
+}
+
+.usage-model-row:hover td,
+.usage-model-row:focus-visible td {
+  background: var(--surface-2);
+}
+
+.usage-model-row td:first-child {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+.usage-model-row td:last-child {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+/* 模型详情面板：按日柱状图 + 调用明细 */
+.usage-model-detail {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.usage-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.usage-detail-header strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.usage-detail-header small {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.usage-detail-bars {
+  display: flex;
+  height: 96px;
+  align-items: flex-end;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.usage-detail-bar {
+  display: grid;
+  height: 100%;
+  min-width: 18px;
+  grid-template-rows: 1fr auto;
+  gap: 3px;
+  align-items: end;
+}
+
+.usage-detail-bar i {
+  display: block;
+  width: 12px;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(180deg, var(--cyan), var(--accent));
+  opacity: 0.85;
+}
+
+.usage-detail-bar span {
+  color: var(--text-faint);
+  font-size: 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.usage-detail-list-title {
+  margin: 12px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* 最近调用明细列表 */
+.usage-recent {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.usage-records-list {
+  display: grid;
+  margin-top: 10px;
+  gap: 2px;
+}
+
+.usage-record-row {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.usage-record-row:hover {
+  background: var(--surface-2);
+}
+
+.usage-record-time {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.usage-record-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-record-tokens {
+  color: var(--text-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.usage-record-cache {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--cyan);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.usage-record-aux {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--purple, #9d8cff);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.usage-record-total {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .usage-record-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .usage-record-time,
+  .usage-record-model {
+    grid-column: 1;
+  }
 }
 
 @media (max-width: 700px) {
