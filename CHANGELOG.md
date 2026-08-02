@@ -3,6 +3,15 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.7.1] - 2026-08-02
+
+### 修复
+- **菜单栏升级路径**：`gqy menubar --install` 安装前清理旧实例（退出运行中的菜单栏、
+  卸载旧 LaunchAgent），安装后自动拉起；提示清理旧 cask 版 `/Applications/顾清影.app`。
+  修复「升级后误开旧版、打开面板无法连接」；
+- **WebUI 载入崩溃**：时间线渲染误用未定义变量 `index`（`for...of` 里引用下标）
+  导致 `ReferenceError` 页面白屏——改为带下标的循环。
+
 ## [0.7.0] - 2026-08-02
 
 ### 新增
