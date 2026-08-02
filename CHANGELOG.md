@@ -3,6 +3,138 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-08-02
+
+### 新增
+- **pi 底座模式（实验性）**：`provider.protocol` 设为 `pi` 后，GQY 通过 `pi --mode rpc`
+  把「大脑」整体交给 pi——pi 用自己的模型、agent 循环与内置工具（read/write/edit/bash/find/grep/ls）
+  完成对话与工具调用，GQY 负责渲染、记忆、知识库、备份等外围能力。
+  支持多轮记忆、工具进度透传、`Esc` 中断（向 pi 发 abort）、人格注入。
+- **GQY 工具注入 pi**：`src/scripts/pi-bridge.ts` 扩展 + 本地 HTTP 工具桥
+  （`src/pi_bridge.rs`，`127.0.0.1` 随机端口），把 GQY 的 38 个定制工具
+  （记忆、表情包、闹钟、玄学、知识库、天气、汇率、man、moegirl、哈希、计算器、剪贴板、
+  web_fetch、语音等）以 `gqy_*` 前缀注册进 pi，模型调用时回调 GQY 的 ToolRegistry 执行；
+  GQY 侧的联想记忆（`<associative-memory>`）拼入每轮 prompt 的 `<gqy-context>` 前缀。
+- **工具引导（提高 gqy_* 使用率）**：每个注入工具带 `promptSnippet`/`promptGuidelines`
+  （如「用户要算卦/抽塔罗时用 gqy_draw_*」「设闹钟用 gqy_set_alarm，不要用 bash sleep 模拟」），
+  工具清单同步写入 `GQY_HOME/cache/pi-bridge-tools.json`，扩展在 `session_start`
+  **同步注册**（避免异步 fetch 与首轮 prompt 的竞态），确保首轮 system prompt 就带 gqy_* 工具。
+  详见 `docs/01-指南/pi-底座模式.md`。
+- **pi 模式本地视觉**：`gqy_analyze_image_local` 暴露给 pi（Apple Vision，OCR+分类+物体检测，
+  免费离线不耗 API 额度）；pi 模式下图片随 prompt 的 `images` 字段直接流入 pi；
+  同时捕获 pi 实际使用的 provider/model 用于用量归因与界面显示。
+
+### WebUI
+- **图片粘贴/拖拽**：composer 支持粘贴或拖入图片（托盘预览、可移除、可多张），
+  随消息一起发送（`/api/turns`、`/api/queue` 均支持 `images` 字段），用户消息气泡内渲染缩略图；
+- **pi 底座标识**：bootstrap 新增 `engine` 字段，pi 模式下顶栏模型按钮显示「pi 底座」；
+- **浏览器通知**：页面后台运行时回复完成弹出系统通知（首次发送时请求权限）；
+- **附件能力声明**：`capabilities.attachments` 置为 `true`。
+- **用量准确性**：pi 模式从事件流捕获每条消息的真实 token 用量
+  （含 cache_read/cache_write，多个内部 LLM 调用逐条累加），不再用估算值；
+  用量记录带真实 provider/model（deepseek / deepseek-v4-flash）。
+- **用量可视化**：新增「近 30 天趋势」柱状图（峰值/日均/合计汇总行），
+  配合原有 365 天贡献网格与模型占比条。
+- **工具调用折叠块**：新增 `ChatStreamKind::ToolProgress/ToolResult`，pi 的工具执行
+  （bash/gqy_* 的 start/update/end）转成 AgentEvent 驱动终端与 Web 时间线里的
+  可折叠工具块（含参数与输出）。
+- **代码块语法高亮**：零依赖轻量高亮器（bash/rust/js/python/json/sql/yaml/diff…），
+  关键词/字符串/数字/注释着色，diff 增删行高亮。
+- **对话全文搜索**：新增 `GET /api/search`（跨通道 LIKE 检索）+ 侧边栏搜索框，
+  结果卡片内联展开查看完整对话。
+- **macOS 风格化**：字体栈换 SF Pro/PingFang、侧边栏与顶栏毛玻璃
+  （backdrop-filter，不支持时优雅降级）、消息气泡圆角 macOS 化。
+- **Homebrew 打包**：`pi-bridge.ts` 随 `src/scripts` 自动进入 brew 公式与菜单栏
+  App 的 share 目录，无需额外改动。
+- **表情包发送全链路（pi 模式）**：`gqy_show_meme` 暴露给 pi（含使用引导：
+  先 search 取 id 再 show）；工具桥调用时并发读取 `ToolProgress` 事件——
+  `PrepareForExternalOutput` 自动应答保持终端 chafa 图片打印，`Image` 事件经
+  WebUI 资产链路（`tool.image` SSE）落到浏览器时间线，终端/网页双通道显示表情包。
+  `ToolRegistry` 新增 `call_with_progress`。
+- **工具矩阵验证 + 桥并发修复**：新增 `exposed_tools_matrix_runs_ok` 测试，16 个本地
+  确定性工具（哈希/编解码/计算器/系统信息/骰子/占卜/记忆/表情/闹钟列表/知识库）逐个经
+  桥路径调用，毫秒级完成；修复桥事件循环潜在挂起（工具改在独立任务执行，progress 的
+  sender 随任务结束释放，事件循环必然收敛）。
+- **pi 模式深度研究 / 子 agent**：`task`（子 agent）与 `deep_research`（多阶段报告）
+  暴露给 pi 工具桥——子 agent 经独立 pi 子进程隔离执行（与主会话互不污染），
+  长任务桥超时 30 分钟、主轮超时放宽到 30 分钟（`GQY_PI_TURN_TIMEOUT` 可调）。
+  端到端验证：模型调用 `gqy_task` 完成子主题调研、`gqy_deep_research` 生成带
+  引用的 markdown 报告落盘并汇总。
+### 进程统一与交付整合
+- **统一收尾**：`gqy web` 新增 `/api/shutdown`（优雅退出：停 serve → actor 结束 →
+  agent drop → pi 进程组被清理）；菜单栏「退出」改为先调 shutdown 再退出——
+  **点菜单栏退出，全部 GQY/pi 进程随之消亡**（不再有孤儿残留）；
+- **pi 孤儿修复**：PiRpcClient 的 pi 进程设进程组（process_group），PiProc Drop 时
+  `kill(-pid, SIGTERM)` 连 bash 孙进程一起清理；
+- **菜单栏客户端化**：main.m 不再强杀 4096 端口进程，改为复用已有 daemon
+  （已运行直接连、没有才拉起），退出时统一 shutdown；
+- **`gqy menubar --install`**：把菜单栏壳（main.m）现场 clang 编译成
+  顾清影.app 装到 `~/Applications`（内置 gqy 二进制 + 共享资源，自包含）——
+  **交付合并为单一 formula**，不再维护 DMG/cask 双轨；
+- **hook 不打扰**：新增 `shell.auto` 配置（默认开）；关掉后命令未找到一律
+  系统报错，只用显式 `gqy <问句>` 对话。
+
+### 真实使用反馈修复（agent 集群体验）
+- **页面空白修复**：`rerunButton` 作用域 bug（createTool 局部变量在 tool.finished 分支
+  访问 → ReferenceError → 工具卡卡死、时间线渲染断裂）——存进 tool 对象后修复；
+- **思考聚合**：pi_rpc 对跨内部 LLM 调用的 thinking 发 `ReasoningPartStart/End`，
+  前端只渲染**一个聚合思考块**（此前每段思考各自折叠）；
+- **滚动捕获**：tool-detail pre / reasoning 块加 `overscroll-behavior: contain`，
+  打开详情后页面仍可滚轮滑动；
+- **背景全屏**：顾清影壁纸从角落小图改为**全屏铺满**（cover + 顶部/底部渐变遮罩
+  保证文字可读，滚动对话保持不动）；
+- **agent 守则强化**：系统提示词要求 agent 只输出可核查信息、优先用工具核实、
+  不确定明确标注，降低编造/假信息概率。
+
+### agent 活动实时可视化
+- `talk_to_agent` 的 agent 思考/回复增量经 `ToolProgress` 消息 → 桥 progress sink →
+  `tool.progress` SSE → Web 时间线「agent 集群活动」卡片**实时滚动**（追加式，带长度上限）；
+- 前端 tool.progress 由替换改为追加滚动；桥新增 `progress_sink`（cli 传 None）。
+
+### 自主 agent 集群（Kimi 式）
+- **模型可自主创建/管理命名子代理**：`gqy_spawn_agent`（创建 agent，自定义角色）、
+  `gqy_talk_to_agent`（点名对话，独立记忆、多轮可连续）、`gqy_list_agents`（名册）、
+  `gqy_kill_agent`（销毁）。同一轮多次 `talk_to_agent` 即并行派活。
+- **实现**：`src/agents.rs`（AgentManager 全局单例 + 工具 + 持久化到
+  `GQY_HOME/data/agents/agents.json`）；pi 模式下每个 agent 是独立 pi 进程
+  （自定义系统提示词 → 独立进程，多轮记忆）；直连模式用 OpenAI 客户端 + 实例内历史。
+- **递归防护**：agent 进程使用过滤工具清单（不含 spawn/talk/list/kill），
+  不能无限再创建 agent。
+- 端到端验证：模型自主组建 architect+reviewer 双 agent 团队，并行派活、
+  汇总意见、确认名册、销毁——完整闭环。
+
+### WebUI 第三轮
+- **回合重试/重新生成**：失败/中断轮及最后一轮的用户消息带「重新生成」按钮，
+  剥离注入的图片描述块后重发（抽出公共 `sendTurnContent`，发送与重试共用一条链路）；
+- **工具一键重跑**：pi 模式工具块完成/失败后显示「重跑」按钮，经新增的
+  `/api/tools/call` 走 GQY 注册表重新执行（长任务 30 分钟超时）；
+- **pi 模型切换 + 思考级别**：顶栏模型按钮在 pi 模式弹出 pi 模型选择器
+  （`get_available_models` 列表单选 + `set_model`）与思考级别档位
+  （off~max，`set_thinking_level`）；新增 `/api/pi/{state|models|model|thinking}`，
+  PiRpcClient 增加通用 `rpc_command`（回合运行中也可切换）；
+- **TTS 朗读**：助手消息「朗读」按钮（浏览器 SpeechSynthesis，零后端）；
+- **对话导出**：`/api/export` 导出当前会话为 markdown + 顶栏下载按钮；
+- **移动端适配**：窄屏（≤768/480px）布局走查（消息宽度/菜单/composer/用量图）。
+
+- **pi 工具桥全量注册修复**：`pi-bridge.ts` 对工具名做规范化
+  （连字符等非法字符转下划线，如 `battery-care` → `gqy_battery_care`，
+  execute 仍按原始名回调桥），此前内置脚本 `battery-care` 因连字符被
+  扩展跳过（46/47），现在 **47/47 全注册**。
+- **子 agent 递归隔离**：`for_subagent_output` 给 Pi 客户端打子 agent 标记，
+  子 agent spawn 的 pi 进程使用过滤工具清单（`pi-bridge-tools-subagent.json`，
+  剔除 `gqy_task`/`gqy_deep_research`），防止子 agent 自我递归。端到端验证：
+  主进程 47 个工具、子 agent 进程 45 个（恰少 2 个递归工具）。
+- **`gqy tools` 更多管理能力**：新增 `show <包名>`（工具详情/禁用状态）、
+  `disable <id>` / `enable <id>`（写 index.json 的 disabled 数组，扫描跳过/恢复），
+  与既有 `import/list/remove` 构成完整管理面。
+- **仓库转工具（`gqy tools`）成熟化**：
+  - 修复「导入的脚本工具注册不上」的静默 bug：早期导入在 index.json 写入
+    `load_policy: ""`，扫描侧 `LoadPolicy` 枚举反序列化失败被 `.ok()` 静默丢弃；
+    `LoadPolicy` 现在容忍空串/未知值（回退 Summary），新导入规范化写入 `group`；
+  - 新增 `gqy tools remove <包名>`（删除包目录 + 清理 index.json 注册）；
+  - **pi 模式可用**：工具桥放行用户导入的脚本工具（`is_script_tool`），导入的脚本
+    以 `gqy_<id>` 出现在 pi 的工具列表并可被模型直接调用（含使用引导）。
+
 ## [0.6.1] - 2026-08-02
 
 ### 新增

@@ -6,7 +6,7 @@ use crate::bridges::napcat::NapcatArgs;
 use crate::bridges::tg::TgArgs;
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
-use crate::llm::{ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions};
+use crate::llm::{ChatStreamChunk, LlmClient, ThinkingVariantOptions};
 use crate::memory::MemoryStore;
 use crate::paths::GqyPaths;
 use crate::render;
@@ -809,6 +809,8 @@ fn localize_skills_command(mut command: clap::Command) -> clap::Command {
 pub enum Command {
     #[command(name = "__alarm-worker", hide = true)]
     AlarmWorker(AlarmWorkerArgs),
+    /// 菜单栏 App：install（编译并安装 顾清影.app 到 ~/Applications）
+    Menubar(MenubarArgs),
     #[command(name = "__tool", hide = true)]
     Tool(ToolArgs),
     #[command(name = "__preview", hide = true)]
@@ -885,6 +887,13 @@ impl std::fmt::Debug for WebArgs {
             .field("password_file", &self.password_file)
             .finish()
     }
+}
+
+#[derive(Debug, Args)]
+pub struct MenubarArgs {
+    /// 安装菜单栏 App
+    #[arg(long)]
+    install: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1188,6 +1197,30 @@ pub enum ToolsCommand {
     },
     /// 列出已导入的用户工具包
     List,
+    /// 删除已导入的工具包（连同其在 index.json 中的注册）
+    Remove {
+        /// 工具包名（import 时的 --name，或包目录名）
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// 查看工具包详情（工具 id / 显示名 / 描述 / 禁用状态）
+    Show {
+        /// 工具包名
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// 禁用已导入的工具（扫描时跳过）
+    Disable {
+        /// 工具 id 或路径（如 today，或 today-demo/today.sh）
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// 重新启用被禁用的工具
+    Enable {
+        /// 工具 id 或路径
+        #[arg(value_name = "ID")]
+        id: String,
+    },
 }
 
 
@@ -1362,6 +1395,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::Tts(args)) => run_tts(args),
         Some(Command::Stt(args)) => run_stt(&paths, args),
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
+        Some(Command::Menubar(args)) => run_menubar(&paths, args),
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Preview) => {
             crate::repl_avatar::print_if_supported(&mut io::stdout());
@@ -1759,6 +1793,20 @@ fn run_alarm_cmd(paths: &GqyPaths, args: AlarmArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn run_menubar(paths: &GqyPaths, args: MenubarArgs) -> Result<()> {
+    if args.install {
+        return crate::menubar::install(paths);
+    }
+    println!(
+        "{}",
+        t(
+            "usage: gqy menubar --install   (build & install 顾清影.app to ~/Applications)",
+            "用法：gqy menubar --install（编译并安装 顾清影.app 到 ~/Applications）"
+        )
+    );
+    Ok(())
 }
 
 fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {
@@ -2934,6 +2982,14 @@ fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
     if !matches!(shell_name, "fish" | "bash" | "zsh") {
         std::process::exit(2);
     }
+    // shell.auto = false：hook 一律放行（系统报错），只用显式 `gqy <问句>` 对话
+    if let Ok(paths) = crate::paths::GqyPaths::new() {
+        if let Ok(config) = AppConfig::load_or_default(&paths) {
+            if !config.shell.auto {
+                std::process::exit(0);
+            }
+        }
+    }
     if shell::is_shell_command(message, shell_name) {
         std::process::exit(0);
     }
@@ -3049,7 +3105,7 @@ async fn run_chat_with_images(
     let config = AppConfig::load_or_default(paths)?;
     let state = StateStore::new(paths)?;
     state.init_files()?;
-    let client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    let client = LlmClient::from_config(&config, paths)?;
     let registry = build_tool_registry(
         &config,
         paths,
@@ -3071,6 +3127,7 @@ async fn run_chat_with_images(
         registry,
         AgentMode::Normal,
     )?;
+    crate::pi_bridge::ensure_for_agent(&agent, None, None).await?;
     let mut renderer = render::StreamRenderer::new(
         reasoning_mode,
         tool_call_mode,
@@ -3198,7 +3255,7 @@ async fn run_chat_with_options(
     let config = AppConfig::load_or_default(paths)?;
     let state = StateStore::new(paths)?;
     state.init_files()?;
-    let client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    let client = LlmClient::from_config(&config, paths)?;
     let registry =
         build_tool_registry(&config, paths, mode, crate::question_tui::available(plain))?;
     let reasoning_mode = if show_reasoning == Some(false) {
@@ -3217,6 +3274,7 @@ async fn run_chat_with_options(
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
     let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
+    crate::pi_bridge::ensure_for_agent(&agent, None, None).await?;
     let mut renderer = render::StreamRenderer::new(
         reasoning_mode,
         tool_call_mode,
@@ -3404,7 +3462,7 @@ fn run_variant(paths: &GqyPaths, args: VariantArgs) -> Result<()> {
     }
 
     let config = AppConfig::load_or_default(paths)?;
-    let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    let mut client = LlmClient::from_config(&config, paths)?;
     match execute_variant(paths, &mut client, selected, "gqy variant")? {
         VariantOutcome::Updated => print_variant_updated(),
         VariantOutcome::Cancelled => {}
@@ -3415,7 +3473,7 @@ fn run_variant(paths: &GqyPaths, args: VariantArgs) -> Result<()> {
 
 fn execute_variant(
     paths: &GqyPaths,
-    client: &mut OpenAiCompatibleClient,
+    client: &mut LlmClient,
     selected: Option<&str>,
     selector_command: &str,
 ) -> Result<VariantOutcome> {
@@ -3480,7 +3538,7 @@ async fn run_repl(paths: &GqyPaths, initial_mode: AgentMode) -> Result<()> {
     let mut config = AppConfig::load_or_default(paths)?;
     let state = StateStore::new(paths)?;
     state.init_files()?;
-    let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    let mut client = LlmClient::from_config(&config, paths)?;
     let mut mode = initial_mode;
     let mut input_history = load_repl_input_history(&state)?;
     let mut prefill = None::<String>;
@@ -3500,6 +3558,7 @@ async fn run_repl(paths: &GqyPaths, initial_mode: AgentMode) -> Result<()> {
         initial_registry,
         mode,
     )?;
+    crate::pi_bridge::ensure_for_agent(&agent, None, None).await?;
     let mut footer =
         ReplFooterStatus::from_config(&config, agent.effective_context_tokens()?, None);
     let thinking_summary = client.thinking_variant_summary();
@@ -3894,10 +3953,10 @@ async fn run_repl(paths: &GqyPaths, initial_mode: AgentMode) -> Result<()> {
 fn reload_repl_config(
     paths: &GqyPaths,
     config: &mut AppConfig,
-    client: &mut OpenAiCompatibleClient,
+    client: &mut LlmClient,
 ) -> Result<()> {
     *config = AppConfig::load(paths)?;
-    *client = OpenAiCompatibleClient::from_config(config, paths)?;
+    *client = LlmClient::from_config(config, paths)?;
     Ok(())
 }
 
@@ -5866,6 +5925,7 @@ async fn run_live_agent_turn(
     live.apply_renderer_frame(renderer)?;
 
     let result = {
+        let llm = agent.llm_client();
         let live_cell = std::cell::RefCell::new(&mut *live);
         let renderer_cell = std::cell::RefCell::new(&mut *renderer);
         let chat = agent.chat_stream_with_control(input.content, input.images, control, |event| {
@@ -5935,7 +5995,10 @@ async fn run_live_agent_turn(
                                 })?;
                             }
                         }
-                        LiveEditorAction::Interrupt | LiveEditorAction::Exit => break Ok(None),
+                        LiveEditorAction::Interrupt | LiveEditorAction::Exit => {
+                            let _ = llm.interrupt();
+                            break Ok(None);
+                        }
                         LiveEditorAction::ToggleReasoning => {
                             // Ctrl+O：展开/收起思考详情（流式输出中即时生效）
                             let mut renderer = renderer_cell.borrow_mut();
@@ -9081,6 +9144,45 @@ fn run_tools(paths: &GqyPaths, args: ToolsArgs) -> Result<()> {
                     result.skills.join(", "),
                     paths.skills_dir.display()
                 );
+            }
+            Ok(())
+        }
+        ToolsCommand::Remove { name } => {
+            let removed = crate::tools::import::remove_tools(paths, &name)?;
+            if crate::i18n::is_zh() {
+                println!("已删除工具包 {name}（移除 {removed} 个工具注册）");
+            } else {
+                println!("removed tool package: {name} ({removed} tool registrations)");
+            }
+            Ok(())
+        }
+        ToolsCommand::Show { name } => {
+            let tools = crate::tools::import::show_tools(paths, &name)?;
+            println!("工具包 {name}：");
+            for (id, display, description, disabled) in tools {
+                let state = if disabled { "[已禁用] " } else { "" };
+                println!("  {state}{id}（{display}）");
+                if !description.is_empty() {
+                    println!("      {description}");
+                }
+            }
+            Ok(())
+        }
+        ToolsCommand::Disable { id } => {
+            crate::tools::import::disable_tool(paths, &id)?;
+            if crate::i18n::is_zh() {
+                println!("已禁用工具 {id}（下一轮扫描生效）");
+            } else {
+                println!("disabled tool: {id}");
+            }
+            Ok(())
+        }
+        ToolsCommand::Enable { id } => {
+            crate::tools::import::enable_tool(paths, &id)?;
+            if crate::i18n::is_zh() {
+                println!("已重新启用工具 {id}（下一轮扫描生效）");
+            } else {
+                println!("enabled tool: {id}");
             }
             Ok(())
         }

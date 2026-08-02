@@ -232,6 +232,7 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    // 兜底：若 daemon 是本 App 拉起的且 shutdown 未生效，直接终止
     if (self.webTask.isRunning) {
         [self.webTask terminate];
     }
@@ -696,7 +697,24 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
 
 - (void)quit:(id)sender {
     (void)sender;
+    [self shutdownDaemon];
     [NSApp terminate:nil];
+}
+
+// 优雅关闭后台守护进程（gqy web）：POST /api/shutdown →
+// 停 serve → agent 结束（pi 进程组随 agent drop 被清理）→ 进程退出。
+// 无论 daemon 是本 App 拉起还是终端手动启动，都会统一收尾。
+- (void)shutdownDaemon {
+    NSMutableURLRequest *request = [NSMutableURLRequest
+        requestWithURL:[NSURL URLWithString:@"http://127.0.0.1:4096/api/shutdown"]];
+    request.HTTPMethod = @"POST";
+    request.timeoutInterval = 3;
+    // 同步发送：确保退出前请求已发出
+    __unused NSData *data = [NSURLConnection sendSynchronousRequest:request
+                                                  returningResponse:nil
+                                                              error:nil];
+    // 短暂等待 daemon 收尾（pi 进程组清理），再让自己退出
+    usleep(300 * 1000);
 }
 
 - (NSURL *)loginAgentPlist {
