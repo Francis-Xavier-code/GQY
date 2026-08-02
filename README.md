@@ -31,14 +31,21 @@ gqy config
 
 ### Homebrew（推荐）
 
-CLI 与菜单栏 App 都通过 GQY 官方 tap 安装（需要先发布 GitHub Release，见下方「发布新版本」）：
+GQY 通过官方 tap 发布**单一 formula**（终端 CLI 为唯一正式渠道，需要先发布 GitHub Release，见下方「发布新版本」）：
 
 ```zsh
 brew tap Francis-Xavier-code/GQY
 brew trust Francis-Xavier-code/GQY   # Homebrew 新版要求信任非官方 tap
-brew install gqy            # 终端 CLI
-brew install --cask gqy     # 菜单栏 App（顾清影.app）
+brew install gqy
+
+# 菜单栏（可选，一条命令现场编译安装，无需单独的 cask/DMG）
+gqy menubar --install
 ```
+
+> 0.7.1 起菜单栏不再单独发 cask/DMG——`gqy menubar --install` 用 clang
+> 现场编译轻量 AppKit 壳到 `~/Applications/顾清影.app`（内置 gqy 二进制与资源，自包含），
+> 升级只需 `brew upgrade gqy` 后重跑一次。旧版 `brew install --cask gqy` 的
+> `/Applications/顾清影.app` 请卸载清理，避免误开旧版。
 
 ### 从源码构建
 
@@ -82,14 +89,13 @@ gqy kb add "$(brew --prefix)/share/gqy/kb"
 
 ### 菜单栏
 
-轻量 AppKit 菜单栏壳位于 `macos/GQYMenuBar`，不需要完整 Xcode：
+轻量 AppKit 菜单栏壳位于 `macos/GQYMenuBar`（约 300 行，不需要完整 Xcode），
+由 `gqy menubar --install` 现场编译安装到 `~/Applications/顾清影.app`。
 
-```
-zsh macos/GQYMenuBar/build.sh
-open "macos/GQYMenuBar/.build/顾清影.app"
-```
-
-菜单提供终端对话、本地 Web 面板、立即备份、打开独立主目录、开机自启与退出。详细说明见 [macOS、独立主目录与记忆备份](docs/01-指南/macos-portable-home-and-backup.md)。
+菜单提供：打开 WebUI（⌥H）、配置、重启面板服务、终端对话、立即备份、
+打开独立主目录、开机自启与退出。**「退出」会统一关闭后台守护进程
+（`gqy web`）及其 pi 子进程**，不留孤儿。详细说明见
+[macOS、独立主目录与记忆备份](docs/01-指南/macos-portable-home-and-backup.md)。
 
 ### 界面语言
 
@@ -114,6 +120,8 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 | `gqy web` | 启动本地 Web 面板 |
 | `gqy balance` | 查询 DeepSeek 账户余额 |
 | `gqy config set <key> <value>` / `gqy config get [key]` | 免交互读写配置（密钥脱敏） |
+| `gqy menubar --install` | 现场编译安装菜单栏 App 到 `~/Applications` |
+| `gqy tools import/list/show/disable/enable/remove` | 工具包管理（仓库转工具） |
 | `gqy napcat status/install/uninstall/config` | NapCat (QQ) 桥接管理（含自启动） |
 | `gqy tg status/install/uninstall/token/config` | Telegram 桥接管理（含自启动） |
 | `gqy backup init` / `gqy backup now` / `gqy backup status` | 备份初始化 / 立即备份 / 状态 |
@@ -211,6 +219,22 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 
   重量级插件。对于一个命题，GQY 可以引经据典，有理有据地进行深度研究并写出研究报告。
 
+- pi 底座模式
+
+  `provider.protocol` 设为 `pi` 后，GQY 把「大脑」整体交给
+  [pi](https://github.com/earendil-works/pi)：pi 用自己的模型、agent 循环与
+  内置编码工具（read/write/edit/bash/find/grep/ls），GQY 负责渲染、记忆、
+  知识库与备份。47 个 GQY 定制工具（记忆/表情包/知识库/闹钟/本地视觉等）以
+  `gqy_*` 注入 pi，模型可直接调用。详见
+  [docs/01-指南/pi-底座模式.md](docs/01-指南/pi-底座模式.md)。
+
+- 自主 agent 集群
+
+  pi 模式下 GQY 可以在对话中**自主创建命名子代理并组队协作**（Kimi 式）：
+  `gqy_spawn_agent` 建人 → `gqy_talk_to_agent` 点名派活（可并行）→
+  `gqy_list_agents` / `gqy_kill_agent` 管理；agent 思考过程在 WebUI 实时可见，
+  定义持久化、重启复活。
+
 </details>
 
 ## 常见问题
@@ -240,7 +264,7 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
   A：注册/移除 LaunchAgent（`~/Library/LaunchAgents/dev.gqy.menubar.plist`），让她下次登录自动出现在菜单栏。只有你主动点击才会修改。
 
 - **Q：卸载 GQY 会删掉我的记忆吗？**
-  A：不会。`brew uninstall --cask gqy` / `brew uninstall gqy` 只移除程序和自启项；GQY_HOME（对话、记忆、知识库、备份仓库）是用户数据，卸载不会触碰。想彻底清除请手动删除 `~/Library/Application Support/gqy`。
+  A：不会。`brew uninstall gqy` 只移除程序与自启项；`rm -rf ~/Applications/顾清影.app` 移除菜单栏壳；GQY_HOME（对话、记忆、知识库、备份仓库）是用户数据，卸载不会触碰。想彻底清除请手动删除 `~/Library/Application Support/gqy`。
 
 - **Q：同时装了 CLI 和菜单栏 App，终端里 `gqy` 命令找不到？**
   A：Homebrew 检测到同名 cask 已安装时会跳过公式的 bin 链接。手动补一条链接即可（升级重装后如失效再执行一次）：
