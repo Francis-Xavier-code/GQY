@@ -94,14 +94,40 @@ TS=$(date +%Y%m%d-%H%M%S)
 OUT="$LORA_ROOT/$TS"
 mkdir -p "$OUT"
 
-python3 - "$DATA_DIR/train.mixed.jsonl" "$DATA_DIR/train.chat.jsonl" << 'PY'
-import json, sys
-with open(sys.argv[1], encoding='utf-8') as f, open(sys.argv[2], 'w', encoding='utf-8') as o:
+TRAIN_DIR="$DATA_DIR/train"
+mkdir -p "$TRAIN_DIR"
+python3 - "$DATA_DIR/train.mixed.jsonl" "$TRAIN_DIR" << 'PY'
+import json, sys, os
+src, outdir = sys.argv[1], sys.argv[2]
+rows = []
+with open(src, encoding='utf-8') as f:
     for line in f:
+        line = line.strip()
+        if not line:
+            continue
         r = json.loads(line)
         text = "<|im_start|>user\n" + r['user'] + "\n<|im_end|>\n<|im_start|>assistant\n" + r['assistant'] + "\n<|im_end|>"
-        o.write(json.dumps({"text": text}, ensure_ascii=False) + '\n')
-print("   chat 格式就绪")
+        rows.append({"text": text})
+# mlx_lm.lora 的 --data 需要目录：train.jsonl / valid.jsonl / test.jsonl
+n = len(rows)
+v = max(1, n // 10)          # 10% 验证
+te = max(1, n // 20)         # 5% 测试
+tr = max(1, n - v - te)
+def dump(name, items):
+    # mlx_lm：文件不存在 → 空列表（跳过）；文件存在但为空 → IndexError 报错。
+    # 所以空数据集不创建文件；test 数据不足时用 valid 兜底保证非空。
+    if not items:
+        return
+    with open(os.path.join(outdir, name), 'w', encoding='utf-8') as o:
+        for it in items:
+            o.write(json.dumps(it, ensure_ascii=False) + '\n')
+dump("train.jsonl", rows[:tr])
+dump("valid.jsonl", rows[tr:tr + v])
+test_rows = rows[tr + v:]
+if not test_rows:
+    test_rows = rows[tr:tr + v]   # test 兜底 = valid
+dump("test.jsonl", test_rows)
+print(f"   mlx 数据集就绪：train={tr} valid={v} test={te}（{outdir}）")
 PY
 
 echo "==> 5/6 LoRA 训练（底座 ${BASE_MODEL}，epochs=${EPOCHS}，lr=${LR}）"
@@ -109,7 +135,7 @@ echo "==> 5/6 LoRA 训练（底座 ${BASE_MODEL}，epochs=${EPOCHS}，lr=${LR}�
 python3 -m mlx_lm.lora \
   --model "$BASE_MODEL" \
   --train \
-  --data "$DATA_DIR/train.chat.jsonl" \
+  --data "$TRAIN_DIR" \
   --iters "$((TOTAL * EPOCHS))" \
   --num-layers 8 \
   --batch-size 1 \
