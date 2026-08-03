@@ -3,6 +3,18 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.6] - 2026-08-04
+
+### 新增
+- **顾清影克隆音色 TTS**：Qwen3-TTS 12Hz 音色克隆本地合成（mlx-audio，Apple Silicon 加速）——`gqy tts --clone "文字"` 用顾清影音色朗读；WebUI 回复完成自动语音朗读（设置里可开关）；`/api/tts` 端点；
+- **TTS 按需启停**：TTS 服务空闲 10 分钟自动退出，调用时自动拉起——用才占内存，不用释放（解决 python 常驻内存问题）；
+- **闲聊纯文本模式**：`prompt.chat_pure_text`（默认开）——闲聊不注册任何工具，杜绝本地模型工具循环/重复调用；
+- **模型资源项目自包含**：venv + HF 缓存 + 克隆音色全部收进项目目录，系统目录清理无影响。
+
+### 修复
+- 采样参数强化（temperature 0.9 + repetition/frequency/presence penalty）治复读；
+- 人格亲密场景放开表达（细节铺陈、张力、挑逗感，不再"短而暖"限制）。
+
 ## [0.8.5] - 2026-08-03
 
 ### 新增
