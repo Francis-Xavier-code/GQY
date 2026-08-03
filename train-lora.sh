@@ -20,6 +20,7 @@ TRAIN_PID="$DATA_DIR/train.pid"
 LORA_ROOT="$DATA_DIR/lora"
 MODEL_BASE="${GQY_BASE_MODEL:-huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated}"
 EPOCHS="${GQY_EPOCHS:-2}"
+RESUME="${GQY_RESUME:-0}"   # 1 = 从最近 checkpoint 续训（防白训练）
 SAMPLE="${GQY_SAMPLE:-}"   # 取样条数，如 5000；空=全量
 
 # 从日志解析当前 iters
@@ -71,13 +72,19 @@ cmd_foreground() {
   prepare_data
   echo "==> 前台训练（Ctrl+C 中断；终端实时滚动）"
   echo "   底座: $MODEL_BASE | epochs: $EPOCHS | 数据: $DATA_DIR/turns.jsonl"
-  exec bash "$SCRIPT_DIR/finetune-mlx.sh" "$DATA_DIR/.." 2>&1 | tee "$LOG"
+  GQY_DATA_DIR="$DATA_DIR" exec bash "$SCRIPT_DIR/finetune-mlx.sh" 2>&1 | tee "$LOG"
 }
 
 cmd_background() {
+  if [ "$RESUME" = "1" ]; then
+    echo "==> 续训模式（GQY_RESUME=1）：从最近 checkpoint 继续"
+    RESUME_FLAG="GQY_RESUME=1"
+  else
+    RESUME_FLAG=""
+  fi
   prepare_data
   echo "==> 后台训练启动（日志: $LOG）"
-  nohup bash "$SCRIPT_DIR/finetune-mlx.sh" "$DATA_DIR/.." > "$LOG" 2>&1 &
+  nohup env GQY_DATA_DIR="$DATA_DIR" $RESUME_FLAG bash "$SCRIPT_DIR/finetune-mlx.sh" > "$LOG" 2>&1 &
   echo $! > "$TRAIN_PID"
   echo "   PID: $! | 实时进度: ./train-lora.sh status"
   cmd_status

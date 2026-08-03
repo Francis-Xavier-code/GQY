@@ -27,3 +27,4 @@
 /generate_*.py
 /venv/
 /.hf-cache/
+/data/finetune-sample/

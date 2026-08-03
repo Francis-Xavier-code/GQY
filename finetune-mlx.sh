@@ -5,7 +5,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOME_DIR="${1:-$SCRIPT_DIR}"
-DATA_DIR="$HOME_DIR/data/finetune"
+# 数据目录：GQY_DATA_DIR 优先（train-lora.sh 直接指定取样目录），
+# 否则按 <参数或脚本目录>/data/finetune（向后兼容）
+DATA_DIR="${GQY_DATA_DIR:-$HOME_DIR/data/finetune}"
 TURNS="$DATA_DIR/turns.jsonl"
 LORA_ROOT="$DATA_DIR/lora"
 BASE_MODEL="${GQY_BASE_MODEL:-huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated}"
@@ -144,7 +146,23 @@ python3 -m mlx_lm.lora \
   --batch-size 1 \
   --learning-rate "$LR" \
   --steps-per-report 20 \
-  --adapter-path "$OUT/adapter"
+  --adapter-path "$OUT/adapter" \
+  ${GQY_RESUME:+--resume-adapter-file "$(ls -t "$OUT"/adapter/0000*_adapters.safetensors 2>/dev/null | head -1)"}
+
+echo "==> 6/6 自动合并（LoRA → 完整模型）"
+if command -v mlx_lm >/dev/null 2>&1 || true; then
+  FUSED="$DATA_DIR/lora-merged/$(basename "$OUT")"
+  mkdir -p "$FUSED"
+  if "$SCRIPT_DIR/venv/bin/python" -m mlx_lm fuse \
+      --model "$BASE_MODEL" \
+      --adapter-path "$OUT/adapter" \
+      --save-path "$FUSED" > /tmp/fuse.log 2>&1; then
+    echo "   ✅ 已合并：$FUSED（可直接加载或转 GGUF 用）"
+  else
+    echo "   ⚠️ 合并失败（adapter 仍可用，见 $OUT/adapter）"
+    tail -3 /tmp/fuse.log
+  fi
+fi
 
 echo "==> 6/6 存档与报告"
 cp "$OUT/adapter/adapter.safetensors" "$OUT/adapter.safetensors" 2>/dev/null || true
@@ -161,6 +179,7 @@ if [ "$MERGE" = "1" ]; then
   python3 -m mlx_lm.fuse \
     --model "$BASE_MODEL" \
     --adapter-path "$OUT/adapter" \
+  ${GQY_RESUME:+--resume-adapter-file "$(ls -t "$OUT"/adapter/0000*_adapters.safetensors 2>/dev/null | head -1)"} \
     --save-path "$OUT/merged"
   echo "✅ 合并完成：$OUT/merged"
 fi
