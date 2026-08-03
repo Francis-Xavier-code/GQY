@@ -46,10 +46,12 @@ fi
 echo "==> 2/6 清洗（去重/过滤短样本/隐私关键词）"
 CLEAN="$DATA_DIR/train.clean.jsonl"
 python3 - "$TURNS" "$CLEAN" << 'PY'
-import json, sys
+import json, re, sys
 src, dst = sys.argv[1], sys.argv[2]
 seen = set()
 out = []
+# 错配 QA 启发式：回复长度与提问严重不成比例、无意义回复、模板化动作开头
+FILLER = re.compile(r'^(好的|嗯|哦|哈哈|哈哈哈|可以的|没问题|知道了|好哒|好的呀)[。！!~〜\s]*$')
 for line in open(src, encoding='utf-8'):
     line = line.strip()
     if not line: continue
@@ -62,10 +64,15 @@ for line in open(src, encoding='utf-8'):
     seen.add(key)
     if any(w in (u + a) for w in ('password', 'api_key', 'token=', '私钥', 'secret')):
         continue
+    # 错配/噪音过滤
+    if FILLER.match(a): continue                                # 无意义回复
+    if len(a) < len(u) * 0.3: continue                          # 回复远短于提问（敷衍/错配）
+    if len(u) < 8 and len(a) > 400: continue                    # 短问长答过度发挥
+    if a.count('。') + a.count('！') > 25: continue              # 过长流水账
     out.append(r)
 with open(dst, 'w', encoding='utf-8') as f:
     for r in out: f.write(json.dumps(r, ensure_ascii=False) + '\n')
-print(f"   清洗后 {len(out)} 条")
+print(f"   清洗后 {len(out)} 条（含错配QA过滤）")
 PY
 
 echo "==> 3/6 混入通用数据（7:3 防灾难性遗忘）"
