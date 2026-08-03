@@ -15,6 +15,7 @@
 @interface GQYMenuBarDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSTask *webTask;
+@property(nonatomic, strong) NSTask *llamaTask;
 @property(nonatomic, strong) NSTask *backupTask;
 @property(nonatomic, strong) NSMenuItem *backupItem;
 @property(nonatomic, strong) NSMenuItem *loginItemMenu;
@@ -153,6 +154,8 @@
     [self refreshLoginItemState];
     [self refreshStatus];
     [self registerGlobalHotkey];
+    // 本地推理进程跟随菜单栏（非开机自启）；若用户已开启自启则 LaunchAgent 已拉起，这里自动复用
+    [self ensureLlamaServer];
 }
 
 // 左右键分发：左键 = 悬浮卡片（即问即答），右键 = 运维菜单
@@ -292,6 +295,10 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     // 兜底：若 daemon 是本 App 拉起的且 shutdown 未生效，直接终止
     if (self.webTask.isRunning) {
         [self.webTask terminate];
+    }
+    // 本地推理进程（llama.cpp）跟随菜单栏退出：只杀自己拉起的，不碰外部服务
+    if (self.llamaTask.isRunning) {
+        [self.llamaTask terminate];
     }
 }
 
@@ -655,6 +662,58 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     [self pollHealthAttempts:20 completion:completion];
 }
 
+// ─────────────────────────── 本地推理（llama.cpp）───────────────────────────
+// 生命周期跟随菜单栏：启动时检查 127.0.0.1:8080，无服务则自己拉起；退出时杀掉
+// 自己拉起的进程。只有「开机自启」被用户启用时，才注册 LaunchAgent 随登录自启。
+
+- (void)ensureLlamaServer {
+    // 已有服务（外部/LaunchAgent 拉起）→ 复用，不重复 spawn
+    NSMutableURLRequest *request = [NSMutableURLRequest
+        requestWithURL:[NSURL URLWithString:@"http://127.0.0.1:8080/v1/models"]];
+    request.timeoutInterval = 1;
+    NSURLSessionDataTask *probe = [NSURLSession.sharedSession
+        dataTaskWithRequest:request
+          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+        if (error || http.statusCode != 200) {
+            [self spawnLlamaServer];
+        }
+    }];
+    [probe resume];
+}
+
+- (void)spawnLlamaServer {
+    if (self.llamaTask.isRunning) {
+        return;
+    }
+    NSString *binary = @"/opt/homebrew/bin/llama-server";
+    if (![NSFileManager.defaultManager fileExistsAtPath:binary]) {
+        return;
+    }
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:binary];
+    task.arguments = @[
+        @"-m", [self llamaModelPath],
+        @"--host", @"127.0.0.1",
+        @"--port", @"8080",
+        @"-c", @"8192",
+        @"--alias", @"qwen3-abl-nothink",
+        @"--chat-template-file", [self llamaTemplatePath],
+    ];
+    [task launch];
+    self.llamaTask = task;
+}
+
+- (NSString *)llamaModelPath {
+    NSString *home = NSHomeDirectory();
+    return [home stringByAppendingPathComponent:@"llama-models/qwen3-abliterated-8b-q4.gguf"];
+}
+
+- (NSString *)llamaTemplatePath {
+    NSString *home = NSHomeDirectory();
+    return [home stringByAppendingPathComponent:@"llama-models/qwen3-nothink.jinja"];
+}
+
 - (void)pollHealthAttempts:(int)remaining completion:(void (^)(BOOL ready))completion {
     if (remaining <= 0) {
         completion(NO);
@@ -995,13 +1054,51 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         [self showError:error];
         return;
     }
+    [self installLlamaLaunchAgent];
     [self refreshLoginItemState];
     [self showInfo:@"已开启开机自启"
-               detail:@"顾清影将在下次登录时自动启动。"];
+               detail:@"顾清影与本地推理（llama.cpp）将在下次登录时自动启动。"];
+}
+
+// 开机自启启用时，同步注册 llama.cpp 的 LaunchAgent（随登录一起拉起本地推理）
+- (void)installLlamaLaunchAgent {
+    NSString *home = NSHomeDirectory();
+    NSString *plistPath = [home
+        stringByAppendingPathComponent:@"Library/LaunchAgents/com.gqy.llamacpp.plist"];
+    NSDictionary *configuration = @{
+        @"Label": @"com.gqy.llamacpp",
+        @"ProgramArguments": @[
+            @"/opt/homebrew/bin/llama-server",
+            @"-m", [self llamaModelPath],
+            @"--host", @"127.0.0.1",
+            @"--port", @"8080",
+            @"-c", @"8192",
+            @"--alias", @"qwen3-abl-nothink",
+            @"--chat-template-file", [self llamaTemplatePath],
+        ],
+        @"RunAtLoad": @YES,
+        @"KeepAlive": @YES,
+    };
+    NSData *data = [NSPropertyListSerialization
+        dataWithPropertyList:configuration
+                      format:NSPropertyListXMLFormat_v1_0
+                     options:0
+                       error:nil];
+    if (data) {
+        [data writeToFile:plistPath options:NSDataWritingAtomic error:nil];
+        [self runLaunchCtl:@[@"bootout", [self launchctlTarget], @"com.gqy.llamacpp"]];
+        [self runLaunchCtl:@[@"load", plistPath]];
+    }
 }
 
 - (void)removeLoginItem {
     [self runLaunchCtl:@[@"bootout", [self launchctlTarget], @"dev.gqy.menubar"]];
+    // 关闭自启时同步移除 llama.cpp 随登录自启（当前若在跑，由本 App 进程继续托管）
+    [self runLaunchCtl:@[@"bootout", [self launchctlTarget], @"com.gqy.llamacpp"]];
+    NSString *home = NSHomeDirectory();
+    NSString *llamaPlist = [home
+        stringByAppendingPathComponent:@"Library/LaunchAgents/com.gqy.llamacpp.plist"];
+    [NSFileManager.defaultManager removeItemAtPath:llamaPlist error:nil];
     NSError *error = nil;
     [NSFileManager.defaultManager removeItemAtURL:self.loginAgentPlist
                                             error:&error];
