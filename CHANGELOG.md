@@ -3,6 +3,17 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.5] - 2026-08-03
+
+### 新增
+- **闲聊纯人格模式**：`context.chat_history_turns` 控制闲聊模式加载的最近历史轮数——设为 `0` 时只加载人格提示词（lover.md + chat.md），不加载历史，亲密场景上下文干扰最小（本地 8B 模型回答质量更高）；默认 2 轮（保留最小连续性），WebUI 历史列表仍完整可见（仅模型上下文瘦身）；
+- **WebUI 顶栏人格徽标**：💗 显示当前激活人格（active_persona），改配置后自动刷新；
+- **wiki 项目文档**：`wiki/` 目录（Home/快速开始/本地模型部署/人格系统/供应商管理/WebUI/架构/发布/FAQ），同步到 GitHub Wiki；
+- **README 更新**：补充本地模型、供应商热切换、人格系统、语音、用量面板等 0.8.x 能力。
+
+### 其他
+- 本地训练数据（`data/finetune/*.jsonl`、`generate_*.py`）从 git 移除并 gitignore，不再上云。
+
 ## [0.8.4] - 2026-08-03
 
 ### 新增
