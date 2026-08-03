@@ -479,7 +479,7 @@ async fn call_tool(
         tokio::join!(tool_task, async {
             while let Some(event) = progress_rx.recv().await {
                 match event {
-                    ToolProgressEvent::Image { path, alt } => {
+                    ToolProgressEvent::Image { path, alt, .. } => {
                         if let Some(sink) = &image_sink {
                             sink(path, alt);
                         }

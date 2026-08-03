@@ -2827,7 +2827,8 @@ fn set_config_path(node: &mut serde_json::Value, key: &str, value: serde_json::V
             return Ok(());
         }
         if !current.get(segment).is_some_and(serde_json::Value::is_object) {
-            anyhow::bail!("intermediate key is not an object: {segment}");
+            // 中间键不存在或不是对象：自动创建空对象，支持新增配置段（如 finetune.*）
+            current[segment] = serde_json::Value::Object(serde_json::Map::new());
         }
         current = &mut current[segment];
     }

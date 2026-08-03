@@ -535,6 +535,16 @@ impl StateStore {
         self.clear_last_usage()
     }
 
+    /// 回收 conversation.db 空闲页（best-effort，见 ConversationDb::incremental_vacuum）。
+    pub fn incremental_vacuum(&self) -> Result<()> {
+        self.conv_db.incremental_vacuum()
+    }
+
+    /// 全量整理 conversation.db（仅无并发场景，见 ConversationDb::vacuum）。
+    pub fn vacuum(&self) -> Result<()> {
+        self.conv_db.vacuum()
+    }
+
     pub fn undo_last_turn(&self) -> Result<(usize, Option<String>)> {
         self.conv_db.undo_last_turn()
     }

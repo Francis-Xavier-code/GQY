@@ -19,6 +19,7 @@ xcrun clang \
   -framework Foundation \
   -framework QuartzCore \
   -framework Carbon \
+  -framework WebKit \
   -mmacosx-version-min=13.0 \
   "$project_dir/main.m" \
   -o "$binary_dir/GQYMenuBar"

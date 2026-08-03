@@ -154,7 +154,8 @@ impl ConversationDb {
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;
-             PRAGMA foreign_keys = ON;",
+             PRAGMA foreign_keys = ON;
+             PRAGMA auto_vacuum = INCREMENTAL;",
         )?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS question_exchanges (
@@ -1326,6 +1327,22 @@ impl ConversationDb {
         Ok(())
     }
 
+    /// 回收空闲页（需建库时 auto_vacuum = INCREMENTAL 才生效；旧库为无害 no-op）。
+    /// 用于溢出清理/硬删之后，温和、锁短，可在备份等后台路径 best-effort 调用。
+    pub fn incremental_vacuum(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        Ok(())
+    }
+
+    /// 全量整理（重建数据库文件）。
+    /// 仅适合无并发、无活动事务的场景（如 reset 清空后）；WAL 模式下可用。
+    pub fn vacuum(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("VACUUM;")?;
+        Ok(())
+    }
+
     pub fn undo_last_turn(&self) -> Result<(usize, Option<String>)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -1877,4 +1894,22 @@ fn add_column_if_missing(
         [],
     )?;
     Ok(())
+}
+
+/// 对指定 state_dir 下的 conversation.db 执行 `PRAGMA incremental_vacuum`。
+///
+/// 供后台路径（如自动备份）best-effort 调用：用独立连接 + busy_timeout，
+/// 与主连接并发安全；旧库（未开 auto_vacuum）为无害 no-op；失败由调用方忽略。
+///
+/// 以无 self 关联函数形式挂在 `ConversationDb` 上，方便 `ConversationDb::` 调用。
+impl ConversationDb {
+    pub fn incremental_vacuum_file(state_dir: &Path) -> Result<()> {
+        let conn = Connection::open_with_flags(
+            state_dir.join("conversation.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        Ok(())
+    }
 }

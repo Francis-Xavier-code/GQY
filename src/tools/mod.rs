@@ -340,6 +340,11 @@ pub fn chat_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     if config.plugins.memes.enabled {
         memes::register_chat(&mut registry, config.clone(), paths.clone());
     }
+    // 角色扮演也要能「想起」别处的事（被动查询，不主动注入省 token）：
+    // 记忆与普通/计划模式同库（同 persona），这里只暴露只读查询。
+    if config.memory_config().enabled {
+        memory::register_readonly(&mut registry, config.clone(), paths.clone());
+    }
     registry
 }
 

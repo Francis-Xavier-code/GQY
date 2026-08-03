@@ -248,7 +248,9 @@ fn register_search_and_show(registry: &mut ToolRegistry, config: AppConfig, path
                 "library": { "type": "string", "description": t("Optional meme library override.", "可选表情库覆盖。") },
                 "size": { "type": "string", "description": t("Optional chafa size, e.g. 40x15.", "可选 chafa 尺寸，例如 40x15。") },
                 "width": { "type": "integer", "description": t("Optional output width in terminal cells.", "可选终端单元格输出宽度。") },
-                "height": { "type": "integer", "description": t("Optional output height in terminal cells.", "可选终端单元格输出高度。") }
+                "height": { "type": "integer", "description": t("Optional output height in terminal cells.", "可选终端单元格输出高度。") },
+                "emotion": { "type": "string", "enum": ["neutral", "happy", "sad", "angry", "shy", "surprised", "tired", "thinking"], "description": t("Optional emotion tag for the receiver (Live2D/overlay reserved).", "可选情绪标签（悬浮窗/Live2D 预留）。") },
+                "action": { "type": "string", "enum": ["wave", "hug", "nod", "shake", "tap", "dance", "sleep"], "description": t("Optional action tag for the receiver (Live2D/overlay reserved).", "可选动作标签（悬浮窗/Live2D 预留）。") }
             },
             "required": ["id"],
             "additionalProperties": false
@@ -327,7 +329,9 @@ async fn show_meme(
     let ids = meme_ids(&memes);
     let meme = find_meme_in(memes, id)?.with_context(|| format!("meme not found: {id}"))?;
     let size = meme_print_size(&args, &config.plugins.memes);
-    progress.report_image(meme.path.clone(), meme.item.description.clone());
+    let emotion = args.get("emotion").and_then(Value::as_str).map(str::to_string);
+    let action = args.get("action").and_then(Value::as_str).map(str::to_string);
+    progress.report_image_ex(meme.path.clone(), meme.item.description.clone(), emotion, action);
     if progress.prepare_for_external_output().await {
         vision::print_image_file(&meme.path, size).await?;
     }

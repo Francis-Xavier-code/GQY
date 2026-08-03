@@ -58,7 +58,7 @@ pub fn ensure_writable(path: &Path) -> Result<()> {
     )
 }
 
-/// path 是否位于 dir 内（支持相对路径、符号链接与尚不存在的文件）。
+/// path 是否位于 dir 内（支持相对路径、符号链接与尚不存在的文件或多级未创建子目录）。
 fn is_inside(path: &Path, dir: &Path) -> bool {
     let abs = if path.is_absolute() {
         path.to_path_buf()
@@ -67,25 +67,43 @@ fn is_inside(path: &Path, dir: &Path) -> bool {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     };
-    // 目录先 canonicalize（处理 /var -> /private/var 等符号链接）
+    let norm_abs = normalize_lexical(&abs);
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    if abs.starts_with(&dir) {
+    if norm_abs.starts_with(&dir) {
         return true;
     }
-    // 目标文件可能不存在：沿父目录 canonicalize 后比较
-    if let Some(parent) = abs.parent() {
-        if let Ok(parent) = parent.canonicalize() {
-            if parent.starts_with(&dir) {
+    // 目标文件/子目录可能尚不存在：沿着父目录向上寻找第一个存在的祖先目录 canonicalize 后比较
+    let mut current: &Path = &norm_abs;
+    while let Some(parent) = current.parent() {
+        if let Ok(canon_parent) = parent.canonicalize() {
+            if canon_parent.starts_with(&dir) {
                 return true;
             }
+            break;
         }
+        current = parent;
     }
-    if let Ok(abs) = abs.canonicalize() {
-        if abs.starts_with(&dir) {
+    if let Ok(canon) = norm_abs.canonicalize() {
+        if canon.starts_with(&dir) {
             return true;
         }
     }
     false
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            c => normalized.push(c),
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -101,6 +119,20 @@ mod tests {
         assert!(!is_inside(&std::env::temp_dir().join("other.txt"), &dir));
         // 兄弟目录（../outside.rs）不算 inside
         assert!(!is_inside(&dir.parent().unwrap().join("gqy-outside.txt"), &dir));
+    }
+
+    #[test]
+    fn detects_non_existent_nested_subdir_inside_project() {
+        let dir = std::env::temp_dir().join("gqy-guard-nested-test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let nested_non_existent = dir.join("a/b/c/d/file.txt");
+        assert!(is_inside(&nested_non_existent, &dir));
+
+        let escaped_path = dir.join("a/b/../../../../outside.txt");
+        assert!(!is_inside(&escaped_path, &dir));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -35,6 +35,8 @@ pub struct AppConfig {
     pub prompt: PromptConfig,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    #[serde(default)]
+    pub finetune: FinetuneConfig,
     #[serde(default, skip_serializing)]
     pub memory: MemoryConfig,
     #[serde(default)]
@@ -47,6 +49,26 @@ pub struct AppConfig {
 pub struct ActiveProviderModelConfig {
     pub provider_id: String,
     pub model: String,
+}
+
+/// 微调数据收集配置（自我进化一期：只收集样本，不训练）。
+/// 攒够阈值后由外部脚本（MLX LoRA）批量微调，产出专属风格权重。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinetuneConfig {
+    /// 每轮对话结束后自动追加一条训练样本到 `data/finetune/turns.jsonl`。
+    /// 默认关：涉及对话内容落盘，由用户显式开启。
+    pub collect: bool,
+    /// 回复短于该字符数不记录（过滤空回复/纯思考轮）。
+    pub min_chars: usize,
+}
+
+impl Default for FinetuneConfig {
+    fn default() -> Self {
+        Self {
+            collect: false,
+            min_chars: 20,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -578,6 +600,7 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             prompt: PromptConfig::default(),
             plugins: PluginsConfig::default(),
+            finetune: FinetuneConfig::default(),
             memory: MemoryConfig::default(),
             system_prompt_file: Some("system-prompt.md".to_string()),
             system_prompt: None,

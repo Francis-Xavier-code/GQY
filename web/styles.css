@@ -1726,15 +1726,26 @@ textarea:disabled {
 }
 
 .tool-card.collapsed .tool-body {
-  display: none;
+  grid-template-rows: 0fr;
+  padding-block: 0;
+  border-top-color: transparent;
 }
 
 .tool-body {
   display: grid;
+  /* 1fr→0fr 现代折叠技巧：随内容自适应高度，动画匀速（替代 max-height 硬编码） */
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 180ms ease, padding-block 180ms ease, border-color 180ms ease;
   padding: 8px 10px 10px 38px;
   border-top: 1px solid var(--line);
   background: var(--surface-1);
   gap: 10px;
+}
+
+/* 折叠动画的关键：内容区 min-height:0 + overflow:hidden，否则 0fr 不生效 */
+.tool-body > * {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .tool-detail[hidden] {
@@ -5010,3 +5021,62 @@ textarea.config-input {
   .mode-switch { width: 150px; }
   .question-dock { max-height: 40vh; }
 }
+
+/* ─────────────────────────── Panel 模式（悬浮卡片，?panel=1） ─────────────────────────── */
+/* NSPanel + WKWebView 嵌入形态：隐藏侧栏/顶栏/遮罩/用量页，单聊卡片瘦高布局 */
+body.panel-mode #sidebar,
+body.panel-mode .topbar,
+body.panel-mode .page-scrim,
+body.panel-mode .usage-view {
+  display: none !important;
+}
+
+body.panel-mode #mainStage {
+  width: 100%;
+}
+
+body.panel-mode #conversationStage {
+  height: 100vh;
+}
+
+body.panel-mode .chat-scroll {
+  padding-top: 6px;
+}
+
+body.panel-mode .empty-visual {
+  display: none; /* 卡片空间有限，不放壁纸大图 */
+}
+
+body.panel-mode .empty-copy {
+  padding-top: 8px;
+}
+
+body.panel-mode .composer-dock {
+  padding-bottom: 10px;
+}
+
+body.panel-mode #composerInput {
+  max-height: 96px;
+}
+
+body.panel-mode .conversation-heading {
+  padding-left: 12px;
+}
+
+/* 紧凑：消息间距略收，让卡片内信息密度更高 */
+body.panel-mode .timeline .message {
+  margin-bottom: 14px;
+}
+
+/* 备份状态徽标（顶栏） */
+.backup-chip {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--surface-1);
+  white-space: nowrap;
+}
+.backup-chip.fresh { color: #30d158; }
+.backup-chip.stale { color: #ff9f0a; }
+.backup-chip.error { color: #ff453a; }

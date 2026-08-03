@@ -27,6 +27,10 @@ pub enum ToolProgressEvent {
     Image {
         path: PathBuf,
         alt: String,
+        /// 情绪标签（预留：桌面悬浮窗 / Live2D 驱动），见 emotion-action-spec
+        emotion: Option<String>,
+        /// 动作标签（预留），见 emotion-action-spec
+        action: Option<String>,
     },
     CommandOutput {
         stream: CommandOutputStream,
@@ -59,10 +63,23 @@ impl ToolProgress {
     }
 
     pub fn report_image(&self, path: impl Into<PathBuf>, alt: impl Into<String>) {
+        self.report_image_ex(path, alt, None, None);
+    }
+
+    /// 带情绪/动作元数据的图片上报（Live2D/悬浮窗预留接口）。
+    pub fn report_image_ex(
+        &self,
+        path: impl Into<PathBuf>,
+        alt: impl Into<String>,
+        emotion: Option<String>,
+        action: Option<String>,
+    ) {
         if let Some(sender) = &self.sender {
             let _ = sender.send(ToolProgressEvent::Image {
                 path: path.into(),
                 alt: alt.into(),
+                emotion,
+                action,
             });
         }
     }

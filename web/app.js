@@ -1,6 +1,55 @@
 (() => {
   "use strict";
 
+  // Panel 模式（悬浮卡片嵌入）：NSPanel + WKWebView 加载 ?panel=1
+  const IS_PANEL = new URLSearchParams(location.search).has("panel");
+  if (IS_PANEL) document.body.classList.add("panel-mode");
+
+  // 备份可见性：轮询 /api/backup/status，顶栏显示最近备份结果（失败也能发现）
+  async function refreshBackupStatus() {
+    const el = document.getElementById("backupStatus");
+    if (!el) return;
+    try {
+      const res = await fetch("/api/backup/status");
+      const data = await res.json();
+      if (!data || data.ok === undefined) { el.hidden = true; return; }
+      const ts = Number(data.ts || 0);
+      const age = ts ? Math.floor(Date.now() / 1000 - ts) : -1;
+      let label, cls;
+      if (!data.ok) {
+        label = "备份失败";
+        cls = "error";
+      } else if (age < 0) {
+        label = "备份：—";
+        cls = "";
+      } else if (age < 60) {
+        label = "备份：刚刚";
+        cls = "fresh";
+      } else if (age < 3600) {
+        label = `备份：${Math.floor(age / 60)} 分钟前`;
+        cls = "fresh";
+      } else {
+        label = `备份：${Math.floor(age / 3600)} 小时前`;
+        cls = "stale";
+      }
+      el.textContent = label;
+      el.className = "backup-chip " + cls;
+      el.title = data.error ? `最近备份失败：${data.error}` : (data.commit ? `commit ${data.commit}` : "最近备份");
+      el.hidden = false;
+    } catch (_) {
+      el.hidden = true;
+    }
+  }
+  if (typeof window !== "undefined" && document.readyState !== "loading") {
+    refreshBackupStatus();
+    setInterval(refreshBackupStatus, 60_000);
+  } else {
+    document.addEventListener("DOMContentLoaded", () => {
+      refreshBackupStatus();
+      setInterval(refreshBackupStatus, 60_000);
+    });
+  }
+
   const MAX_CONTENT_CHARS = 20_000;
   const MAX_CUSTOM_ANSWER_CHARS = 4_000;
   const MAX_TOOL_OUTPUT_CHARS = 200_000;
@@ -2295,6 +2344,10 @@
 
     elements.composerInput.disabled = locked || readonly;
     elements.composerForm.classList.toggle("is-disabled", locked || readonly);
+    // Panel 模式（悬浮卡片）：输入解锁且页面可见时自动聚焦，免点一下才能打字
+    if (IS_PANEL && !elements.composerInput.disabled && document.hasFocus()) {
+      elements.composerInput.focus();
+    }
     elements.newChatButton.disabled = state.blocked || running || busy || readonly;
     elements.modelButton.disabled = state.blocked || running || busy || state.models.length === 0;
     elements.modeSwitch.querySelectorAll("button").forEach((button) => {

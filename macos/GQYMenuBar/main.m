@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <Carbon/Carbon.h>
+#import <WebKit/WebKit.h>
 #import <unistd.h>
 
 /**
@@ -22,6 +23,25 @@
 @property(nonatomic, strong) NSMenuItem *statusBackupItem;
 @property(nonatomic, assign) BOOL backupInProgress;
 @property(nonatomic, strong) NSImage *statusItemIcon;
+// 双模交互中心：右键运维菜单 + 左键/⌥G 悬浮卡片
+@property(nonatomic, strong) NSMenu *mainMenu;
+@property(nonatomic, strong) NSPanel *quickPanel;
+@property(nonatomic, strong) WKWebView *quickWebView;
+@property(nonatomic, assign) BOOL quickPanelLoaded;
+@end
+
+// 悬浮卡片面板：可成为 key（接收键盘输入），Esc 收起
+@interface GQYQuickPanel : NSPanel
+@end
+
+@implementation GQYQuickPanel
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+- (void)cancelOperation:(id)sender {
+    (void)sender;
+    [self orderOut:nil];
+}
 @end
 
 @implementation GQYMenuBarDelegate
@@ -84,6 +104,9 @@
     NSMenuItem *panelItem = [self itemWithTitle:@"打开 WebUI"
                                          symbol:@"square.grid.2x2"
                                          action:@selector(openWebPanel:)];
+    // 菜单内显式标注 ⌥H（全局快捷键由 Carbon RegisterEventHotKey 注册，两者互补）
+    panelItem.keyEquivalent = @"h";
+    panelItem.keyEquivalentModifierMask = NSEventModifierFlagOption;
     [menu addItem:panelItem];
     [menu addItem:[self itemWithTitle:@"打开配置"
                                symbol:@"gearshape"
@@ -99,12 +122,19 @@
                                    symbol:@"externaldrive.fill.badge.checkmark"
                                    action:@selector(backupNow:)];
     [menu addItem:self.backupItem];
-    [menu addItem:[self itemWithTitle:@"打开独立主目录"
-                               symbol:@"folder"
-                               action:@selector(openAssistantHome:)]];
-    [menu addItem:[self itemWithTitle:@"打开配置文件"
-                               symbol:@"doc.text"
-                               action:@selector(openConfigFile:)]];
+    // 高级与数据子菜单：收敛次要入口，让核心按钮更突出
+    NSMenuItem *advancedItem = [[NSMenuItem alloc] initWithTitle:@"高级与数据"
+                                                         action:nil
+                                                  keyEquivalent:@""];
+    NSMenu *advancedMenu = [[NSMenu alloc] init];
+    [advancedMenu addItem:[self itemWithTitle:@"打开独立主目录"
+                                       symbol:@"folder"
+                                       action:@selector(openAssistantHome:)]];
+    [advancedMenu addItem:[self itemWithTitle:@"打开配置文件"
+                                       symbol:@"doc.text"
+                                       action:@selector(openConfigFile:)]];
+    advancedItem.submenu = advancedMenu;
+    [menu addItem:advancedItem];
     [menu addItem:[NSMenuItem separatorItem]];
     self.loginItemMenu = [self itemWithTitle:@"开机自启"
                                       symbol:@"power"
@@ -114,15 +144,33 @@
     [menu addItem:[self itemWithTitle:@"退出顾清影"
                                symbol:@"xmark.circle"
                                action:@selector(quit:)]];
-    self.statusItem.menu = menu;
+    self.statusItem.menu = nil; // 双模：左键悬浮卡片，右键菜单（手动弹出）
+    self.mainMenu = menu;
     menu.delegate = self;
+    self.statusItem.button.target = self;
+    self.statusItem.button.action = @selector(statusButtonClicked:);
+    [self.statusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
     [self refreshLoginItemState];
     [self refreshStatus];
     [self registerGlobalHotkey];
 }
 
+// 左右键分发：左键 = 悬浮卡片（即问即答），右键 = 运维菜单
+- (void)statusButtonClicked:(id)sender {
+    (void)sender;
+    NSEvent *event = NSApp.currentEvent;
+    if (event.type == NSEventTypeRightMouseUp) {
+        [self.mainMenu popUpMenuPositioningItem:nil
+                                     atLocation:NSEvent.mouseLocation
+                                         inView:nil];
+    } else {
+        [self showQuickPanel:nil];
+    }
+}
+
 // 全局快捷键：⌥H = 在浏览器打开面板
 static EventHotKeyRef g_panel_hotkey_ref = NULL;
+static EventHotKeyRef g_quick_hotkey_ref = NULL;
 static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
                                    EventRef event,
                                    void *userData) {
@@ -135,6 +183,11 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         if (hotkey_id.id == 2) {
             // ⌥H：在默认浏览器打开 WebUI
             [delegate openWebPanel:nil];
+            return noErr;
+        }
+        if (hotkey_id.id == 3) {
+            // ⌥G：唤起悬浮卡片（即问即答）
+            [delegate showQuickPanel:nil];
             return noErr;
         }
     }
@@ -154,6 +207,10 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     EventHotKeyID panel_id = { .signature = 'GQYH', .id = 2 };
     RegisterEventHotKey(kVK_ANSI_H, optionKey, panel_id,
                         GetEventDispatcherTarget(), 0, &g_panel_hotkey_ref);
+    // ⌥G：Option + G → 悬浮卡片（即问即答）
+    EventHotKeyID quick_id = { .signature = 'GQYQ', .id = 3 };
+    RegisterEventHotKey(kVK_ANSI_G, optionKey, quick_id,
+                        GetEventDispatcherTarget(), 0, &g_quick_hotkey_ref);
 }
 
 // 重启面板服务：杀掉占用 4096 端口的全部旧 gqy web 进程（不限自己 spawn 的），
@@ -366,6 +423,71 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
         return;
     }
 
+    // 平滑化：优先 iTerm2（AppleScript 新建窗口），其次 WezTerm（cli start），
+    // 都没有再回退写 .command 弹 Terminal.app
+    if ([self launchChatInITerm2:binary]) {
+        return;
+    }
+    if ([self launchChatInWezTerm:binary]) {
+        return;
+    }
+    [self launchChatViaCommandFile:binary];
+}
+
+// iTerm2：AppleScript 在当前会话新建窗口直接跑 gqy，免临时文件
+- (BOOL)launchChatInITerm2:(NSURL *)binary {
+    NSString *shellCmd = [NSString stringWithFormat:
+        @"export GQY_HOME=%@; exec %@",
+        [self shellQuote:self.assistantHome.path],
+        [self shellQuote:binary.path]];
+    NSString *source = [NSString stringWithFormat:
+        @"tell application \"iTerm\"\n"
+        @"  create window with default profile command %@\n"
+        @"  activate\n"
+        @"end tell",
+        [self appleScriptQuote:shellCmd]];
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:source];
+    NSDictionary *execError = nil;
+    [script executeAndReturnError:&execError];
+    if (execError) {
+        return NO; // 未安装 iTerm2 或脚本失败 → 回退
+    }
+    return YES;
+}
+
+// WezTerm：`wezterm start -- <shell命令>` 会启动/复用 GUI 并开新窗
+- (BOOL)launchChatInWezTerm:(NSURL *)binary {
+    NSArray<NSString *> *candidates = @[
+        @"/opt/homebrew/bin/wezterm",
+        @"/usr/local/bin/wezterm",
+    ];
+    NSString *wezterm = nil;
+    for (NSString *candidate in candidates) {
+        if ([NSFileManager.defaultManager isExecutableFileAtPath:candidate]) {
+            wezterm = candidate;
+            break;
+        }
+    }
+    if (!wezterm) {
+        return NO;
+    }
+    NSString *shellCmd = [NSString stringWithFormat:
+        @"export GQY_HOME=%@; exec %@",
+        [self shellQuote:self.assistantHome.path],
+        [self shellQuote:binary.path]];
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:wezterm];
+    task.arguments = @[@"start", @"--", shellCmd];
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) {
+        return NO;
+    }
+    return YES;
+}
+
+// 兜底：写 .command 临时文件弹 Terminal.app（历史行为）
+- (void)launchChatViaCommandFile:(NSURL *)binary {
+    NSError *error = nil;
     NSURL *runtime = [self.assistantHome URLByAppendingPathComponent:@"runtime"
                                                          isDirectory:YES];
     if (![NSFileManager.defaultManager createDirectoryAtURL:runtime
@@ -390,6 +512,13 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     [NSWorkspace.sharedWorkspace openURL:launcher];
 }
 
+// AppleScript 字符串字面量转义（\ 与 "）
+- (NSString *)appleScriptQuote:(NSString *)value {
+    NSString *escaped = [value stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
+    escaped = [escaped stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+    return [NSString stringWithFormat:@"\"%@\"", escaped];
+}
+
 // ─────────────────────────── 打开 WebUI（默认浏览器） ───────────────────────────
 
 - (NSURL *)panelURL {
@@ -399,6 +528,86 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
 - (void)openWebPanel:(id)sender {
     (void)sender;
     [self openPanelWithSettings:NO];
+}
+
+// ─────────────────────────── 悬浮卡片（双模交互中心 · 即问即答） ───────────────────────────
+
+// 左键点击托盘图标 / ⌥G：确保 daemon 就绪后弹出悬浮卡片
+- (void)showQuickPanel:(id)sender {
+    (void)sender;
+    [self ensureWebServer:^(BOOL ready) {
+        if (!ready) {
+            [self showError:[NSError errorWithDomain:@"GQYMenuBar"
+                                                code:4
+                                            userInfo:@{
+                                                NSLocalizedDescriptionKey:
+                                                    @"面板服务启动超时，无法打开悬浮卡片。"
+                                            }]];
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self presentQuickPanel];
+        });
+    }];
+}
+
+- (void)presentQuickPanel {
+    if (!self.quickPanel) {
+        GQYQuickPanel *panel = [[GQYQuickPanel alloc]
+            initWithContentRect:NSMakeRect(0, 0, 430, 580)
+                      styleMask:NSWindowStyleMaskBorderless
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        panel.level = NSFloatingWindowLevel;
+        panel.collectionBehavior =
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorMoveToActiveSpace;
+        panel.hidesOnDeactivate = YES; // 点别处自动收起
+        panel.backgroundColor = NSColor.clearColor;
+        panel.hasShadow = YES;
+
+        // 毛玻璃圆角卡片内容视图
+        NSVisualEffectView *effect =
+            [[NSVisualEffectView alloc] initWithFrame:panel.contentView.bounds];
+        effect.material = NSVisualEffectMaterialHUDWindow;
+        effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        effect.state = NSVisualEffectStateActive;
+        effect.wantsLayer = YES;
+        effect.layer.cornerRadius = 14;
+        effect.layer.masksToBounds = YES;
+        effect.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [panel.contentView addSubview:effect];
+
+        WKWebView *web = [[WKWebView alloc]
+            initWithFrame:effect.bounds
+            configuration:[[WKWebViewConfiguration alloc] init]];
+        web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [effect addSubview:web];
+
+        self.quickWebView = web;
+        self.quickPanel = panel;
+    }
+
+    // 定位：主屏右上角、状态栏正下方
+    NSScreen *screen = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
+    NSRect visible = screen.visibleFrame;
+    NSRect frame = self.quickPanel.frame;
+    frame.origin.x = NSMaxX(visible) - NSWidth(frame) - 12;
+    frame.origin.y = NSMaxY(visible) - NSHeight(frame) - 4;
+    [self.quickPanel setFrame:frame display:YES];
+
+    [self.quickPanel makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+
+    // 首次创建加载 panel 模式 WebUI；再次唤起刷新（对话在 daemon 侧持久，刷新不丢上下文）
+    if (!self.quickPanelLoaded) {
+        self.quickPanelLoaded = YES;
+        [self.quickWebView loadRequest:[NSURLRequest
+            requestWithURL:[NSURL URLWithString:@"http://127.0.0.1:4096/?panel=1"]]];
+    } else {
+        [self.quickWebView reload];
+    }
 }
 
 // 打开 WebUI 并直接展开配置抽屉（等价于终端里的 gqy config，GUI 版）

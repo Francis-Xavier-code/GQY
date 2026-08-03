@@ -121,6 +121,10 @@ fn has_non_empty_key(keys: &[String]) -> bool {
 
 fn configured_primary_providers(config: &WebPluginConfig) -> Vec<SearchProvider> {
     let mut providers = Vec::new();
+    // 本地 SearXNG 优先（免费、快、省 API 额度）；付费 API 保留作回退。
+    if !config.searxng_base_url.trim().is_empty() {
+        providers.push(SearchProvider::SearXng);
+    }
     if has_non_empty_key(&config.tavily_api_keys) {
         providers.push(SearchProvider::Tavily);
     }
@@ -129,9 +133,6 @@ fn configured_primary_providers(config: &WebPluginConfig) -> Vec<SearchProvider>
     }
     if has_non_empty_key(&config.anysearch_api_keys) {
         providers.push(SearchProvider::AnySearch);
-    }
-    if !config.searxng_base_url.trim().is_empty() {
-        providers.push(SearchProvider::SearXng);
     }
     providers
 }
@@ -599,6 +600,9 @@ async fn search_searxng(
     max_results: usize,
     base_url: &str,
 ) -> Result<String> {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+    const MAX_SNIPPET_CHARS: usize = 220;
+
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
         bail!("missing SearXNG base URL")
@@ -607,26 +611,64 @@ async fn search_searxng(
         "{base_url}/search?q={}&format=json&language=auto&safesearch=0",
         urlencoding::encode(query)
     );
-    let data: Value = client
-        .get(url)
-        .header("Accept", "application/json")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let fetch = || async {
+        let data: Value = client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok::<Value, anyhow::Error>(data)
+    };
+    // 一次性重试：本地 SearXNG 偶发引擎集体抖动，重试常能命中
+    let mut data = match tokio::time::timeout(TIMEOUT, fetch()).await {
+        Ok(Ok(data)) => data,
+        Ok(Err(error)) => match fetch().await {
+            Ok(data) => data,
+            Err(_) => return Err(error),
+        },
+        Err(_) => bail!("SearXNG request timed out after {}s", TIMEOUT.as_secs()),
+    };
     let results = data
-        .get("results")
-        .and_then(Value::as_array)
+        .get_mut("results")
+        .and_then(Value::as_array_mut)
         .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .take(max_results)
-        .collect::<Vec<_>>();
+        .unwrap_or_default();
     if results.is_empty() {
         bail!("SearXNG returned no results")
     }
-    format_search_results(query, "SearXNG", results)
+    // 按 url 去重 + 摘要截断（本地聚合多引擎时重复常见）
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::with_capacity(results.len());
+    for mut item in results {
+        let url = item.get("url").and_then(Value::as_str).unwrap_or("");
+        if url.is_empty() || !seen.insert(url.to_string()) {
+            continue;
+        }
+        if let Some(content) = item.get_mut("content") {
+            if let Some(snippet) = content.as_str() {
+                let cut = snippet
+                    .char_indices()
+                    .take(MAX_SNIPPET_CHARS)
+                    .last()
+                    .map(|(idx, ch)| idx + ch.len_utf8())
+                    .unwrap_or(0);
+                if cut < snippet.len() {
+                    *content = Value::String(format!("{}…", &snippet[..cut]));
+                }
+            }
+        }
+        deduped.push(item);
+        if deduped.len() >= max_results {
+            break;
+        }
+    }
+    if deduped.is_empty() {
+        bail!("SearXNG returned no results")
+    }
+    format_search_results(query, "SearXNG", deduped)
 }
 
 // ── Crawler helper functions ───────────────────────────────────
