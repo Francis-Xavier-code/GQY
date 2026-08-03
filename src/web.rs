@@ -1352,12 +1352,21 @@ async fn tts_web(
         }
     }
     let url = format!("http://127.0.0.1:8091/tts?text={encoded}");
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(90))
-        .send()
-        .await
-        .map_err(|_| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "TTS 服务未启动（scripts/tts-server.py）"))?;
+    let client = reqwest::Client::new();
+    let mut resp = match client.get(&url).timeout(std::time::Duration::from_secs(90)).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            // TTS 服务未运行：自动拉起（按需启停，省内存）
+            spawn_tts_server()?;
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            client
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(90))
+                .send()
+                .await
+                .map_err(|_| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "TTS 服务启动失败"))?
+        }
+    };
     if !resp.status().is_success() {
         return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "TTS 合成失败"));
     }
@@ -1368,6 +1377,23 @@ async fn tts_web(
         .header("Content-Length", bytes.len())
         .body(axum::body::Body::from(bytes))
         .unwrap())
+}
+
+/// 按需拉起本地 TTS 服务（scripts/tts-server.py，venv python），空闲自动退出省内存。
+fn spawn_tts_server() -> Result<(), ApiError> {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/tts-server.py");
+    let venv_python = concat!(env!("CARGO_MANIFEST_DIR"), "/venv/bin/python");
+    if !std::path::Path::new(&venv_python).exists() {
+        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "未找到 venv python（TTS 依赖未安装）"));
+    }
+    std::process::Command::new(venv_python)
+        .arg(script)
+        .arg("8091")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("TTS 服务拉起失败: {e}")))?;
+    Ok(())
 }
 
 /// 会话状态（供终端/面板同步轮询）：当前会话最大 seq + 是否有运行中的轮次。
