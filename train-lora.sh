@@ -42,28 +42,46 @@ prepare_data() {
   if [ -n "$SAMPLE" ]; then
     mkdir -p "$DATA_DIR"
     python3 - "$DATA_DIR/turns.jsonl" "$SAMPLE" << 'PY'
-import json, random, sys
+import json, random, re, sys
 src, n = sys.argv[1], int(sys.argv[2])
 random.seed(42)
 lines = open(src, encoding='utf-8').readlines()
-picked = []
-seen = set()
-for l in random.sample(lines, min(n * 20, len(lines))):
+random.shuffle(lines)
+
+# 动作/心理描写模板特征（lover.md 禁止，学了会成复读机）
+ACTION_PAT = re.compile(
+    r'[（(](眼神|轻轻|温柔|握住|拉进怀里|揉了揉|摸了摸|递过来|敲了敲|笑了笑|叹了|低声|耳边|脸颊|嘴角|环住|抱|靠|贴在你|凑近|歪头|眨了眨)[^）)]*[）)]'
+    r'|(眼神里|心里想|心里|动作描写|psychic)'
+)
+# 高频开头模板：同开头的回复每簇最多保留 1 条（保证多样性）
+from collections import defaultdict
+buckets = defaultdict(list)
+for l in lines:
     try:
         r = json.loads(l)
         u, a = (r.get('user') or '').strip(), (r.get('assistant') or '').strip()
-        if len(u) < 4 or len(a) < 10: continue
-        k = (u, a)
-        if k in seen: continue
-        seen.add(k); picked.append(r)
-        if len(picked) >= n: break
+        if len(u) < 4 or len(a) < 12: continue
+        if 'password' in (u + a).lower() or 'api_key' in (u + a).lower(): continue
+        if ACTION_PAT.search(a): continue          # 过滤动作/心理描写模板
+        key = a[:18]                                # 簇键：回复开头
+        buckets[key].append(r)
     except Exception: pass
+picked = []
+for key, items in buckets.items():
+    picked.append(items[0])                        # 每簇 1 条（打乱后第一条 = 随机代表）
+    if len(picked) >= int(n): break
+# 若不够 n，再补些非重复的（放宽到开头 12 字）
+if len(picked) < int(n):
+    seen_key = {r['assistant'][:18] for r in picked}
+    for r in [x for b in buckets.values() for x in b]:
+        if r['assistant'][:18] not in seen_key and r['assistant'][:12] not in seen_key:
+            picked.append(r); seen_key.add(r['assistant'][:18])
+        if len(picked) >= int(n): break
 with open(src + '.sample', 'w', encoding='utf-8') as f:
     for r in picked:
         f.write(json.dumps(r, ensure_ascii=False) + '\n')
-print(f"   已取样 {len(picked)} 条 → {src}.sample")
+print(f"   去模板取样 {len(picked)} 条（过滤动作描写+开头簇去重）→ {src}.sample")
 PY
-    # 用取样文件替换 turns.jsonl（训练后不保留）
     mv "$DATA_DIR/turns.jsonl.sample" "$DATA_DIR/turns.jsonl"
   fi
 }

@@ -110,9 +110,9 @@ if [ -z "${OUT:-}" ]; then
   OUT="$LORA_ROOT/$LORA_NAME"
   mkdir -p "$OUT"
 fi
-RESUME_ARGS=()
+RESUME_FLAG=""
 if [ -n "${RESUME_CKPT:-}" ]; then
-  RESUME_ARGS=(--resume-adapter-file "$RESUME_CKPT")
+  RESUME_FLAG="--resume-adapter-file=$RESUME_CKPT"
 fi
 mkdir -p "$OUT"
 
@@ -164,7 +164,7 @@ python3 -m mlx_lm.lora \
   --learning-rate "$LR" \
   --steps-per-report 20 \
   --adapter-path "$OUT/adapter" \
-  "${RESUME_ARGS[@]}"
+  ${RESUME_FLAG}
 
 echo "==> 6/6 自动合并（LoRA → 完整模型）"
 if command -v mlx_lm >/dev/null 2>&1 || true; then
@@ -214,7 +214,6 @@ if [ "$MERGE" = "1" ]; then
   python3 -m mlx_lm.fuse \
     --model "$BASE_MODEL" \
     --adapter-path "$OUT/adapter" \
-  "${RESUME_ARGS[@]}" \
     --save-path "$OUT/merged"
   echo "✅ 合并完成：$OUT/merged"
 fi
