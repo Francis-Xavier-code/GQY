@@ -1913,7 +1913,7 @@ impl AppConfig {
     }
 }
 
-fn default_timeout() -> u64 {
+pub fn default_timeout() -> u64 {
     60
 }
 
@@ -1966,7 +1966,7 @@ fn persona_scope_name(name: &str) -> String {
     }
 }
 
-fn default_temperature() -> f32 {
+pub fn default_temperature() -> f32 {
     0.7
 }
 
@@ -1978,7 +1978,7 @@ fn is_default_temperature(value: &f32) -> bool {
     (*value - default_temperature()).abs() < f32::EPSILON
 }
 
-fn default_anthropic_max_tokens() -> u32 {
+pub fn default_anthropic_max_tokens() -> u32 {
     4096
 }
 

@@ -24,6 +24,7 @@ mod memory;
 mod moegirl;
 pub(crate) mod path_guard;
 mod patch_preview;
+pub(crate) mod providers;
 mod registry;
 mod scripts;
 mod skills;
