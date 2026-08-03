@@ -755,6 +755,30 @@
     return configField(label, select, description);
   }
 
+  // 语音回复开关（localStorage，不走 config.jsonc）
+  function voiceReplyToggleField() {
+    const label = document.createElement("label");
+    label.className = "config-toggle";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = safeStorageGet("gqy.voice_reply") !== "0";
+    input.addEventListener("change", () => {
+      safeStorageSet("gqy.voice_reply", input.checked ? "1" : "0");
+    });
+    const switchTrack = document.createElement("span");
+    switchTrack.className = "toggle-track";
+    const copy = document.createElement("span");
+    copy.className = "config-toggle-copy";
+    const title = document.createElement("strong");
+    title.textContent = "语音回复（顾清影音色朗读）";
+    copy.appendChild(title);
+    const hint = document.createElement("small");
+    hint.textContent = "回复完成后自动朗读（需本地 TTS 服务）";
+    copy.appendChild(hint);
+    label.append(input, switchTrack, copy);
+    return label;
+  }
+
   function booleanConfigField(labelText, path, description = "") {
     const label = document.createElement("label");
     label.className = "config-toggle";
@@ -856,6 +880,7 @@
         booleanConfigField("允许执行命令", "skills.allow_command_execution")
       ]),
       configGroup("显示", [
+        voiceReplyToggleField(),
         selectConfigField("界面语言", "display.language", [{ value: "auto", label: "自动" }, { value: "zh", label: "简体中文" }, { value: "en", label: "English" }]),
         selectConfigField("思考过程", "display.reasoning", [{ value: "summary", label: "摘要" }, { value: "full", label: "完整" }, { value: "hidden", label: "隐藏" }]),
         selectConfigField("工具调用", "display.tool_calls", [{ value: "summary", label: "摘要" }, { value: "full", label: "完整" }, { value: "hidden", label: "隐藏" }]),
@@ -4755,6 +4780,32 @@
     }
   }
 
+  // WebUI 语音回复：回复完成后用顾清影克隆音色朗读（/api/tts → 8091 Qwen3-TTS）
+  // 开关：localStorage gqy.voice_reply（默认开）；TTS 服务未启动时静默降级
+  let voiceReplyAudio = null;
+  function speakReply(live) {
+    if (safeStorageGet("gqy.voice_reply") === "0") return;
+    if (document.visibilityState !== "visible") return; // 后台不自动朗读
+    const text = String(live?.assistantText || "").trim();
+    if (!text) return;
+    const MAX_TTS_CHARS = 300;
+    const clip = text.length > MAX_TTS_CHARS ? text.slice(0, MAX_TTS_CHARS) : text;
+    fetch(`/api/tts?text=${encodeURIComponent(clip)}`)
+      .then((res) => {
+        if (!res.ok) throw new Error("tts unavailable");
+        return res.blob();
+      })
+      .then((blob) => {
+        if (voiceReplyAudio) { voiceReplyAudio.pause(); voiceReplyAudio = null; }
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => URL.revokeObjectURL(url);
+        voiceReplyAudio = audio;
+        audio.play().catch(() => {});
+      })
+      .catch(() => { /* TTS 服务未启动，静默 */ });
+  }
+
   function notifyRunCompleted(live) {
     if (!("Notification" in window)) return;
     if (document.visibilityState !== "hidden") return;
@@ -4780,6 +4831,7 @@
 
     if (kind === "completed") {
       notifyRunCompleted(live);
+      speakReply(live);
       if (live.headerStatus) live.headerStatus.textContent = "刚刚";
       if (live.meta) {
         const total = effectiveUsageTotal(data?.usage);

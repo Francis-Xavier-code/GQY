@@ -1192,6 +1192,10 @@ pub struct TtsArgs {
     /// 列出可用语音
     #[arg(long)]
     pub list: bool,
+
+    /// 用顾清影克隆音色朗读（Qwen3-TTS 本地服务，需先启动 scripts/tts-server.py）
+    #[arg(long)]
+    pub clone: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1807,6 +1811,10 @@ fn run_tts(args: TtsArgs) -> Result<()> {
         for voice in crate::speech::list_voices()? {
             println!("{voice}");
         }
+        return Ok(());
+    }
+    if args.clone {
+        crate::speech::speak_clone(&args.text, None)?;
         return Ok(());
     }
     crate::speech::speak(&args.text, args.voice.as_deref(), args.output.as_deref())?;
