@@ -20,3 +20,8 @@
 /napcat/
 /qq-napcat/
 /communication/backup-*/
+
+# 本地训练数据与生成脚本（隐私，不上云）
+/data/finetune/turns.jsonl
+/data/finetune/*.md
+/generate_*.py

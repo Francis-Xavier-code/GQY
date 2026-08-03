@@ -235,6 +235,35 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
   `gqy_list_agents` / `gqy_kill_agent` 管理；agent 思考过程在 WebUI 实时可见，
   定义持久化、重启复活。
 
+- 本地模型推理（llama.cpp / Ollama）
+
+  支持 Apple Silicon 本地跑模型（Metal 加速）：内置 `llama.cpp`/`ollama`/`lmstudio`
+  provider 预设，`qwen3-abl-nothink` 等去审查无思考模型 2 秒出回复；本地模型
+  可跟随菜单栏启停（启动时自动拉起、退出时关闭，默认不开机自启）。
+
+- 供应商热切换（自动发现模型）
+
+  给 URL + API Key 即可接入任意 OpenAI 兼容服务：`gqy provider add <url> --api-key <key>`
+  自动 GET /models 发现可用模型并激活；对话里直接说「帮我加个供应商/切到 xx」也能完成
+  （`manage_providers` 工具）；运行中 WebUI 经 config watcher 自动刷新，无需重启。
+
+- 女友人格系统
+
+  人格文件在 `GQY_HOME/prompts/`：`lover.md` 完整女友人格（基础，所有模式生效）、
+  `chat.md` 闲聊模式追加的女友态提醒；`active_persona=lover.md` 激活，WebUI 顶栏
+  显示 💗 人格徽标；闲聊模式上下文独立隔离（turns 按 mode 存储，互不污染，
+  闲聊只看最近 12 轮，本地模型上下文友好）。
+
+- 语音（TTS / STT）
+
+  `gqy tts "文字"`（macOS 本地朗读）、`gqy stt 音频`（SFSpeechRecognizer 离线识别）；
+  `speak` / `listen_audio` 工具让模型自己读/听。
+
+- WebUI 用量分析
+
+  WebUI 右下角 📊 打开用量面板：GitHub 式贡献热力图、费用估算（按 provider 单价，
+  可配置）、token 构成堆叠柱、模型维度表、调用级明细。
+
 </details>
 
 ## 常见问题

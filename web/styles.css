@@ -5099,3 +5099,4 @@ body.panel-mode .timeline .message {
 .backup-chip.fresh { color: #30d158; }
 .backup-chip.stale { color: #ff9f0a; }
 .backup-chip.error { color: #ff453a; }
+.persona-chip { color: #ff6fa5; border: 1px solid rgba(255, 111, 165, 0.35); }
