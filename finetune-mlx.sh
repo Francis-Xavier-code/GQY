@@ -13,6 +13,8 @@ LORA_ROOT="$DATA_DIR/lora"
 BASE_MODEL="${GQY_BASE_MODEL:-huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated}"
 GENERIC_FILE="${GQY_GENERIC_FILE:-}"
 MERGE="${GQY_MERGE:-0}"
+# LoRA 命名：GQY_LORA_NAME 指定，否则自动 gqy-lover-v<日期>
+LORA_NAME="${GQY_LORA_NAME:-gqy-lover-v$(date +%Y%m%d-%H%M)}"
 MIN_SAMPLES="${GQY_MIN_SAMPLES:-500}"
 EPOCHS="${GQY_EPOCHS:-2}"
 LR="${GQY_LR:-2e-5}"
@@ -96,7 +98,8 @@ PY
 
 echo "==> 4/6 转 MLX 训练格式"
 TS=$(date +%Y%m%d-%H%M%S)
-OUT="$LORA_ROOT/$TS"
+OUT="$LORA_ROOT/$LORA_NAME"
+mkdir -p "$OUT"
 mkdir -p "$OUT"
 
 TRAIN_DIR="$DATA_DIR/train"
@@ -151,18 +154,36 @@ python3 -m mlx_lm.lora \
 
 echo "==> 6/6 自动合并（LoRA → 完整模型）"
 if command -v mlx_lm >/dev/null 2>&1 || true; then
-  FUSED="$DATA_DIR/lora-merged/$(basename "$OUT")"
+  FUSED="$DATA_DIR/lora-merged/$LORA_NAME"
   mkdir -p "$FUSED"
   if "$SCRIPT_DIR/venv/bin/python" -m mlx_lm fuse \
       --model "$BASE_MODEL" \
       --adapter-path "$OUT/adapter" \
       --save-path "$FUSED" > /tmp/fuse.log 2>&1; then
-    echo "   ✅ 已合并：$FUSED（可直接加载或转 GGUF 用）"
+    # 元数据标注：模型身份/底座/训练信息写入 config.json（模型本身仍由 system prompt 注入身份）
+    "$SCRIPT_DIR/venv/bin/python" - "$FUSED/config.json" << 'PY2'
+import json, sys
+cfg_path = sys.argv[1]
+cfg = json.load(open(cfg_path))
+cfg["_gqy"] = {
+    "model_id": "$LORA_NAME",
+    "base_model": "$BASE_MODEL",
+    "trained_at": "$(date '+%Y-%m-%d %H:%M')",
+    "samples": $(wc -l < "$DATA_DIR/turns.jsonl" | tr -d ' '),
+    "epochs": $EPOCHS,
+    "note": "顾清影 LoRA 微调产物；身份由 GQY system prompt (lover.md) 注入，本模型提供对话风格"
+}
+json.dump(cfg, open(cfg_path, 'w'), indent=2, ensure_ascii=False)
+PY2
+    echo "   ✅ 已合并：$FUSED（模型 ID: $LORA_NAME，底座: $BASE_MODEL）"
   else
     echo "   ⚠️ 合并失败（adapter 仍可用，见 $OUT/adapter）"
     tail -3 /tmp/fuse.log
   fi
 fi
+
+# 完成时弹 macOS 系统通知（通知中心可见）
+osascript -e 'display notification "LoRA 训练完成！产物在 '"$DATA_DIR"'/lora 与 lora-merged" with title "顾清影 · 训练完成"' >/dev/null 2>&1 || true
 
 echo "==> 6/6 存档与报告"
 cp "$OUT/adapter/adapter.safetensors" "$OUT/adapter.safetensors" 2>/dev/null || true
