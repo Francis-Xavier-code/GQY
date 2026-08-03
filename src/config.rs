@@ -242,6 +242,11 @@ pub struct ContextConfig {
     pub trim_batch_ratio: f32,
     #[serde(default = "default_on_overflow")]
     pub on_overflow: String,
+    /// 闲聊（Chat）模式保留的最近对话轮数：
+    /// - 0 = 纯人格模式（只加载人格提示词，不加载历史，亲密场景上下文干扰最小，本地模型质量更高）
+    /// - N = 保留最近 N 轮（连续性 vs 上下文的权衡）
+    #[serde(default = "default_chat_history_turns")]
+    pub chat_history_turns: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -897,6 +902,7 @@ impl Default for ContextConfig {
             trim_at_ratio: default_trim_at_ratio(),
             trim_batch_ratio: default_trim_batch_ratio(),
             on_overflow: default_on_overflow(),
+            chat_history_turns: default_chat_history_turns(),
         }
     }
 }
@@ -2270,6 +2276,10 @@ fn default_trim_batch_ratio() -> f32 {
 
 fn default_on_overflow() -> String {
     "compact".to_string()
+}
+
+fn default_chat_history_turns() -> usize {
+    2
 }
 
 #[cfg(test)]

@@ -327,6 +327,15 @@ impl Agent {
         })
     }
 
+    /// 闲聊模式的历史轮数上限：0 = 纯人格模式（不加载历史，只靠人格提示词）
+    fn chat_history_limit(&self) -> Option<usize> {
+        if self.mode == AgentMode::Chat {
+            Some(self.config.context.chat_history_turns)
+        } else {
+            None
+        }
+    }
+
     pub fn prepare_for_turn(&mut self) -> Result<()> {
         let base_system_prompt = self.config.system_prompt(&self.paths)?;
         if matches!(self.mode, AgentMode::Normal | AgentMode::Chat) {
@@ -448,7 +457,9 @@ impl Agent {
         }
 
         let target = (context_window as f32 * (1.0 - self.trim_batch_ratio)).max(1.0) as usize;
-        let turns = self.state.load_visible_turns_for_mode(self.mode.key())?;
+        let turns = self
+            .state
+            .load_visible_turns_for_mode(self.mode.key(), self.chat_history_limit())?;
         let mut loaded_tool_tokens = loaded_tool_sources
             .as_ref()
             .map(|items| {
@@ -898,7 +909,10 @@ impl Agent {
                 missing.join(", ")
             );
         };
-        let visible_count = self.state.load_visible_turns_for_mode(self.mode.key())?.len();
+        let visible_count = self
+                .state
+                .load_visible_turns_for_mode(self.mode.key(), self.chat_history_limit())?
+                .len();
         if visible_count == 0 {
             return Ok(None);
         }
@@ -952,7 +966,10 @@ impl Agent {
         }
         let compact_result = match self.on_overflow.as_str() {
             "compact" => {
-                let visible_count = self.state.load_visible_turns_for_mode(self.mode.key())?.len();
+                let visible_count = self
+                .state
+                .load_visible_turns_for_mode(self.mode.key(), self.chat_history_limit())?
+                .len();
                 if visible_count == 0 {
                     return Ok(None);
                 }
@@ -1584,7 +1601,11 @@ impl Agent {
         }
         let turns = self
             .state
-            .load_visible_turns_for_mode_excluding(self.mode.key(), current_turn_id)?;
+            .load_visible_turns_for_mode_excluding(
+                self.mode.key(),
+                current_turn_id,
+                self.chat_history_limit(),
+            )?;
         for turn in &turns {
             if turn.is_summary {
                 continue;

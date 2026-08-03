@@ -107,17 +107,18 @@ impl StateStore {
     }
 
     /// 按模式加载可见历史（闲聊隔离）：chat 只看最近 N 条，其他模式排除 chat。
-    pub fn load_visible_turns_for_mode(&self, mode: &str) -> Result<Vec<Turn>> {
-        self.conv_db.load_visible_turns_for_mode(mode, None)
+    pub fn load_visible_turns_for_mode(&self, mode: &str, limit: Option<usize>) -> Result<Vec<Turn>> {
+        self.conv_db.load_visible_turns_for_mode(mode, limit)
     }
 
     pub fn load_visible_turns_for_mode_excluding(
         &self,
         mode: &str,
         exclude_turn_id: &str,
+        limit: Option<usize>,
     ) -> Result<Vec<Turn>> {
         self.conv_db
-            .load_visible_turns_for_mode_excluding(mode, exclude_turn_id, None)
+            .load_visible_turns_for_mode_excluding(mode, exclude_turn_id, limit)
     }
 
     #[allow(dead_code)]
