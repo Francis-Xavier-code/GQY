@@ -175,7 +175,7 @@ if command -v mlx_lm >/dev/null 2>&1 || true; then
       --adapter-path "$OUT/adapter" \
       --save-path "$FUSED" > /tmp/fuse.log 2>&1; then
     # 元数据标注：模型身份/底座/训练信息写入 config.json（模型本身仍由 system prompt 注入身份）
-    "$SCRIPT_DIR/venv/bin/python" - "$FUSED/config.json" << 'PY2'
+    "$SCRIPT_DIR/venv/bin/python" - "$FUSED/config.json" << PY2
 import json, sys
 cfg_path = sys.argv[1]
 cfg = json.load(open(cfg_path))
