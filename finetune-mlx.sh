@@ -1,44 +1,29 @@
 #!/usr/bin/env bash
 # 顾清影自我进化 · 二期：MLX LoRA 批量微调（Apple Silicon 本地，免费可预测）
-# 底座：Qwen3-4B-Instruct（16GB M2 完美）；微调+推理全走 MLX 生态。
-#
-# 流程：检查数据 → 清洗/混入通用数据 → LoRA 训练 → 权重存档 →（可选）合并 → 报告
-# 触发：攒够阈值（默认 500 条）或每周一次，绝不做每轮训练。
-#
-# 用法：
-#   bash finetune-mlx.sh [GQY_HOME]                # 基本训练（只产 LoRA 补丁，几十 MB）
-#   GQY_MERGE=1 bash finetune-mlx.sh               # 训练后合并 → 完整可命名模型（~8GB）
-#
-# 环境变量（可选）：
-#   GQY_HOME          数据目录（默认 ~/Library/Application Support/gqy），也可作第 1 个参数传入
-#   GQY_BASE_MODEL    底座模型（默认 Qwen/Qwen3-4B-Instruct；合并模型可作下一代底座）
-#   GQY_MIN_SAMPLES   训练门槛条数（默认 500，不足则拦截提示）
-#   GQY_EPOCHS        训练轮数（默认 2）
-#   GQY_LR            学习率（默认 2e-5）
-#   GQY_GENERIC_FILE  通用数据文件（JSONL），防灾难性遗忘；默认内置少量占位
-#   GQY_MERGE         设 1 时训练完把 LoRA 合并进底座，产出完整模型 lora/<日期>/merged/
+# 底座：cognitivecomputations/Dolphin-2.9.2-qwen2.5-7b（无审查沉浸式人设）
 set -euo pipefail
 
-HOME_DIR="${1:-$HOME/Library/Application Support/gqy}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOME_DIR="${1:-$SCRIPT_DIR}"
 DATA_DIR="$HOME_DIR/data/finetune"
 TURNS="$DATA_DIR/turns.jsonl"
 LORA_ROOT="$DATA_DIR/lora"
 BASE_MODEL="${GQY_BASE_MODEL:-cognitivecomputations/Dolphin-2.9.2-qwen2.5-7b}"
-# 通用数据文件（JSONL，{user,assistant} 每行一条），防止灾难性遗忘。
-# 默认用内置少量占位；建议放一份通用中文指令集（如 alpaca-zh），混入效果更好。
 GENERIC_FILE="${GQY_GENERIC_FILE:-}"
-# 合并开关：GQY_MERGE=1 时训练完把 LoRA 合并进底座，产出完整可命名模型（~8GB）
 MERGE="${GQY_MERGE:-0}"
 MIN_SAMPLES="${GQY_MIN_SAMPLES:-500}"
 EPOCHS="${GQY_EPOCHS:-2}"
 LR="${GQY_LR:-2e-5}"
 
-echo "==> 0/6 环境检查"
-if ! command -v uv >/dev/null 2>&1; then
-  echo "需要 uv：brew install uv"; exit 1
+# 激活本地虚拟环境（如果存在）
+VENV_DIR="$SCRIPT_DIR/venv"
+if [ -d "$VENV_DIR" ]; then
+  source "$VENV_DIR/bin/activate"
 fi
+
+echo "==> 0/6 环境检查"
 if [ ! -f "$TURNS" ]; then
-  echo "还没有训练数据。先开启收集：gqy config set finetune.collect true 再聊几天。"
+  echo "未找到训练数据：$TURNS"
   exit 1
 fi
 echo "   数据：$TURNS"
@@ -47,8 +32,7 @@ echo "==> 1/6 统计样本"
 TOTAL=$(wc -l < "$TURNS" | tr -d ' ')
 echo "   已收集 $TOTAL 条"
 if [ "$TOTAL" -lt "$MIN_SAMPLES" ]; then
-  echo "   不足 $MIN_SAMPLES 条（还差 $((MIN_SAMPLES - TOTAL)) 条），暂不训练——"
-  echo "   这就是「攒够才训」：微调需要成百上千条同分布数据，单条训练只会灾难性遗忘。"
+  echo "   不足 $MIN_SAMPLES 条，暂不训练"
   exit 0
 fi
 
@@ -65,11 +49,11 @@ for line in open(src, encoding='utf-8'):
     try: r = json.loads(line)
     except: continue
     u, a = (r.get('user') or '').strip(), (r.get('assistant') or '').strip()
-    if len(u) < 2 or len(a) < 20: continue           # 短样本
+    if len(u) < 2 or len(a) < 10: continue
     key = (u, a)
-    if key in seen: continue                          # 去重
+    if key in seen: continue
     seen.add(key)
-    if any(w in (u + a) for w in ('password', 'api_key', 'token=', '私钥', 'secret')):  # 隐私
+    if any(w in (u + a) for w in ('password', 'api_key', 'token=', '私钥', 'secret')):
         continue
     out.append(r)
 with open(dst, 'w', encoding='utf-8') as f:
@@ -97,7 +81,7 @@ if generic_file:
 else:
     generic = GENERIC_FALLBACK
 random.seed(42)
-sampled = random.choices(generic, k=len(rows) // 3)   # 30% 通用
+sampled = random.choices(generic, k=max(1, len(rows) // 3))
 mixed = rows + sampled
 random.shuffle(mixed)
 with open(dst, 'w', encoding='utf-8') as f:
@@ -105,26 +89,24 @@ with open(dst, 'w', encoding='utf-8') as f:
 print(f"   混入后 {len(mixed)} 条（专属:通用 ≈ 7:3）")
 PY
 
-echo "==> 4/6 转 MLX 训练格式 + 安装 mlx-lm"
-uv tool install --force mlx-lm 2>/dev/null || uv pip install --system mlx-lm 2>/dev/null || true
+echo "==> 4/6 转 MLX 训练格式"
 TS=$(date +%Y%m%d-%H%M%S)
 OUT="$LORA_ROOT/$TS"
 mkdir -p "$OUT"
 
-echo "==> 5/6 LoRA 训练（底座 $BASE_MODEL，epochs=$EPOCHS，lr=$LR）"
-# 单轮样本模板：<|im_start|>user ... <|im_start|>assistant ...
 python3 - "$DATA_DIR/train.mixed.jsonl" "$DATA_DIR/train.chat.jsonl" << 'PY'
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as f, open(sys.argv[2], 'w', encoding='utf-8') as o:
     for line in f:
         r = json.loads(line)
-        text = ("<|im_start|>user\n" + r['user'] + "\n<|im_end|>\n"
-                "<|im_start|>assistant\n" + r['assistant'] + "\n<|im_end|>")
+        text = "<|im_start|>user\n" + r['user'] + "\n<|im_end|>\n<|im_start|>assistant\n" + r['assistant'] + "\n<|im_end|>"
         o.write(json.dumps({"text": text}, ensure_ascii=False) + '\n')
 print("   chat 格式就绪")
 PY
 
-uv run mlx_lm.lora \
+echo "==> 5/6 LoRA 训练（底座 $BASE_MODEL，epochs=$EPOCHS，lr=$LR）"
+
+python3 -m mlx_lm.lora \
   --model "$BASE_MODEL" \
   --train \
   --data "$DATA_DIR/train.chat.jsonl" \
@@ -144,24 +126,17 @@ cat > "$OUT/README.md" << MD
 - 合并完整模型：${MERGE:+是（merged/）}
 - 训练日期：$TS
 MD
+
 if [ "$MERGE" = "1" ]; then
   echo "==> 7/7 合并 LoRA 进底座（产出完整模型）"
-  uv run mlx_lm.fuse \
+  python3 -m mlx_lm.fuse \
     --model "$BASE_MODEL" \
     --adapter-path "$OUT/adapter" \
     --save-path "$OUT/merged"
   echo "✅ 合并完成：$OUT/merged"
-  echo "  这是一个完整模型目录，可复制、命名、当普通模型加载，"
-  echo "  也可作为下一次训练的新底座（GQY_BASE_MODEL=$OUT/merged）。"
 fi
 
 echo ""
 echo "✅ 训练完成。"
-echo "  权重：$OUT/adapter"
-echo "  完整模型：$OUT/merged（仅 GQY_MERGE=1 时生成）"
-echo ""
-echo "下一步（三期集成，待做）：GQY 推理侧加载 adapter："
-echo "  mlx_lm.server --model $BASE_MODEL --adapter-path $OUT/adapter --port 8080"
-echo "  然后 gqy config 把 provider base_url 指到 http://127.0.0.1:8080/v1"
-echo ""
-echo "📊 费用：本地 MLX 只有电费（约 ¥0.1/次训练），数据不出本机。"
+echo "  权重保存位置：$OUT/adapter"
+echo "  完整模型目录：$OUT/merged（仅 GQY_MERGE=1 时生成）"
