@@ -14,8 +14,8 @@
 class Gqy < Formula
   desc "顾清影 —— 活在终端与菜单栏里的 AI 助理"
   homepage "https://github.com/Francis-Xavier-code/GQY"
-  url "https://github.com/Francis-Xavier-code/GQY/archive/refs/tags/v0.8.5.tar.gz"
-  sha256 "b7f0e62e8ce3e36f5db623839e2c136da8dc34030ff233f1da6f2ca4e414ade7"
+  url "https://github.com/Francis-Xavier-code/GQY/archive/refs/tags/v0.8.6.tar.gz"
+  sha256 "94a1bc6235c6ef6fb069484f20ab241ea21d29d09260d1e770b817ffb6ec65e8"
   license "GPL-3.0"
 
   depends_on "rust" => :build
