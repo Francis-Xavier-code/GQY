@@ -98,17 +98,20 @@ cmd_status() {
     pid="$(pgrep -f 'mlx_lm.*lora' 2>/dev/null | head -1 || true)"
   fi
   if [ -n "$pid" ]; then
+    # 从训练进程命令行自动解析数据目录/总轮数（无需 GQY_DATA/GQY_TOTAL_ITERS）
+    local cmdline data_dir total
+    cmdline="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    data_dir="$(echo "$cmdline" | grep -oE '\-\-data [^ ]+' | awk '{print $2}' | xargs dirname 2>/dev/null || true)"
+    total="$(echo "$cmdline" | grep -oE '\-\-iters [0-9]+' | awk '{print $2}' || true)"
     local log="$LOG"
-    if [ ! -f "$log" ]; then
-      log="$(ls -t "$LORA_ROOT"/*/train.log 2>/dev/null | head -1 || true)"
-    fi
-    if [ ! -f "$log" ]; then
-      log="$(ls -t /tmp/*train*.log 2>/dev/null | head -1 || true)"
+    if [ -n "$data_dir" ]; then
+      log="$data_dir/train.log"
     fi
     [ -f "$log" ] && echo "   日志: $log"
-    local iter total pct it_sec remain
+    local iter pct it_sec remain
     iter=$(grep -oE "Iter [0-9]+: Train" "$log" 2>/dev/null | tail -1 | grep -oE "[0-9]+" || echo "0")
-    total=$(total_iters)
+    [ -z "$total" ] && total=$(total_iters)
+    [ "$total" -eq 0 ] && total=1
     [ "$total" -eq 0 ] && total=1
     pct=$(( iter * 100 / total ))
     it_sec=$(grep -oE "It/sec [0-9.]+" "$log" 2>/dev/null | tail -1 | grep -oE "[0-9.]+" || echo "?")
