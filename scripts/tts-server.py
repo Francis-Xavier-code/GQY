@@ -5,6 +5,7 @@
 """
 import os, sys, io, wave, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 from urllib.parse import urlparse, parse_qs, unquote
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,8 +18,21 @@ REF_TEXT = os.environ.get("GQY_TTS_REF_TEXT", "靠杯了，你终于上线了，
 
 from mlx_audio.tts.generate import generate_audio
 
+IDLE_TIMEOUT = int(os.environ.get("GQY_TTS_IDLE", "600"))  # 空闲 N 秒自动退出（省内存）
+_last_req = time.time()
+
+def _idle_watcher():
+    global _last_req
+    while True:
+        time.sleep(30)
+        if time.time() - _last_req > IDLE_TIMEOUT:
+            print(f"⏹ 空闲 {IDLE_TIMEOUT}s，TTS 服务自动退出（释放内存）")
+            os._exit(0)
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        global _last_req
+        _last_req = time.time()
         if self.path.startswith("/health"):
             self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
         if not self.path.startswith("/tts"):
@@ -56,5 +70,6 @@ if __name__ == "__main__":
     # 预热：先加载模型
     generate_audio(model=MODEL, text="预热", lang_code="zh", ref_audio=REF_AUDIO,
                    ref_text=REF_TEXT, output_path="/tmp/gqy-tts-warmup.wav", save=True, verbose=False)
-    print("✅ 模型就绪，接受请求")
+    print("✅ 模型就绪，接受请求（空闲自动退出释放内存）")
+    threading.Thread(target=_idle_watcher, daemon=True).start()
     HTTPServer(("127.0.0.1", port), Handler).serve_forever()
