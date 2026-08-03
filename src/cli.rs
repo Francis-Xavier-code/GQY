@@ -844,6 +844,7 @@ pub enum Command {
     Stt(SttArgs),
     Napcat(NapcatArgs),
     Tg(TgArgs),
+    Provider(ProviderArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1136,6 +1137,46 @@ pub enum AlarmCommand {
 }
 
 #[derive(Debug, Args)]
+pub struct ProviderArgs {
+    #[command(subcommand)]
+    pub action: ProviderAction,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderAction {
+    /// 列出全部供应商（key 脱敏）与当前激活项
+    List,
+    /// 添加/更新 OpenAI 兼容供应商（自动发现模型并激活默认模型）
+    Add {
+        /// 供应商 id（小写字母/数字/连字符；不填从 base_url 推断）
+        #[arg(long)]
+        id: Option<String>,
+        /// 显示名
+        #[arg(long)]
+        name: Option<String>,
+        /// OpenAI 兼容端点，如 https://api.deepseek.com/v1
+        base_url: String,
+        /// API Key（本地服务可填占位符）
+        #[arg(long)]
+        api_key: String,
+        /// 要激活的模型；不填自动发现并选第一个
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 热切换激活指定供应商（可指定模型）
+    Switch {
+        provider_id: String,
+        /// 要激活的模型；不填用其 default_model 或第一个
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 移除供应商
+    Remove {
+        provider_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
 pub struct TtsArgs {
     /// 要朗读的文字
     pub text: String,
@@ -1394,6 +1435,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::Watch(args)) => run_watch(&paths, args),
         Some(Command::Tts(args)) => run_tts(args),
         Some(Command::Stt(args)) => run_stt(&paths, args),
+        Some(Command::Provider(args)) => run_provider(&paths, args).await,
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::Menubar(args)) => run_menubar(&paths, args),
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
@@ -1678,6 +1720,86 @@ fn remove_shell_hooks(paths: &GqyPaths) -> Result<()> {
         );
     }
     Ok(())
+}
+
+async fn run_provider(paths: &GqyPaths, args: ProviderArgs) -> Result<()> {
+    match args.action {
+        ProviderAction::List => {
+            let summary = crate::provider::list_providers(paths)?;
+            let data: serde_json::Value = serde_json::from_str(&summary)?;
+            println!("当前激活: {}\n", data["active_provider"]);
+            for p in data["providers"].as_array().unwrap_or(&vec![]).iter() {
+                let marker = if p["active"] == true { "*" } else { " " };
+                println!(
+                    "{marker} {} / {}  {}  key={}  models={}  default={}",
+                    p["id"],
+                    p["display_name"],
+                    p["base_url"],
+                    if p["has_key"] == true { "✓" } else { "无" },
+                    p["models"].as_array().map(|m| m.len()).unwrap_or(0),
+                    p["default_model"],
+                );
+            }
+            Ok(())
+        }
+        ProviderAction::Add {
+            id,
+            name,
+            base_url,
+            api_key,
+            model,
+        } => {
+            let models = crate::provider::discover_models(&base_url, &api_key).await?;
+            let id = id.unwrap_or_else(|| infer_provider_id(&base_url));
+            let summary = crate::provider::add_provider(
+                paths,
+                &id,
+                name.as_deref().unwrap_or(&id),
+                &base_url,
+                &api_key,
+                models.clone(),
+                Some(model.unwrap_or_else(|| {
+                    models.first().cloned().unwrap_or_default()
+                })),
+            )?;
+            println!("{}", pretty_json(&summary));
+            Ok(())
+        }
+        ProviderAction::Switch {
+            provider_id,
+            model,
+        } => {
+            let summary = crate::provider::switch_provider(paths, &provider_id, model)?;
+            println!("{}", pretty_json(&summary));
+            Ok(())
+        }
+        ProviderAction::Remove { provider_id } => {
+            let summary = crate::provider::remove_provider(paths, &provider_id)?;
+            println!("{}", pretty_json(&summary));
+            Ok(())
+        }
+    }
+}
+
+fn infer_provider_id(base_url: &str) -> String {
+    base_url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .split('.')
+        .next()
+        .unwrap_or("custom")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+}
+
+fn pretty_json(text: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| text.to_string())
 }
 
 fn run_tts(args: TtsArgs) -> Result<()> {
@@ -9351,6 +9473,10 @@ pub(crate) fn build_tool_registry(
     };
     if config.tools.enabled && config.skills.enabled && mode != AgentMode::Chat {
         tools::register_skills(&mut registry, config, paths)?;
+    }
+    // 供应商管理：自然语言热切换（对话里给 URL+Key 即可添加/切换；仅正经模式，闲聊保持轻量）
+    if config.tools.enabled && mode != AgentMode::Chat {
+        tools::providers::register(&mut registry, paths.clone());
     }
     if config.tools.enabled && interactive_questions {
         tools::register_ask_question(&mut registry);

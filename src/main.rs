@@ -21,6 +21,7 @@ mod models_cache;
 mod paths;
 mod pi_bridge;
 mod prompts;
+mod provider;
 mod question;
 mod question_tui;
 mod render;
