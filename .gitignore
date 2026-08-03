@@ -26,3 +26,4 @@
 /data/finetune/*.md
 /generate_*.py
 /venv/
+/.hf-cache/
