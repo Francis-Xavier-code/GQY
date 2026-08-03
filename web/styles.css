@@ -1523,6 +1523,25 @@ textarea:disabled {
   object-fit: contain;
 }
 
+.conversation-media-emotion {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
 .conversation-media-fallback {
   display: grid;
   min-height: 120px;
