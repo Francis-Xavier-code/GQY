@@ -56,6 +56,7 @@ const LOGIN_ATTEMPT_LIMIT: u8 = 5;
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const STYLES_CSS: &str = include_str!("../web/styles.css");
 const APP_JS: &str = include_str!("../web/app.js");
+const USAGE_VIZ_JS: &str = include_str!("../web/usage-viz.js");
 const GQY_LOGO: &[u8] = include_bytes!("../pics/GQY-avatar.png");
 const GQY_WALLPAPER: &[u8] = include_bytes!("../pics/GQY-image.png");
 const PROVIDER_ICONS: &str = include_str!("../web/assets/provider-icons.svg");
@@ -554,7 +555,7 @@ impl RunEventMapper {
             AgentEvent::PrepareForExternalOutput { ready } => {
                 let _ = ready.send(false);
             }
-            AgentEvent::Image { name, path, alt } => {
+            AgentEvent::Image { name, path, alt, emotion, action } => {
                 let (tool_id, tool_name) = self.tool_identity(&name);
                 let hide_caption = tool_name == "show_meme";
                 let Some(turn_id) = self.turn_id.as_deref() else {
@@ -579,6 +580,8 @@ impl RunEventMapper {
                             "run_id": self.run_id,
                             "tool_id": tool_id,
                             "name": tool_name,
+                            "emotion": emotion,
+                            "action": action,
                             "asset": SafeImageAsset::from_asset(asset, hide_caption),
                         }),
                     ),
@@ -1112,6 +1115,7 @@ fn router(state: WebState) -> Router {
         .route("/", get(index_asset))
         .route("/styles.css", get(styles_asset))
         .route("/app.js", get(app_asset))
+        .route("/usage-viz.js", get(usage_viz_asset))
         .route("/assets/gqy-logo.png", get(logo_asset))
         .route("/assets/gqy-wallpaper.png", get(wallpaper_asset))
         .route("/assets/provider-icons.svg", get(provider_icons_asset))
@@ -1132,6 +1136,7 @@ fn router(state: WebState) -> Router {
         .route("/api/state", get(session_state))
         .route("/api/usage/stats", get(usage_stats_web))
         .route("/api/usage/details", get(usage_details_web))
+        .route("/api/backup/status", get(backup_status_web))
         .route("/api/channels/{channel_id}/turns", get(channel_turns_web))
         .route("/api/search", get(search_web))
         .route("/api/tools/call", post(call_tool_web))
@@ -1158,6 +1163,10 @@ async fn styles_asset() -> Response {
 
 async fn app_asset() -> Response {
     text_asset(APP_JS, "application/javascript; charset=utf-8")
+}
+
+async fn usage_viz_asset() -> Response {
+    text_asset(USAGE_VIZ_JS, "application/javascript; charset=utf-8")
 }
 
 async fn logo_asset() -> Response {
@@ -1335,6 +1344,24 @@ async fn session_state(
         "running": running,
     }))
     .into_response())
+}
+
+/// 最近一次备份结果（WebUI 展示）：读 state/last_backup.json（由 backup.rs 写入）
+async fn backup_status_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_auth(&headers, &state)?;
+    let path = state.paths.state_dir.join("last_backup.json");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Json)
+            .map_err(ApiError::internal),
+        Err(_) => Ok(Json(json!({
+            "ok": false,
+            "error": "no backup record yet",
+        }))),
+    }
 }
 
 /// 用量统计（贡献图数据源）：每日 token + 按模型明细。
@@ -2490,6 +2517,8 @@ fn spawn_config_watcher(paths: GqyPaths, actor_tx: mpsc::UnboundedSender<ActorCo
                 continue;
             }
             let Some(mtime) = mtime else { continue };
+            // 防抖静置 300ms，等待写文件彻底落盘
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let Ok(config) = AppConfig::load(&paths) else {
                 tracing::warn!("config watcher: failed to reload configuration");
                 continue;
@@ -2597,14 +2626,34 @@ async fn actor_loop(
             }
             ActorCommand::Cancel { .. } => {}
             ActorCommand::SetModels { models, reply } => {
-                let result = rebuild_for_models(
-                    &mut agent,
-                    &mut config,
-                    &paths,
-                    &state_store,
-                    &manager,
-                    &models,
-                );
+                // 供应商变更前先压缩上下文：旧供应商缓存命中、压缩成本极低；
+                // 新供应商首请求不再全价重发全量历史（曾出现单次切换损失 34 元）。
+                let compact_first = provider_will_change(&config, &models);
+                let result = async {
+                    if compact_first {
+                        match agent.compact_now(|_| Ok(())).await {
+                            Ok(Some(_)) => {
+                                tracing::info!("provider switch: context compacted before switching")
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "pre-switch compact failed; switching anyway"
+                                );
+                            }
+                        }
+                    }
+                    rebuild_for_models(
+                        &mut agent,
+                        &mut config,
+                        &paths,
+                        &state_store,
+                        &manager,
+                        &models,
+                    )
+                }
+                .await;
                 release_admin(&manager);
                 let _ = reply.send(result);
             }
@@ -2973,6 +3022,20 @@ fn active_directive(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 模型选择变更是否涉及供应商切换（供应商不变则不动上下文）。
+///
+/// 注意：`set_active_provider_models` 不会更新 `active_provider` 字段
+/// （单数版 `set_active_provider_model` 才会），因此这里比较的是
+/// 「当前活动模型列表的 provider_id 集合」与「新选择的 provider_id 集合」。
+fn provider_will_change(config: &AppConfig, models: &[ActiveProviderModelConfig]) -> bool {
+    let next: Vec<&str> = models.iter().map(|m| m.provider_id.as_str()).collect();
+    let current: Vec<&str> = match config.active_provider_models.as_deref() {
+        Some(list) => list.iter().map(|m| m.provider_id.as_str()).collect(),
+        None => vec![config.active_provider.as_str()],
+    };
+    next != current
+}
+
 fn rebuild_for_models(
     agent: &mut Agent,
     config: &mut AppConfig,
@@ -3136,6 +3199,8 @@ fn reset_actor_conversation(
 ) -> std::result::Result<(), AdminFailure> {
     let mut reset = || -> Result<ContextSnapshot> {
         state_store.reset_conversation()?;
+        // 清空后回收空闲页（软删对 VACUUM 无收益，incremental 回收历史硬删留下的空洞）
+        state_store.incremental_vacuum().ok();
         let memory = MemoryStore::new(config, paths);
         memory.clear_evicted_context()?;
         memory.clear_pending_events()?;

@@ -202,6 +202,8 @@ pub enum AgentEvent {
         name: String,
         path: PathBuf,
         alt: String,
+        emotion: Option<String>,
+        action: Option<String>,
     },
     AskQuestion {
         request: QuestionRequest,
@@ -237,10 +239,12 @@ where
         tools::ToolProgressEvent::PrepareForExternalOutput { ready } => {
             on_event(AgentEvent::PrepareForExternalOutput { ready })
         }
-        tools::ToolProgressEvent::Image { path, alt } => on_event(AgentEvent::Image {
+        tools::ToolProgressEvent::Image { path, alt, emotion, action } => on_event(AgentEvent::Image {
             name: name.to_string(),
             path,
             alt,
+            emotion,
+            action,
         }),
         tools::ToolProgressEvent::CommandOutput { stream, chunk } => {
             on_event(AgentEvent::CommandOutput {
@@ -290,7 +294,7 @@ impl Agent {
             state.reset_if_prompt_changed(&base_system_prompt)?;
             state.recover_stale_turns()?;
         }
-        let system_prompt = with_mode_reminder(base_system_prompt, mode);
+        let system_prompt = with_mode_reminder(base_system_prompt, mode, paths);
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
         let memory = MemoryStore::new(&config, paths);
@@ -320,7 +324,7 @@ impl Agent {
             self.state.reset_if_prompt_changed(&base_system_prompt)?;
             self.state.recover_stale_turns()?;
         }
-        self.system_prompt = with_mode_reminder(base_system_prompt, self.mode);
+        self.system_prompt = with_mode_reminder(base_system_prompt, self.mode, &self.paths);
         Ok(())
     }
 
@@ -664,6 +668,16 @@ impl Agent {
             result.usage_estimated,
         )?;
         self.memory.process_after_turn(&input, &result.content)?;
+        // 自我进化一期：每轮自动标注训练样本（开关 finetune.collect，默认关，
+        // 只追加 JSONL 不训练；攒够阈值由外部 MLX 脚本批量微调）
+        crate::finetune::record_turn(
+            &self.paths,
+            &self.config.finetune,
+            self.mode,
+            &input,
+            &result.content,
+            &used_tools,
+        );
         // 自我成长：用户明确要求记住的方法 → 沉淀为技能（规则匹配，零模型开销）
         if let Some((skill_name, is_new)) =
             crate::learning::maybe_learn(&self.paths, &self.config, &input, &result.content)?
@@ -2299,13 +2313,37 @@ fn vision_analysis_progress(tick: usize) -> String {
     }
 }
 
-fn with_mode_reminder(system_prompt: String, mode: AgentMode) -> String {
+fn with_mode_reminder(system_prompt: String, mode: AgentMode, paths: &GqyPaths) -> String {
     let mut prompt = system_prompt;
-    if let Some(reminder) = mode.reminder() {
+    if let Some(reminder) = load_mode_reminder(mode, paths) {
         prompt.push_str("\n\n");
-        prompt.push_str(reminder);
+        prompt.push_str(&reminder);
     }
     prompt
+}
+
+/// 模式提醒词：Chat 模式优先从 `GQY_HOME/config/prompts/chat.md` 动态读取
+/// （免编译改女友态人设），文件缺失/读取失败时回退到内置 `CHAT_REMINDER`；
+/// Normal / Plan 保持内置静态提醒。
+fn load_mode_reminder(mode: AgentMode, paths: &GqyPaths) -> Option<String> {
+    if mode != AgentMode::Chat {
+        return mode.reminder().map(str::to_string);
+    }
+    let candidates = [
+        paths.config_dir.join("prompts").join("chat.md"),
+        paths.config_dir.join("chat.md"),
+    ];
+    for candidate in candidates {
+        if candidate.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&candidate) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    Some(crate::prompts::CHAT_REMINDER.to_string())
 }
 
 #[derive(Default)]

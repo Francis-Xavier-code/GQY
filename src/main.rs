@@ -10,6 +10,7 @@ mod clipboard;
 mod config;
 mod config_tui;
 mod default_models;
+mod finetune;
 mod i18n;
 mod learning;
 mod llm;

@@ -3,6 +3,26 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.0] - 2026-08-03
+
+### 新增
+- **SearXNG 本地搜索**：本地优先 + 超时/去重/重试，配置 `searxng_base_url` 后自动使用（隐私友好，不依赖第三方在线 API）；
+- **自我进化一期**：每轮对话自动采集训练样本到 `data/finetune/turns.jsonl`（JSONL 格式，只收集不训练，攒够阈值后用 MLX LoRA 批量微调）；
+- **WebUI 用量分析 v2**：GitHub 式贡献热力图 + 费用估算（按 provider 单价，可配置）+ token 构成堆叠柱 + 模型维度表 + 调用级明细；
+- **菜单栏双模交互**：左键悬浮卡片（NSPanel + WKWebView）+ 右键菜单 + ⌥G 全局唤起；
+- **WebUI 悬浮卡片嵌入模式**：`?panel=1` 精简界面（隐藏侧栏/顶栏，单聊卡片形态）；
+- **备份可见性**：WebUI 顶栏备份状态徽标（成功/失败/时间），失败也能被发现；
+- **SQLite 空闲页回收**：建库 `auto_vacuum=INCREMENTAL`，备份前 best-effort 增量回收（旧库无害 no-op）；
+- **通信桥 v2**：TG/NapCat 桥接层接入 GQY 长驻 daemon（HTTP + SSE），支持图片事件、追问、流式输出，daemon 生命周期自动管理；
+- **`config set` 自动建段**：中间键不存在时自动创建，支持直接新增 `finetune.*` 等配置段；
+- **闲聊模式开放只读记忆查询**：角色扮演时能想起别处的事。
+
+### 修复
+- **切换供应商前自动压缩上下文**：避免大上下文多供应商切换烧钱（34 元事件根治）；
+- **Chat 模式提醒词免编译**：读 `config/prompts/chat.md`，改提醒词不再需要重新编译；
+- **tool 折叠动画**：grid `1fr→0fr` 过渡，自适应高度，不再跳变；
+- **废弃补丁防护**：`apply-patches.sh` 自动跳过被 fix 版取代的原始补丁。
+
 ## [0.7.1] - 2026-08-02
 
 ### 修复

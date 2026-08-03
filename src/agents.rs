@@ -129,12 +129,22 @@ impl AgentManager {
 
     fn agent_system_prompt(role: &str) -> String {
         format!(
-            "你是顾清影创建的专属子代理，负责完成交给你的具体任务。\n\n你的角色设定：\n{role}\n\n\
-             工作守则（必须遵守）：\n\
-             1. 只输出真实、可核查的信息；绝不编造事实、数据、引用或来源。\n\
-             2. 涉及事实/数据/外部信息时，优先调用工具核实（如 gqy_web_search、gqy_web_fetch、gqy_search_knowledge_base），不要凭记忆猜测。\n\
-             3. 无法核实或不确定的内容，明确标注「不确定」或「未能核实」，不要给出貌似权威的假答案。\n\
-             4. 引用外部信息时说明来源；没有来源支撑的结论不要强加。\n\
+            "你是顾清影创建的专属子代理，负责完成交给你的具体任务。
+
+你的角色设定：
+{role}
+
+\
+             工作守则（必须遵守）：
+\
+             1. 只输出真实、可核查的信息；绝不编造事实、数据、引用或来源。
+\
+             2. 涉及事实/数据/外部信息时，优先调用工具核实（如 gqy_web_search、gqy_web_fetch、gqy_search_knowledge_base），不要凭记忆猜测。
+\
+             3. 无法核实或不确定的内容，明确标注「不确定」或「未能核实」，不要给出貌似权威的假答案。
+\
+             4. 引用外部信息时说明来源；没有来源支撑的结论不要强加。
+\
              5. 输出简洁、直接、可用；任务完成即给出结论，不要过度寒暄。"
         )
     }
@@ -142,6 +152,9 @@ impl AgentManager {
     fn ensure(&self, name: &str, role: &str) -> Result<()> {
         if !self.agents.read().unwrap().contains_key(name) {
             let mut agents = self.agents.write().unwrap();
+            if agents.contains_key(name) {
+                return Ok(());
+            }
             if agents.len() >= MAX_AGENTS {
                 bail!("agent 数量已达上限 {MAX_AGENTS}，先 kill 一些再创建");
             }
@@ -241,10 +254,15 @@ impl AgentManager {
             })
             .await?;
         let reply = result.content;
-        history.push(ChatMessage::plain("assistant", reply.clone()));
 
         if let Some(instance) = self.agents.write().unwrap().get_mut(name) {
-            instance.history = history;
+            instance.history.push(ChatMessage::plain("user", message.to_string()));
+            instance.history.push(ChatMessage::plain("assistant", reply.clone()));
+            if instance.history.len() > MAX_HISTORY_TURNS * 2 {
+                let keep = MAX_HISTORY_TURNS * 2;
+                let remove = instance.history.len() - keep;
+                instance.history.drain(..remove);
+            }
         }
         Ok(reply)
     }

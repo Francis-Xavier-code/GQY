@@ -134,6 +134,40 @@ pub fn init(paths: &GqyPaths, options: BackupInitOptions) -> Result<()> {
 }
 
 pub fn backup_now(paths: &GqyPaths, push: bool) -> Result<BackupOutcome> {
+    let outcome = backup_now_inner(paths, push);
+    record_backup_outcome(paths, &outcome);
+    outcome
+}
+
+/// 记录最近一次备份结果到 `state/last_backup.json`（供 WebUI / 菜单栏展示，
+/// 让「备份了但没人知道」变得可见；失败也记录，用户能发现记忆没存上）。
+fn record_backup_outcome(paths: &GqyPaths, outcome: &Result<BackupOutcome>) {
+    let state_dir = &paths.state_dir;
+    if std::fs::create_dir_all(state_dir).is_err() {
+        return;
+    }
+    let value = match outcome {
+        Ok(ok) => json!({
+            "ts": Utc::now().timestamp(),
+            "ok": true,
+            "committed": ok.committed,
+            "pushed": ok.pushed,
+            "commit": ok.commit,
+            "error": null,
+        }),
+        Err(error) => json!({
+            "ts": Utc::now().timestamp(),
+            "ok": false,
+            "committed": false,
+            "pushed": false,
+            "commit": null,
+            "error": format!("{error:#}"),
+        }),
+    };
+    let _ = std::fs::write(state_dir.join("last_backup.json"), value.to_string());
+}
+
+fn backup_now_inner(paths: &GqyPaths, push: bool) -> Result<BackupOutcome> {
     let home = required_isolated_home(paths)?;
     let backup_dir = home.join("backup");
     let settings = load_settings(&backup_dir)?;
@@ -202,6 +236,8 @@ fn maybe_auto_backup_with_interval(
             return Ok(None);
         }
     }
+    // 备份前回收 conversation.db 空闲页（best-effort：失败不影响备份，温和不阻塞）
+    let _ = crate::state::ConversationDb::incremental_vacuum_file(&paths.state_dir);
     backup_now(paths, true).map(Some)
 }
 

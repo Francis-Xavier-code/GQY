@@ -8,8 +8,15 @@
   <title>顾清影</title>
   <link rel="stylesheet" href="/styles.css">
   <script defer src="/app.js"></script>
+  <script defer src="/usage-viz.js"></script>
 </head>
 <body data-theme="graphite">
+  <!-- 悬浮卡片嵌入模式（NSPanel + WKWebView 加载 ?panel=1）：隐藏侧栏/顶栏，单聊卡片形态 -->
+  <script>
+    if (new URLSearchParams(location.search).has("panel")) {
+      document.body.classList.add("panel-mode");
+    }
+  </script>
   <div class="app-shell" id="appShell">
     <button class="page-scrim sidebar-scrim" id="sidebarScrim" type="button" aria-label="关闭会话栏" tabindex="-1"></button>
 
@@ -84,6 +91,7 @@
         </div>
 
         <div class="topbar-actions">
+          <span class="backup-chip" id="backupStatus" title="最近备份" hidden></span>
           <button class="topbar-icon-button" id="exportButton" type="button" title="导出当前对话" aria-label="导出当前对话">
             <span class="icon-slot" data-icon="download" aria-hidden="true"><span class="icon-fallback">↓</span></span>
           </button>
