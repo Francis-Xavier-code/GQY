@@ -21,6 +21,9 @@ if [ -d "$VENV_DIR" ]; then
   source "$VENV_DIR/bin/activate"
 fi
 
+# 底座模型缓存放项目目录（默认），保证自包含、可迁移；可用 GQY_HF_HOME 覆盖
+export HF_HOME="${GQY_HF_HOME:-$SCRIPT_DIR/.hf-cache}"
+
 echo "==> 0/6 环境检查"
 if [ ! -f "$TURNS" ]; then
   echo "未找到训练数据：$TURNS"
