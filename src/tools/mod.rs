@@ -331,6 +331,10 @@ pub fn is_hybrid_loading_mode(mode: &str) -> bool {
 
 pub fn chat_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
+    // 闲聊纯文本模式：不注册任何工具，杜绝本地模型工具循环/重复调用
+    if config.prompt.chat_pure_text {
+        return registry;
+    }
     web::register_fetch(&mut registry);
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());

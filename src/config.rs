@@ -215,6 +215,9 @@ pub struct PromptConfig {
     pub active_persona: String,
     #[serde(default)]
     pub active_identity: String,
+    /// 闲聊纯文本模式：true = 不注册任何工具（模型只聊天，避免本地模型工具循环/反复调用）
+    #[serde(default = "default_true")]
+    pub chat_pure_text: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -621,6 +624,7 @@ impl Default for PromptConfig {
             user_identity_file: default_user_identity_file(),
             active_persona: String::new(),
             active_identity: String::new(),
+            chat_pure_text: true,
         }
     }
 }
