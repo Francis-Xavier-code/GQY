@@ -16,10 +16,10 @@ GQY 是从我的想法中诞生出来的人格，从 [shorin-miyu](https://githu
 ![](./pics/GQY-image.png)
 
 <div align="center">
-<video src="https://raw.githubusercontent.com/Francis-Xavier-code/GQY/main/pics/video.mp4" controls width="420" poster="pics/GQY-icon.png">
-  你的浏览器不支持视频预览，<a href="pics/video.mp4">点此下载视频</a>。
+<video src="pics/video.mp4" controls width="420" poster="pics/GQY-icon.png">
+  你的浏览器不支持视频预览，<a href="https://github.com/Francis-Xavier-code/GQY/raw/main/pics/video.mp4">点此下载视频</a>。
 </video>
-<br><small>顾清影 · 演示视频</small>
+<br><small>顾清影 · 演示视频（若无法播放请<a href="https://github.com/Francis-Xavier-code/GQY/raw/main/pics/video.mp4">下载 mp4</a>）</small>
 </div>
 
 ## 有什么功能？
