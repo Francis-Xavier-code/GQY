@@ -25,3 +25,4 @@
 /data/finetune/turns.jsonl
 /data/finetune/*.md
 /generate_*.py
+/venv/
