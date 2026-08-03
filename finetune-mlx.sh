@@ -104,7 +104,7 @@ with open(sys.argv[1], encoding='utf-8') as f, open(sys.argv[2], 'w', encoding='
 print("   chat 格式就绪")
 PY
 
-echo "==> 5/6 LoRA 训练（底座 $BASE_MODEL，epochs=$EPOCHS，lr=$LR）"
+echo "==> 5/6 LoRA 训练（底座 ${BASE_MODEL}，epochs=${EPOCHS}，lr=${LR}）"
 
 python3 -m mlx_lm.lora \
   --model "$BASE_MODEL" \
@@ -122,7 +122,7 @@ cp "$OUT/adapter/adapter.safetensors" "$OUT/adapter.safetensors" 2>/dev/null || 
 cat > "$OUT/README.md" << MD
 # 顾清影 LoRA $TS
 - 底座：$BASE_MODEL
-- 样本：$TOTAL 条（清洗后），epochs=$EPOCHS，lr=$LR
+- 样本：$TOTAL 条（清洗后），epochs=${EPOCHS}，lr=$LR
 - 合并完整模型：${MERGE:+是（merged/）}
 - 训练日期：$TS
 MD
