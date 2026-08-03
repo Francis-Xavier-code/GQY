@@ -3053,7 +3053,18 @@
     return link;
   }
 
-  function createConversationMedia(asset, { eager = false } = {}) {
+  const EMOTION_BADGES = {
+    neutral: { icon: "🙂", label: "平静" },
+    happy: { icon: "😊", label: "开心" },
+    sad: { icon: "😢", label: "难过" },
+    angry: { icon: "😠", label: "生气" },
+    shy: { icon: "😳", label: "害羞" },
+    surprised: { icon: "😲", label: "惊讶" },
+    tired: { icon: "😪", label: "疲惫" },
+    thinking: { icon: "🤔", label: "思考" },
+  };
+
+  function createConversationMedia(asset, { eager = false, emotion = null, action = null } = {}) {
     const source = asset && typeof asset === "object" ? asset : {};
     const url = safeAssetUrl(source.url);
     const mime = String(source.mime || "").trim().toLowerCase();
@@ -3066,6 +3077,8 @@
     const figure = document.createElement("figure");
     figure.className = "conversation-media";
     if (source.id != null) figure.dataset.assetId = String(source.id);
+    if (emotion) figure.dataset.emotion = String(emotion);
+    if (action) figure.dataset.action = String(action);
     const visual = document.createElement("div");
     visual.className = "conversation-media-visual";
     if (width && height) {
@@ -3124,6 +3137,15 @@
     }
     figure.appendChild(visual);
     if (caption.childElementCount) figure.appendChild(caption);
+    // 情感徽标：模型通过 show_meme 带 emotion 时，叠加在图片右上角（Live2D/悬浮窗同类语义）
+    const emo = emotion ? EMOTION_BADGES[String(emotion)] || null : null;
+    if (emo) {
+      const badge = document.createElement("span");
+      badge.className = "conversation-media-emotion";
+      badge.textContent = `${emo.icon} ${emo.label}`;
+      badge.title = action ? `${emo.label} · ${String(action)}` : emo.label;
+      visual.appendChild(badge);
+    }
     return figure;
   }
 
@@ -4070,7 +4092,7 @@
           finalizeLiveReasoning(live);
           live.contextOperation = null;
           live.assets.push(asset);
-          live.blocks.appendChild(createConversationMedia(asset, { eager: true }));
+          live.blocks.appendChild(createConversationMedia(asset, { eager: true, emotion: data?.emotion, action: data?.action }));
           tool.imageCount += 1;
         }
       } else if (data?.error) {

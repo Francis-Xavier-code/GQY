@@ -3,6 +3,12 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.1] - 2026-08-03
+
+### 修复
+- **WebUI 情感标签**：`tool.image` 事件携带的 emotion/action 字段此前被前端忽略——现在图片右上角叠加情感徽标（😊开心/😢难过等 8 种，含动作 tooltip）；
+- **女友人格默认启用**：内置 `chat.md` 提醒词过于中性，导致 Chat 闲聊模式没有情感表现——已在 `config/prompts/` 部署女友态提醒 + lover 人格，并默认激活 `active_persona=lover.md`（免编译，改文件即生效）。
+
 ## [0.8.0] - 2026-08-03
 
 ### 新增
