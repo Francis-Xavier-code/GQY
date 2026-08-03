@@ -209,6 +209,14 @@ GQY 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在
 
   GQY 支持读写文件、搜索内容、查找文件、删除文件等。
 
+- 本地搜索引擎（tools/searchengine）
+
+  GQY 仓库内置了一个**从零实现、零依赖**的网页搜索引擎原型（`tools/searchengine/`），
+  纯 Python 标准库实现：BFS 爬虫 → 倒排索引 → BM25 排序 → 网页 UI。
+  设计上**英文优先**（不索引中文，避开中文农场噪声）并带**域名黑名单**（双层拦截已知垃圾站）。
+  适合作为个人搜索后端或技术文档检索。完整文档见
+  [tools/searchengine/wiki/Home.md](tools/searchengine/wiki/Home.md)。
+
 - 计算器和哈希编解码
 
   为了计算结果的准确性，GQY 自带了科学计算器和哈希编解码的能力。
