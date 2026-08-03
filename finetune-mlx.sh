@@ -23,7 +23,7 @@ HOME_DIR="${1:-$HOME/Library/Application Support/gqy}"
 DATA_DIR="$HOME_DIR/data/finetune"
 TURNS="$DATA_DIR/turns.jsonl"
 LORA_ROOT="$DATA_DIR/lora"
-BASE_MODEL="${GQY_BASE_MODEL:-Qwen/Qwen3-4B-Instruct}"
+BASE_MODEL="${GQY_BASE_MODEL:-cognitivecomputations/Dolphin-2.9.2-qwen2.5-7b}"
 # 通用数据文件（JSONL，{user,assistant} 每行一条），防止灾难性遗忘。
 # 默认用内置少量占位；建议放一份通用中文指令集（如 alpaca-zh），混入效果更好。
 GENERIC_FILE="${GQY_GENERIC_FILE:-}"

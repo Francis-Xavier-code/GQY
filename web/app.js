@@ -1411,9 +1411,29 @@
     state.configMultimodalModels = Array.isArray(payload?.multimodal_models) ? payload.multimodal_models : [];
     if (payload?.display && typeof payload.display === "object") state.display = payload.display;
     if (payload?.context && typeof payload.context === "object") state.context = payload.context;
+    refreshPersonaChip();
     renderConfigEditors();
     renderModelMenu();
     updateContext();
+  }
+
+  // 顶栏人格徽标：显示当前激活的人格（active_persona），一眼看出女友人格是否生效
+  function refreshPersonaChip() {
+    const el = document.getElementById("personaChip");
+    if (!el) return;
+    const active = String(state.configDraft?.prompt?.active_persona || "").trim();
+    const personaList = Array.isArray(state.promptDraft?.personas) ? state.promptDraft.personas : [];
+    const known = personaList.find((item) =>
+      item && (item.id === active || item.file === active || item.name === active)
+    );
+    const label = known?.name || (active ? active.replace(/\.md$/i, "") : "");
+    if (!label) {
+      el.hidden = true;
+      return;
+    }
+    el.textContent = `💗 ${label}`;
+    el.title = `当前人格：${label}（闲聊模式叠加 chat.md 女友态提醒）`;
+    el.hidden = false;
   }
 
   async function loadConfigDraft() {
