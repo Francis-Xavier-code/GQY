@@ -3,6 +3,11 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.3] - 2026-08-03
+
+### 修复
+- **Qwen3 思考块污染**：Qwen3 系模型在 no-think 模板下仍会输出空 `<think>...</think>` 块混入正文（本地 llama.cpp/Ollama 均出现）——在流式解析层做跨 chunk 剥除，全局生效（任何后端/任何模式都不再显示思考标签）。
+
 ## [0.8.2] - 2026-08-03
 
 ### 新增

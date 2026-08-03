@@ -659,6 +659,9 @@ impl Agent {
             self.state.append_persisted_context(&turn_id, &report)?;
         }
         let token_total = result.usage.as_ref().map(Usage::effective_total_tokens);
+        // 剥掉模型输出里的 <think> 思考块：Qwen3 系在 no-think 下也会输出空 think 标签，
+        // 直接污染回复（本地 llama.cpp / Ollama 都可能出现）；全局处理，任何后端受益。
+        result.content = strip_think_blocks(&result.content);
         // 兜底：模型只输出思考（reasoning）而没有正文时，补一句说明，
         // 保证面板/终端/历史都有可读的回复内容
         if result.content.trim().is_empty() {
@@ -1869,6 +1872,24 @@ fn chat_result_replay_content(result: &ChatResult) -> &str {
         .as_deref()
         .filter(|reasoning| !reasoning.trim().is_empty())
         .unwrap_or(&result.content)
+}
+
+/// 剥除回复文本中的 `<think>...</think>` 思考块（含空块），返回清理后的文本。
+/// Qwen3 系在 no-think 模板下也会输出空 think 标签污染回复，全局处理，任何后端受益。
+fn strip_think_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        if let Some(end_rel) = rest[start..].find("</think>") {
+            let end = start + end_rel + "</think>".len();
+            rest = &rest[end..];
+        } else {
+            rest = &rest[start + "<think>".len()..];
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 pub fn evicted_turn_entries_for_archive(
