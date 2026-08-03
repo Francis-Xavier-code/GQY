@@ -98,8 +98,22 @@ PY
 
 echo "==> 4/6 转 MLX 训练格式"
 TS=$(date +%Y%m%d-%H%M%S)
-OUT="$LORA_ROOT/$LORA_NAME"
-mkdir -p "$OUT"
+# 续训（GQY_RESUME=1）：沿用最近 checkpoint 的原训练目录，保证产物连续
+if [ "${GQY_RESUME:-0}" = "1" ]; then
+  RESUME_CKPT="$(ls -t "$LORA_ROOT"/*/adapter/0000*_adapters.safetensors 2>/dev/null | head -1)"
+  if [ -n "$RESUME_CKPT" ]; then
+    OUT="$(dirname "$(dirname "$RESUME_CKPT")")"
+    echo "==> 续训：从 $RESUME_CKPT 继续（目录 $OUT）"
+  fi
+fi
+if [ -z "${OUT:-}" ]; then
+  OUT="$LORA_ROOT/$LORA_NAME"
+  mkdir -p "$OUT"
+fi
+RESUME_ARGS=()
+if [ -n "${RESUME_CKPT:-}" ]; then
+  RESUME_ARGS=(--resume-adapter-file "$RESUME_CKPT")
+fi
 mkdir -p "$OUT"
 
 TRAIN_DIR="$DATA_DIR/train"
@@ -150,7 +164,7 @@ python3 -m mlx_lm.lora \
   --learning-rate "$LR" \
   --steps-per-report 20 \
   --adapter-path "$OUT/adapter" \
-  ${GQY_RESUME:+--resume-adapter-file "$(ls -t "$OUT"/adapter/0000*_adapters.safetensors 2>/dev/null | head -1)"}
+  "${RESUME_ARGS[@]}"
 
 echo "==> 6/6 自动合并（LoRA → 完整模型）"
 if command -v mlx_lm >/dev/null 2>&1 || true; then
@@ -200,7 +214,7 @@ if [ "$MERGE" = "1" ]; then
   python3 -m mlx_lm.fuse \
     --model "$BASE_MODEL" \
     --adapter-path "$OUT/adapter" \
-  ${GQY_RESUME:+--resume-adapter-file "$(ls -t "$OUT"/adapter/0000*_adapters.safetensors 2>/dev/null | head -1)"} \
+  "${RESUME_ARGS[@]}" \
     --save-path "$OUT/merged"
   echo "✅ 合并完成：$OUT/merged"
 fi
