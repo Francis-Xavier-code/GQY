@@ -9,6 +9,51 @@ use crate::paths::GqyPaths;
 use anyhow::{bail, Context, Result};
 use std::process::Command;
 
+/// 顾清影克隆音色朗读（Qwen3-TTS 本地服务，见 scripts/tts-server.py）：
+/// text → 8091 服务合成 → afplay 播放（终端直接播，不开 App）。
+/// 服务未启动时返回错误（可回退到 `speak`）。
+pub fn speak_clone(text: &str, tts_url: Option<&str>) -> Result<()> {
+    let text = text.trim();
+    if text.is_empty() {
+        bail!("text is required");
+    }
+    let base = tts_url.unwrap_or("http://127.0.0.1:8091");
+    // URL 编码（中文等非 ASCII → %XX）
+    let mut encoded = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            encoded.push(c);
+        } else if c == ' ' {
+            encoded.push('+');
+        } else {
+            for b in c.to_string().as_bytes() {
+                encoded.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    let url = format!("{base}/tts?text={encoded}");
+    let resp = reqwest::blocking::get(&url)
+        .with_context(|| format!("TTS 服务不可达（{base}）——先启动：venv/bin/python scripts/tts-server.py") )?;
+    if !resp.status().is_success() {
+        bail!("TTS 服务返回 HTTP {}", resp.status());
+    }
+    let bytes = resp.bytes().context("读取 TTS 音频失败")?;
+    if bytes.len() < 100 {
+        bail!("TTS 返回内容过短，可能合成失败");
+    }
+    let tmp = std::env::temp_dir().join(format!("gqy-tts-{}.wav", std::process::id()));
+    std::fs::write(&tmp, &bytes)?;
+    let status = Command::new("afplay")
+        .arg(&tmp)
+        .status()
+        .with_context(|| "failed to run afplay")?;
+    let _ = std::fs::remove_file(&tmp);
+    if !status.success() {
+        bail!("afplay exited with status {status}");
+    }
+    Ok(())
+}
+
 /// 文字转语音：默认直接播放，可指定输出文件（.aiff/.m4a）。
 /// 用 macOS 内置 `say`，零依赖、零 API 成本。
 pub fn speak(text: &str, voice: Option<&str>, output: Option<&str>) -> Result<()> {

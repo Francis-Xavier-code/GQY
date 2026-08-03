@@ -1126,6 +1126,7 @@ fn router(state: WebState) -> Router {
         .route("/assets/gqy-wallpaper.png", get(wallpaper_asset))
         .route("/assets/provider-icons.svg", get(provider_icons_asset))
         .route("/api/health", get(health))
+        .route("/api/tts", get(tts_web))
         .route("/api/auth/login", post(auth_login))
         .route("/api/bootstrap", get(bootstrap))
         .route("/api/config", get(get_config).put(update_config))
@@ -1322,6 +1323,51 @@ async fn health() -> Json<Value> {
         "status": "ready",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// WebUI 语音回复：文本 → 本地 Qwen3-TTS 克隆音色（scripts/tts-server.py :8091）→ wav。
+/// 返回 audio/wav 流；TTS 服务未启动时返回 503（前端静默降级）。
+#[derive(Deserialize)]
+struct TtsQuery {
+    text: String,
+}
+
+async fn tts_web(
+    Query(query): Query<TtsQuery>,
+) -> Result<Response, ApiError> {
+    if query.text.trim().is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "text is required"));
+    }
+    // URL 编码
+    let mut encoded = String::new();
+    for c in query.text.trim().chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            encoded.push(c);
+        } else if c == ' ' {
+            encoded.push('+');
+        } else {
+            for b in c.to_string().as_bytes() {
+                encoded.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    let url = format!("http://127.0.0.1:8091/tts?text={encoded}");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(90))
+        .send()
+        .await
+        .map_err(|_| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "TTS 服务未启动（scripts/tts-server.py）"))?;
+    if !resp.status().is_success() {
+        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "TTS 合成失败"));
+    }
+    let bytes = resp.bytes().await.map_err(ApiError::internal)?;
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "audio/wav")
+        .header("Content-Length", bytes.len())
+        .body(axum::body::Body::from(bytes))
+        .unwrap())
 }
 
 /// 会话状态（供终端/面板同步轮询）：当前会话最大 seq + 是否有运行中的轮次。
