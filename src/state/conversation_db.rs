@@ -178,7 +178,8 @@ impl ConversationDb {
                 assistant_reasoning TEXT,
                 assistant_timestamp TEXT,
                 status           TEXT NOT NULL DEFAULT 'running',
-                tool_reports     TEXT NOT NULL DEFAULT '[]'
+                tool_reports     TEXT NOT NULL DEFAULT '[]',
+                mode             TEXT NOT NULL DEFAULT 'normal'
             );
             CREATE INDEX IF NOT EXISTS idx_turns_seq ON turns(seq);
              CREATE INDEX IF NOT EXISTS idx_turns_status ON turns(status);",
@@ -238,6 +239,7 @@ impl ConversationDb {
         add_column_if_missing(&conn, "turns", "is_summary", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(&conn, "turns", "owner_pid", "INTEGER")?;
         add_column_if_missing(&conn, "turns", "queue_session_id", "TEXT")?;
+        add_column_if_missing(&conn, "turns", "mode", "TEXT NOT NULL DEFAULT 'normal'")?;
         add_column_if_missing(&conn, "turns", "token_total", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(
             &conn,
@@ -307,6 +309,7 @@ impl ConversationDb {
         user_content: &str,
         owner_pid: u32,
         queue_session_id: &str,
+        mode: &str,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let seq = self.next_seq_locked(&conn)?;
@@ -334,8 +337,8 @@ impl ConversationDb {
                 ))
             });
         conn.execute(
-            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid, queue_session_id, channel, conversation_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8, ?9)",
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status, owner_pid, queue_session_id, channel, conversation_id, mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8, ?9, ?10)",
             params![
                 turn_id,
                 seq,
@@ -345,7 +348,8 @@ impl ConversationDb {
                 owner_pid as i64,
                 queue_session_id,
                 self.channel,
-                conversation_id
+                conversation_id,
+                mode
             ],
         )?;
         Ok(())
@@ -817,6 +821,77 @@ impl ConversationDb {
         Ok(turns)
     }
 
+    /// 按对话模式加载可见历史（闲聊隔离）：
+    /// - Chat 模式：只看 `mode='chat'` 的轮次，且最多取最近 `limit` 条（本地模型上下文友好，默认 12）；
+    /// - 其他模式：排除 `mode='chat'` 的轮次（闲聊不污染正经对话）。
+    pub fn load_visible_turns_for_mode(&self, mode: &str, limit: Option<usize>) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        if mode == "chat" {
+            let mut stmt = conn.prepare(
+                "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                        assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                        token_total, token_usage_estimated
+                 FROM turns WHERE channel = ?1 AND hidden = 0 AND mode = 'chat'
+                 ORDER BY seq DESC LIMIT ?2",
+            )?;
+            let mut turns = stmt
+                .query_map(params![self.channel, limit.unwrap_or(12) as i64], map_turn_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            turns.reverse();
+            attach_turn_children_locked(&conn, &mut turns)?;
+            Ok(turns)
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                        assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                        token_total, token_usage_estimated
+                 FROM turns WHERE channel = ?1 AND hidden = 0 AND mode != 'chat' ORDER BY seq ASC",
+            )?;
+            let mut turns = stmt
+                .query_map(params![self.channel], map_turn_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            attach_turn_children_locked(&conn, &mut turns)?;
+            Ok(turns)
+        }
+    }
+
+    /// 与 `load_visible_turns_for_mode` 相同，但排除指定 turn（正在运行的当前轮）。
+    pub fn load_visible_turns_for_mode_excluding(
+        &self,
+        mode: &str,
+        exclude_turn_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        if mode == "chat" {
+            let mut stmt = conn.prepare(
+                "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                        assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                        token_total, token_usage_estimated
+                 FROM turns WHERE channel = ?1 AND hidden = 0 AND mode = 'chat' AND turn_id != ?2
+                 ORDER BY seq DESC LIMIT ?3",
+            )?;
+            let mut turns = stmt
+                .query_map(params![self.channel, exclude_turn_id, limit.unwrap_or(12) as i64], map_turn_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            turns.reverse();
+            attach_turn_children_locked(&conn, &mut turns)?;
+            Ok(turns)
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                        assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                        token_total, token_usage_estimated
+                 FROM turns WHERE channel = ?1 AND hidden = 0 AND mode != 'chat' AND turn_id != ?2 ORDER BY seq ASC",
+            )?;
+            let mut turns = stmt
+                .query_map(params![self.channel, exclude_turn_id], map_turn_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            attach_turn_children_locked(&conn, &mut turns)?;
+            Ok(turns)
+        }
+    }
+
     /// 读取指定通道的可见对话（供 WebUI 切换查看其他终端/通信通道）
     /// 全文搜索对话（LIKE 匹配用户/助手内容，跨通道），按 seq 倒序，返回匹配轮次。
     pub fn search_turns(&self, query: &str, limit: usize) -> Result<Vec<Turn>> {
@@ -852,6 +927,44 @@ impl ConversationDb {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         attach_turn_children_locked(&conn, &mut turns)?;
         Ok(turns)
+    }
+
+    /// 按通道 + 对话模式加载可见历史（闲聊隔离的 WebUI 视角）
+    pub fn load_visible_turns_for_channel_mode(
+        &self,
+        channel: &str,
+        mode: Option<&str>,
+    ) -> Result<Vec<Turn>> {
+        let conn = self.conn.lock().unwrap();
+        match mode {
+            Some("chat") => {
+                let mut stmt = conn.prepare(
+                    "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                            assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                            token_total, token_usage_estimated
+                     FROM turns WHERE channel = ?1 AND hidden = 0 AND mode = 'chat' ORDER BY seq ASC",
+                )?;
+                let mut turns = stmt
+                    .query_map(params![channel], map_turn_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                attach_turn_children_locked(&conn, &mut turns)?;
+                Ok(turns)
+            }
+            Some(_) => {
+                let mut stmt = conn.prepare(
+                    "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
+                            assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                            token_total, token_usage_estimated
+                     FROM turns WHERE channel = ?1 AND hidden = 0 AND mode != 'chat' ORDER BY seq ASC",
+                )?;
+                let mut turns = stmt
+                    .query_map(params![channel], map_turn_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                attach_turn_children_locked(&conn, &mut turns)?;
+                Ok(turns)
+            }
+            None => self.load_visible_turns_for_channel(channel),
+        }
     }
 
     /// 全部通道摘要：每个通道的最近消息、条数与运行状态，供 WebUI 左侧列表展示

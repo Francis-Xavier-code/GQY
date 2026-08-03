@@ -767,6 +767,12 @@ struct CreateTurnRequest {
     images: Vec<WebImageInput>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ChannelTurnsQuery {
+    mode: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QueuePromptRequest {
@@ -1498,8 +1504,10 @@ async fn channel_turns_web(
     State(state): State<WebState>,
     headers: HeaderMap,
     Path(channel_id): Path<String>,
+    Query(query): Query<ChannelTurnsQuery>,
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
+    let mode = query.mode.as_deref();
     let mut assets_by_turn = HashMap::<String, Vec<ImageAsset>>::new();
     for asset in state
         .state_store
@@ -1513,7 +1521,7 @@ async fn channel_turns_web(
     }
     let turns: Vec<SafeTurn> = state
         .state_store
-        .load_visible_turns_for_channel(&channel_id)
+        .load_visible_turns_for_channel_mode(&channel_id, mode)
         .map_err(ApiError::internal)?
         .into_iter()
         .filter(|turn| !turn.is_summary)

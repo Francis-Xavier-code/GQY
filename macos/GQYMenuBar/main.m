@@ -597,8 +597,10 @@ static OSStatus gqy_hotkey_handler(EventHandlerCallRef nextHandler,
     frame.origin.y = NSMaxY(visible) - NSHeight(frame) - 4;
     [self.quickPanel setFrame:frame display:YES];
 
-    [self.quickPanel makeKeyAndOrderFront:nil];
+    // 先激活 app 再展示面板：首次点击状态栏图标时 app 可能尚未激活，
+    // 若先 makeKey 后 activate，面板会瞬间失焦被 hidesOnDeactivate 收起（左键闪退 bug）。
     [NSApp activateIgnoringOtherApps:YES];
+    [self.quickPanel makeKeyAndOrderFront:nil];
 
     // 首次创建加载 panel 模式 WebUI；再次唤起刷新（对话在 daemon 侧持久，刷新不丢上下文）
     if (!self.quickPanelLoaded) {

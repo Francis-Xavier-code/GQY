@@ -396,6 +396,10 @@
       button.setAttribute("aria-pressed", String(active));
     });
     if (persist) safeStorageSet("gqy.web.mode", selected);
+    // 闲聊隔离：切换模式后按新模式重新拉当前会话历史
+    if (typeof switchToChannel === "function" && state.viewingChannel) {
+      switchToChannel(state.viewingChannel);
+    }
   }
 
   function closeSidebar() {
@@ -2129,7 +2133,10 @@
     updateConversationChrome();
     updateControlState();
     try {
-      const response = await apiRequest(`/api/channels/${encodeURIComponent(channelId)}/turns`);
+      const mode = ["normal", "plan", "chat"].includes(state.mode) ? state.mode : null;
+      const response = await apiRequest(
+        `/api/channels/${encodeURIComponent(channelId)}/turns${mode ? `?mode=${mode}` : ""}`
+      );
       const data = await response.json();
       if (state.viewingChannel !== String(channelId)) return;
       state.viewedTurns = Array.isArray(data?.turns)
