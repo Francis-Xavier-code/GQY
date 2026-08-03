@@ -178,6 +178,17 @@ while True:
 PY
 }
 
+cmd_watch() {
+  local interval="${1:-5}"
+  echo "实时监控中（每 ${interval}s 刷新，Ctrl+C 退出）..."
+  while true; do
+    clear
+    echo "$(date '+%H:%M:%S')  Ctrl+C 退出"
+    cmd_status
+    sleep "$interval"
+  done
+}
+
 cmd_stop() {
   if [ -f "$TRAIN_PID" ]; then
     local pid
@@ -195,10 +206,11 @@ cmd_stop() {
 
 case "${1:-}" in
   status) cmd_status ;;
+  watch) cmd_watch "${2:-5}" ;;
   logs) cmd_logs "${2:-20}" ;;
   test) cmd_test ;;
   stop) cmd_stop ;;
   --background|-b) cmd_background ;;
   "" ) cmd_foreground ;;
-  *) echo "用法: $0 [status|logs|test|stop|--background]"; exit 1 ;;
+  *) echo "用法: $0 [status|watch|logs|test|stop|--background]"; exit 1 ;;
 esac
