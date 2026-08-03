@@ -3,6 +3,15 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.2] - 2026-08-03
+
+### 新增
+- **闲聊上下文隔离**：Chat 模式的对话写入独立 `mode='chat'` 存储，与普通/计划模式互不污染——闲聊历史不撑爆正经对话上下文（本地模型友好，闲聊只看最近 12 轮）；WebUI 切换模式时按模式重载历史（`/api/channels/{id}/turns?mode=`）。
+
+### 修复
+- **称呼规则冲突**：内置人格 `gqy.md` 原禁止「宝宝/宝贝」等亲密称呼、默认叫「老板」——与女友人格冲突。改为：默认叫「主人」，亲密称呼仅女友人格/闲聊模式启用时使用；
+- **菜单栏左键面板闪退**：`presentQuickPanel` 先 `makeKeyAndOrderFront` 后 `activate` 顺序反了，首次点击时 app 未激活导致面板被 `hidesOnDeactivate` 立即收起——调为先激活再展示。
+
 ## [0.8.1] - 2026-08-03
 
 ### 修复

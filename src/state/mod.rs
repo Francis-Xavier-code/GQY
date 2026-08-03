@@ -91,7 +91,33 @@ impl StateStore {
 
     pub fn start_turn(&self, turn_id: &str, user_content: &str, owner_pid: u32) -> Result<()> {
         self.conv_db
-            .start_turn(turn_id, user_content, owner_pid, &self.queue_session_id)
+            .start_turn(turn_id, user_content, owner_pid, &self.queue_session_id, "normal")
+    }
+
+    /// 按对话模式开始一轮（闲聊隔离：chat 模式写入 mode='chat'，与正经对话分离）
+    pub fn start_turn_for_mode(
+        &self,
+        turn_id: &str,
+        user_content: &str,
+        owner_pid: u32,
+        mode: &str,
+    ) -> Result<()> {
+        self.conv_db
+            .start_turn(turn_id, user_content, owner_pid, &self.queue_session_id, mode)
+    }
+
+    /// 按模式加载可见历史（闲聊隔离）：chat 只看最近 N 条，其他模式排除 chat。
+    pub fn load_visible_turns_for_mode(&self, mode: &str) -> Result<Vec<Turn>> {
+        self.conv_db.load_visible_turns_for_mode(mode, None)
+    }
+
+    pub fn load_visible_turns_for_mode_excluding(
+        &self,
+        mode: &str,
+        exclude_turn_id: &str,
+    ) -> Result<Vec<Turn>> {
+        self.conv_db
+            .load_visible_turns_for_mode_excluding(mode, exclude_turn_id, None)
     }
 
     #[allow(dead_code)]
@@ -422,6 +448,16 @@ impl StateStore {
     /// 读取指定通道的可见对话（WebUI 切换查看其他终端/通信通道）
     pub fn load_visible_turns_for_channel(&self, channel: &str) -> Result<Vec<Turn>> {
         self.conv_db.load_visible_turns_for_channel(channel)
+    }
+
+    /// 按通道 + 对话模式加载（闲聊隔离的 WebUI 视角）
+    pub fn load_visible_turns_for_channel_mode(
+        &self,
+        channel: &str,
+        mode: Option<&str>,
+    ) -> Result<Vec<Turn>> {
+        self.conv_db
+            .load_visible_turns_for_channel_mode(channel, mode)
     }
 
     /// 全文搜索对话（跨通道）

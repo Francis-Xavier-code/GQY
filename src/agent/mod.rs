@@ -156,6 +156,15 @@ impl AgentMode {
             Self::Chat => Some(crate::prompts::CHAT_REMINDER),
         }
     }
+
+    /// 持久化用的模式 key（闲聊隔离按此过滤历史）
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Plan => "plan",
+            Self::Chat => "chat",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -439,7 +448,7 @@ impl Agent {
         }
 
         let target = (context_window as f32 * (1.0 - self.trim_batch_ratio)).max(1.0) as usize;
-        let turns = self.state.load_visible_turns()?;
+        let turns = self.state.load_visible_turns_for_mode(self.mode.key())?;
         let mut loaded_tool_tokens = loaded_tool_sources
             .as_ref()
             .map(|items| {
@@ -610,7 +619,7 @@ impl Agent {
             rand::random::<u16>()
         );
         self.state
-            .start_turn(&turn_id, &input, std::process::id())?;
+            .start_turn_for_mode(&turn_id, &input, std::process::id(), self.mode.key())?;
         let guard = PendingTurnGuard::new(self.state.clone(), turn_id.clone());
         let mut on_event = on_event;
         on_event(AgentEvent::TurnStarted {
@@ -886,7 +895,7 @@ impl Agent {
                 missing.join(", ")
             );
         };
-        let visible_count = self.state.load_visible_turns()?.len();
+        let visible_count = self.state.load_visible_turns_for_mode(self.mode.key())?.len();
         if visible_count == 0 {
             return Ok(None);
         }
@@ -940,7 +949,7 @@ impl Agent {
         }
         let compact_result = match self.on_overflow.as_str() {
             "compact" => {
-                let visible_count = self.state.load_visible_turns()?.len();
+                let visible_count = self.state.load_visible_turns_for_mode(self.mode.key())?.len();
                 if visible_count == 0 {
                     return Ok(None);
                 }
@@ -1570,7 +1579,9 @@ impl Agent {
                 summary.assistant_content
             )));
         }
-        let turns = self.state.load_visible_turns_excluding(current_turn_id)?;
+        let turns = self
+            .state
+            .load_visible_turns_for_mode_excluding(self.mode.key(), current_turn_id)?;
         for turn in &turns {
             if turn.is_summary {
                 continue;
