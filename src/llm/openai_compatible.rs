@@ -1312,6 +1312,9 @@ impl OpenAiCompatibleClient {
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
         let mut reasoning_part_active = false;
+        // Qwen3 系 no-think 也会输出空 <think> 块污染正文：流式层做跨 chunk 剥除
+        let mut think_scrub = String::new();
+        let mut in_think_block = false;
         let mut finish_reason = None;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
@@ -1325,6 +1328,8 @@ impl OpenAiCompatibleClient {
                     &mut reasoning,
                     &mut reasoning_emitted,
                     &mut reasoning_part_active,
+                    &mut think_scrub,
+                    &mut in_think_block,
                     &mut finish_reason,
                     &mut usage,
                     &mut tool_calls,
@@ -1350,6 +1355,8 @@ impl OpenAiCompatibleClient {
                 &mut reasoning,
                 &mut reasoning_emitted,
                 &mut reasoning_part_active,
+                &mut think_scrub,
+                &mut in_think_block,
                 &mut finish_reason,
                 &mut usage,
                 &mut tool_calls,
@@ -2944,6 +2951,8 @@ fn handle_sse_line<F>(
     reasoning: &mut String,
     reasoning_emitted: &mut usize,
     reasoning_part_active: &mut bool,
+    think_scrub: &mut String,
+    in_think_block: &mut bool,
     finish_reason: &mut Option<String>,
     usage: &mut Option<Usage>,
     tool_calls: &mut ToolCallAccumulator,
@@ -3039,6 +3048,10 @@ where
         }
         if let Some(text) = delta.content {
             if !text.is_empty() {
+                let text = scrub_think_stream(think_scrub, in_think_block, &text);
+                if text.is_empty() {
+                    continue;
+                }
                 if *reasoning_part_active {
                     flush_buffer(
                         reasoning,
@@ -5649,4 +5662,54 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
         text.replace_range(start..end, "");
     }
     text
+}
+
+/// 流式 think 块剥除器（跨 chunk 状态）：把 `<think>...</think>`（含空块）从
+/// 正文流中剔除。Qwen3 系在 no-think 模板下也会输出空 think 标签，本地
+/// llama.cpp / Ollama 都可能出现；全局处理，任何后端受益。
+fn scrub_think_stream(buffer: &mut String, in_think: &mut bool, text: &str) -> String {
+    buffer.push_str(text);
+    let mut out = String::new();
+    loop {
+        if *in_think {
+            if let Some(end) = buffer.find("</think>") {
+                let after = end + "</think>".len();
+                buffer.drain(..after);
+                *in_think = false;
+            } else {
+                buffer.clear();
+                break;
+            }
+        } else if let Some(start) = buffer.find("<think>") {
+            out.push_str(&buffer[..start]);
+            buffer.drain(..start + "<think>".len());
+            *in_think = true;
+        } else {
+            // 输出时保留可能被跨 chunk 切开的 "<think>" 前缀尾巴
+            let keep = "<think>"
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(i, _)| {
+                    let prefix = &"<think>"[..i]; // i 是字节下标，ASCII 安全
+                    if buffer.ends_with(prefix) && !prefix.is_empty() {
+                        Some(prefix.len())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            if keep > 0 {
+                let split = buffer.len() - keep;
+                out.push_str(&buffer[..split]);
+                buffer.drain(..split);
+            } else {
+                out.push_str(buffer);
+                buffer.clear();
+            }
+            break;
+        }
+    }
+    out
 }
