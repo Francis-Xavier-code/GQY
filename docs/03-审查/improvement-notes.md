@@ -67,3 +67,11 @@
 - LICENSE 切换 GPL-3.0（保留上游 MIT 声明）
 - README 完善（命令速查、FAQ、知识库说明）
 - 菜单栏 app 图标 / 版本号 / DMG 打包
+
+
+## 已随 2026-08-05 重构完成
+
+1. **CLI 拆分**：`cli/mod.rs`（dispatch）+ `cli/args.rs`（clap）+ `cli/repl.rs`（REPL）+ `cli/commands/*`
+2. **Agent 工具循环拆分**：`chat_with_tools` → `src/agent/tool_loop.rs`
+3. **配置空转修复**：`auto_fact_enabled` 规则提取事实；`auto_skill_enabled` 门控 `learning::maybe_learn`；TUI 可配置两者
+4. **Web 锁与鉴权**：`lock_mutex` 防 poison panic；`/api/shutdown` 与 pi 写操作走 `require_mutation`
