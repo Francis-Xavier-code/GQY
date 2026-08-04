@@ -1388,7 +1388,7 @@ impl Agent {
                 let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
                 spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 spinner_interval.tick().await;
-                let (output, tool_succeeded) = loop {
+                let (mut output, tool_succeeded) = loop {
                     tokio::select! {
                         result = &mut tool_future => {
                             break match result {
@@ -1499,10 +1499,36 @@ impl Agent {
                 }
                 if tool_succeeded {
                     let result_ok = if call.function.name == "run_command" {
-                        serde_json::from_str::<serde_json::Value>(&output)
-                            .ok()
+                        let parsed: Option<serde_json::Value> = serde_json::from_str(&output).ok();
+                        let success = parsed
+                            .as_ref()
                             .and_then(|v| v.get("success").and_then(serde_json::Value::as_bool))
-                            .unwrap_or(true)
+                            .unwrap_or(true);
+                        // 误判回退：run_command 失败且 stderr 疑似 command not found 时，
+                        // 提示 LLM 建议用户直接在 shell 执行
+                        if !success && self.config.shell.fallback_to_shell {
+                            if let Some((exit_code, stderr)) = parsed.as_ref().and_then(|v| {
+                                let ec = v.get("exit_code")?.as_i64()?;
+                                let err = v.get("stderr")?.as_str()?;
+                                Some((ec, err))
+                            }) {
+                                let stderr_lower = stderr.to_lowercase();
+                                if exit_code == 127
+                                    || stderr_lower.contains("command not found")
+                                    || stderr_lower.contains("未找到命令")
+                                    || stderr_lower.contains("no such file or directory")
+                                    || stderr_lower.contains("not found")
+                                {
+                                    output = format!(
+                                        "{}\n\n[hint: The command appears to not exist. \
+                                        If the user meant to run a shell command directly, \
+                                        suggest they try it in their terminal.]",
+                                        output
+                                    );
+                                }
+                            }
+                        }
+                        success
                     } else {
                         true
                     };

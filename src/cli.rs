@@ -164,6 +164,18 @@ fn repl_footer_line(mode: AgentMode, footer: &ReplFooterStatus, cols: usize) -> 
     let cols = cols.max(1);
     let bar = input_prompt_bar(mode);
     let bar_width = visible_width(&bar);
+
+    // 左侧：模式标签 + 模型名
+    let mode_label = colored_footer_mode_label(mode);
+    let model = if footer.model.is_empty() {
+        String::new()
+    } else {
+        format!(" \x1b[2m{}\x1b[0m", footer.model)
+    };
+    let left = format!("{mode_label}{model}");
+    let left_width = visible_width(&left);
+
+    // 右侧：token 用量
     let usage = footer.token_usage;
     let right_plain = render::format_token_usage_inline(
         usage.turn_tokens,
@@ -173,14 +185,9 @@ fn repl_footer_line(mode: AgentMode, footer: &ReplFooterStatus, cols: usize) -> 
     );
     let right = format!("\x1b[2m{right_plain}\x1b[0m");
     let right_width = visible_width(&right);
-    let left_budget = cols.saturating_sub(bar_width.saturating_add(right_width).saturating_add(1));
-    let left = repl_footer_left(mode, footer, left_budget);
+
     let gap = cols
-        .saturating_sub(
-            bar_width
-                .saturating_add(visible_width(&left))
-                .saturating_add(right_width),
-        )
+        .saturating_sub(bar_width.saturating_add(left_width).saturating_add(right_width))
         .max(1);
     format!("{bar}{left}{}{right}", " ".repeat(gap))
 }
@@ -270,10 +277,11 @@ fn show_mixed_model_endpoint(config: &AppConfig, interactive: bool) -> bool {
 
 fn colored_footer_mode_label(mode: AgentMode) -> String {
     let label = mode.label();
+    // 月夜主题：带背景色的模式标签
     match mode {
-        AgentMode::Normal => primary_footer_text(label),
-        AgentMode::Plan => format!("\x1b[1m\x1b[35m{label}\x1b[0m"),
-        AgentMode::Chat => format!("\x1b[1m\x1b[32m{label}\x1b[0m"),
+        AgentMode::Normal => format!("\x1b[48;2;30;58;138m\x1b[38;2;203;213;225m {label} \x1b[0m"),
+        AgentMode::Plan => format!("\x1b[48;2;124;58;237m\x1b[38;2;237;233;254m {label} \x1b[0m"),
+        AgentMode::Chat => format!("\x1b[48;2;167;139;250m\x1b[38;2;15;23;42m {label} \x1b[0m"),
     }
 }
 
@@ -1434,7 +1442,14 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Preview) => {
-            crate::repl_avatar::print_if_supported(&mut io::stdout());
+            crate::repl_avatar::print_startup_banner(
+                &mut io::stdout(),
+                "opencode",
+                "big-pickle",
+                t("normal", "普通"),
+                0,
+                0,
+            );
             render::print_markdown(
                 "# 月夜清影\n\n你好呀，我是**顾清影** —— 活在终端里的二次元少女。\n\
                  \n\
@@ -3089,6 +3104,14 @@ fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
     if !matches!(shell_name, "fish" | "bash" | "zsh") {
         std::process::exit(2);
     }
+    // History expansion（!!、!$、!n 等）透传给 shell 处理
+    if shell::is_history_expansion(message) {
+        std::process::exit(0);
+    }
+    // heredoc 和管道链整条透传给 shell
+    if shell::is_heredoc_start(message) || shell::is_pipe_chain(message) {
+        std::process::exit(0);
+    }
     // shell.auto = false：hook 一律放行（系统报错），只用显式 `gqy <问句>` 对话
     if let Ok(paths) = crate::paths::GqyPaths::new() {
         if let Ok(config) = AppConfig::load_or_default(&paths) {
@@ -3097,10 +3120,8 @@ fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
             }
         }
     }
-    if shell::is_shell_command(message, shell_name) {
-        std::process::exit(0);
-    }
-    std::process::exit(1);
+    let result = shell::classify_with_confidence(message, shell_name);
+    std::process::exit(result.exit_code());
 }
 
 async fn run_shell_intercept(paths: &GqyPaths, shell_name: &str, message: String) -> Result<()> {
@@ -3651,7 +3672,28 @@ async fn run_repl(paths: &GqyPaths, initial_mode: AgentMode) -> Result<()> {
     let mut prefill = None::<String>;
     let mut live_repl = None::<LiveReplTail>;
 
-    crate::repl_avatar::print_if_supported(&mut std::io::stdout());
+    // 启动 banner：居中图片 + 状态信息
+    {
+        let active = config.active_provider_model_choices();
+        let (provider, model) = match active.as_slice() {
+            [] => ("-".to_string(), "-".to_string()),
+            [choice] => (choice.provider_id.clone(), choice.model.clone()),
+            _ => ("mixed".to_string(), "mixed".to_string()),
+        };
+        let mode_str = match mode {
+            AgentMode::Normal => t("normal", "普通"),
+            AgentMode::Plan => t("plan", "计划"),
+            AgentMode::Chat => t("chat", "闲聊"),
+        };
+        crate::repl_avatar::print_startup_banner(
+            &mut std::io::stdout(),
+            &provider,
+            &model,
+            mode_str,
+            0, // memory count — agent 尚未初始化
+            0, // kb count
+        );
+    }
 
     let mut cumulative_tokens = 0u64;
     let mut show_shortcut_hint = true;
@@ -6685,7 +6727,7 @@ fn render_repl_input_with_footer(
         .collect();
     let input_rows = display_rows.len().max(1).min(u16::MAX as usize) as u16;
     let show_hint = show_shortcut_hint && suggestions.is_empty();
-    let current_rows = input_rows.saturating_add(if show_hint { 4 } else { 3 });
+    let current_rows = input_rows.saturating_add(if show_hint { 5 } else { 4 });
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
     for row_offset in 0..rows_to_clear {
@@ -6695,8 +6737,21 @@ fn render_repl_input_with_footer(
             Clear(ClearType::CurrentLine)
         )?;
     }
+
+    // 输入区顶部边框
+    let border_color = match mode {
+        AgentMode::Normal => "\x1b[38;2;51;65;85m",
+        AgentMode::Plan => "\x1b[38;2;30;58;138m",
+        AgentMode::Chat => "\x1b[38;2;167;139;250m",
+    };
+    let border_char = "─";
+    let border = format!("{}{}{}", border_color, border_char.repeat(cols.min(80) as usize), "\x1b[0m");
     let mut row_offset = 0u16;
-    queue!(stdout, MoveTo(0, *input_row), Print(&prompt_prefix))?;
+    queue!(stdout, MoveTo(0, *input_row), Print(&border))?;
+    row_offset = row_offset.saturating_add(1);
+
+    // 输入行
+    queue!(stdout, MoveTo(0, (*input_row).saturating_add(row_offset)), Print(&prompt_prefix))?;
     row_offset = row_offset.saturating_add(1);
     for line in &display_rows {
         let row = (*input_row).saturating_add(row_offset);
@@ -6704,6 +6759,8 @@ fn render_repl_input_with_footer(
         queue!(stdout, Print(&prompt_prefix), Print(line))?;
         row_offset = row_offset.saturating_add(1);
     }
+
+    // 底部信息
     queue!(
         stdout,
         MoveTo(0, (*input_row).saturating_add(row_offset)),
@@ -6886,12 +6943,12 @@ fn input_prompt_bar(mode: AgentMode) -> String {
 fn repl_shortcut_hint_line(mode: AgentMode, cols: usize) -> String {
     let bar = input_prompt_bar(mode);
     let text = t(
-        "Tab switch mode; Ctrl+J newline; Ctrl+V paste clipboard",
-        "Tab 切换模式；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
+        "Tab switch mode · Ctrl+J newline · Ctrl+V paste · Esc interrupt",
+        "Tab 切换模式 · Ctrl+J 换行 · Ctrl+V 粘贴 · Esc 中断",
     );
     let text_width = cols.saturating_sub(visible_width(&bar)).max(1);
     format!(
-        "{bar}\x1b[2m{}\x1b[0m",
+        "{bar}\x1b[38;2;51;65;85m{}\x1b[0m",
         truncate_visible_width(text, text_width)
     )
 }
@@ -7944,9 +8001,10 @@ mod repl_input_tests {
             } else {
                 format!(" {}", footer.provider)
             };
+            // 模式标签现在带背景色和空格（badge 样式）
             assert_eq!(
                 strip_terminal_control_sequences(&line),
-                format!("{} · {}{} · high", mode.label(), footer.model, provider)
+                format!(" {}  · {}{} · high", mode.label(), footer.model, provider)
             );
         }
     }
@@ -7980,10 +8038,11 @@ mod repl_input_tests {
 
         assert_eq!(footer.provider, "mixed");
         assert!(footer.thinking.is_none());
+        // 模式标签现在带背景色和空格（badge 样式）
         assert_eq!(
             strip_terminal_control_sequences(&line),
             format!(
-                "{} · {} mixed",
+                " {}  · {} mixed",
                 AgentMode::Normal.label(),
                 t("Mixed", "混合")
             )

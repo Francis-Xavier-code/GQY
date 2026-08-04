@@ -8,6 +8,25 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+/// 分类结果：命令、自然语言、不确定。
+/// exit codes: 0=Command, 1=NaturalLang, 2=Uncertain
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassifyResult {
+    Command,
+    NaturalLang,
+    Uncertain,
+}
+
+impl ClassifyResult {
+    pub fn exit_code(self) -> i32 {
+        match self {
+            Self::Command => 0,
+            Self::NaturalLang => 1,
+            Self::Uncertain => 2,
+        }
+    }
+}
+
 pub fn print_reload_hint(shell: &str, hook_file: &Path) {
     let source = match shell {
         "fish" => format!("source {}", fish_quote(hook_file)),
@@ -105,16 +124,148 @@ pub fn looks_like_natural_language(input: &str) -> bool {
     !trimmed.contains('\n') && !trimmed.contains('\r')
 }
 
-pub fn is_shell_command(input: &str, shell_name: &str) -> bool {
-    let Some((command, rest)) = first_command_token_with_rest(input) else {
-        return false;
-    };
-    if ambiguous_command_tail_looks_like_message(&command, rest) {
+/// History expansion 语法（`!!`、`!$`、`!^`、`!n`、`!string`、`!?pattern?`）。
+/// 这些输入应直接透传给 shell 处理，不进 GQY 分类器。
+pub fn is_history_expansion(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.len() < 2 || !trimmed.starts_with('!') {
         return false;
     }
-    is_shell_keyword_or_builtin(&command, shell_name)
+    let second = trimmed.as_bytes()[1];
+    // !!  上一条命令
+    // !$   上一条的最后一个参数
+    // !^   上一条的第一个参数
+    // !n   第 n 条历史
+    // !-n  倒数第 n 条
+    // !str 以 str 开头的最近命令
+    // !?pattern?  包含 pattern 的最近命令
+    second == b'!'
+        || second == b'$'
+        || second == b'^'
+        || second == b'?'
+        || second.is_ascii_digit()
+        || second == b'-'
+        || second.is_ascii_alphabetic()
+}
+
+/// heredoc 开头（`<<` 或 `<<-`），应透传给 shell 处理多行内容。
+pub fn is_heredoc_start(input: &str) -> bool {
+    let trimmed = input.trim();
+    // <<WORD 或 <<-WORD（允许引号包裹定界符）
+    if let Some(after) = trimmed.strip_prefix("<<") {
+        let rest = after.trim_start_matches('-').trim_start();
+        return !rest.is_empty() && !rest.starts_with(' ');
+    }
+    // 管道/序列链中的 heredoc：`cmd <<EOF`
+    if input.contains("<<") {
+        let parts: Vec<&str> = input.splitn(2, "<<").collect();
+        if parts.len() == 2 {
+            let after = parts[1].trim_start_matches('-').trim_start();
+            if !after.is_empty() && !after.starts_with(' ') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 管道链（含 `|` 但不是以 `|` 开头），整条应透传给 shell。
+pub fn is_pipe_chain(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.starts_with('|') {
+        return false;
+    }
+    // 检查是否有未引号包裹的 `|`
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for ch in trimmed.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            continue;
+        }
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            continue;
+        }
+        if ch == '|' && !in_single && !in_double {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn is_shell_command(input: &str, shell_name: &str) -> bool {
+    classify_with_confidence(input, shell_name) == ClassifyResult::Command
+}
+
+/// 三态分类：Command / NaturalLang / Uncertain。
+///
+/// 评分规则：
+/// - PATH 命中 / builtin / keyword → Command
+/// - 显式路径（/、./、../、~/）→ Command
+/// - 歧义命令 + CJK/问号尾巴 → NaturalLang
+/// - 以中文/日文/韩文开头 → NaturalLang
+/// - 含 ? / ？ / 吗 / 呢 / 吧 → NaturalLang
+/// - 全英文、无特殊字符、不在 PATH → Uncertain
+/// - 其他 → NaturalLang
+pub fn classify_with_confidence(input: &str, shell_name: &str) -> ClassifyResult {
+    let Some((command, rest)) = first_command_token_with_rest(input) else {
+        return ClassifyResult::NaturalLang;
+    };
+
+    // 歧义命令 + CJK/问号 → 自然语言
+    if ambiguous_command_tail_looks_like_message(&command, rest) {
+        return ClassifyResult::NaturalLang;
+    }
+
+    // PATH / builtin / keyword / 显式路径 → 命令
+    if is_shell_keyword_or_builtin(&command, shell_name)
         || is_explicit_command_path(&command)
         || command_exists_in_path(&command)
+    {
+        return ClassifyResult::Command;
+    }
+
+    // 以下规则用于判断是 NaturalLang 还是 Uncertain
+
+    // 以 CJK 字符开头 → 高置信自然语言
+    if let Some(first_char) = input.trim().chars().next() {
+        if is_cjk_char(first_char) {
+            return ClassifyResult::NaturalLang;
+        }
+    }
+
+    // 含问号/语气词 → 高置信自然语言
+    let trimmed = input.trim();
+    if trimmed.contains('?')
+        || trimmed.contains('？')
+        || trimmed.contains("吗")
+        || trimmed.contains("呢")
+        || trimmed.contains("吧")
+        || trimmed.contains("么")
+        || trimmed.contains("呀")
+        || trimmed.contains("哦")
+        || trimmed.contains("啊")
+    {
+        return ClassifyResult::NaturalLang;
+    }
+
+    // 含 CJK 字符（不只是开头）→ 自然语言
+    if trimmed.chars().any(is_cjk_char) {
+        return ClassifyResult::NaturalLang;
+    }
+
+    // 全英文、不在 PATH → 不确定
+    ClassifyResult::Uncertain
 }
 
 fn first_command_token_with_rest(input: &str) -> Option<(String, &str)> {
@@ -402,5 +553,90 @@ mod tests {
             "GTK_IM_MODULE=fcitx 是什么意思？",
             "fish"
         ));
+    }
+
+    #[test]
+    fn detects_history_expansion() {
+        // 正例
+        assert!(is_history_expansion("!!"));
+        assert!(is_history_expansion("!$"));
+        assert!(is_history_expansion("!^"));
+        assert!(is_history_expansion("!?pattern?"));
+        assert!(is_history_expansion("!42"));
+        assert!(is_history_expansion("!-3"));
+        assert!(is_history_expansion("!git"));
+        assert!(is_history_expansion("!echo hello"));
+        assert!(is_history_expansion("  !!  ")); // trim 后是 !!
+        // 反例
+        assert!(!is_history_expansion("!"));
+        assert!(!is_history_expansion("hello"));
+        assert!(!is_history_expansion(""));
+        assert!(!is_history_expansion("echo !"));
+    }
+
+    #[test]
+    fn detects_heredoc() {
+        // 正例
+        assert!(is_heredoc_start("cat <<EOF"));
+        assert!(is_heredoc_start("cat <<-EOF"));
+        assert!(is_heredoc_start("cat << 'END'"));
+        assert!(is_heredoc_start("grep pattern <<DONE"));
+        // 反例
+        assert!(!is_heredoc_start("echo hello"));
+        assert!(!is_heredoc_start("echo <<"));
+        assert!(!is_heredoc_start("echo << "));
+        assert!(!is_heredoc_start(""));
+    }
+
+    #[test]
+    fn detects_pipe_chain() {
+        // 正例
+        assert!(is_pipe_chain("cat file | grep pattern"));
+        assert!(is_pipe_chain("ls -la | sort | head"));
+        assert!(is_pipe_chain("echo hello | wc -l"));
+        // 反例
+        assert!(!is_pipe_chain("echo hello"));
+        assert!(!is_pipe_chain("| starting with pipe"));
+        assert!(!is_pipe_chain(""));
+        assert!(!is_pipe_chain("echo 'not|a|pipe'"));
+    }
+
+    #[test]
+    fn classify_confidence_commands() {
+        // PATH 命中 → Command
+        assert_eq!(classify_with_confidence("ls -la", "zsh"), ClassifyResult::Command);
+        assert_eq!(classify_with_confidence("git status", "zsh"), ClassifyResult::Command);
+        assert_eq!(classify_with_confidence("cargo check", "zsh"), ClassifyResult::Command);
+        // builtin → Command
+        assert_eq!(classify_with_confidence("cd /tmp", "zsh"), ClassifyResult::Command);
+        assert_eq!(classify_with_confidence("echo hello", "zsh"), ClassifyResult::Command);
+        // 显式路径 → Command
+        assert_eq!(classify_with_confidence("./target/release/gqy", "zsh"), ClassifyResult::Command);
+        assert_eq!(classify_with_confidence("/usr/bin/ls", "zsh"), ClassifyResult::Command);
+        // env prefix → Command
+        assert_eq!(classify_with_confidence("FOO=bar cargo check", "zsh"), ClassifyResult::Command);
+    }
+
+    #[test]
+    fn classify_confidence_natural_language() {
+        // CJK 开头 → NaturalLang
+        assert_eq!(classify_with_confidence("帮我看看磁盘空间", "zsh"), ClassifyResult::NaturalLang);
+        assert_eq!(classify_with_confidence("怎么清理缓存", "zsh"), ClassifyResult::NaturalLang);
+        // 问号 → NaturalLang（用不存在的命令避免 PATH 命中）
+        assert_eq!(classify_with_confidence("zzyyxx this?", "zsh"), ClassifyResult::NaturalLang);
+        assert_eq!(classify_with_confidence("这是什么？", "zsh"), ClassifyResult::NaturalLang);
+        // 语气词 → NaturalLang
+        assert_eq!(classify_with_confidence("is this okay吗", "zsh"), ClassifyResult::NaturalLang);
+        // CJK 在任意位置 → NaturalLang
+        assert_eq!(classify_with_confidence("hello 世界", "zsh"), ClassifyResult::NaturalLang);
+        // 歧义命令 + CJK → NaturalLang
+        assert_eq!(classify_with_confidence("time 是什么命令？", "zsh"), ClassifyResult::NaturalLang);
+    }
+
+    #[test]
+    fn classify_confidence_uncertain() {
+        // 全英文、不在 PATH → Uncertain
+        assert_eq!(classify_with_confidence("foobarbaz", "zsh"), ClassifyResult::Uncertain);
+        assert_eq!(classify_with_confidence("xyz123", "zsh"), ClassifyResult::Uncertain);
     }
 }

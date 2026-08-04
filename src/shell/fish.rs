@@ -246,9 +246,26 @@ function fish_command_not_found
     set -l text (string join ' ' -- $command)
     string match -qr '[\n\r]' -- $text; and return 127
 
-    # 明显是命令/拼写错误 → 系统报错，不打扰 GQY
-    gqy --shell-classify --shell fish -- $command 2>/dev/null; and return 127
+    # classify: exit 0=命令, 1=自然语言, 2=不确定
+    gqy --shell-classify --shell fish -- $command 2>/dev/null
+    set -l rc $status
 
+    if test $rc -eq 0
+        return 127  # 是命令，走系统报错
+    else if test $rc -eq 2
+        # 不确定：询问用户（3 秒超时默认走命令）
+        printf '\e[33m❓ 命令还是对话？[c=命令 / n=对话] (3s 超时走命令)\e[0m '
+        set -l reply ""
+        read -n 1 -t 3 reply 2>/dev/null
+        echo ""
+        if test "$reply" = "n" -o "$reply" = "N"
+            gqy --shell-intercept --shell fish -- $command 2>/dev/null
+            return 127
+        end
+        return 127  # 默认或 c → 走系统报错
+    end
+
+    # rc=1 → 高置信自然语言，发给 GQY
     gqy --shell-intercept --shell fish -- $command 2>/dev/null
     return 127
 end

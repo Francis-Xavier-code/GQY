@@ -295,12 +295,26 @@ pub struct ShellConfig {
     /// 关闭后 hook 一律放行（系统报错），只用显式 `gqy <问句>` 对话。
     #[serde(default = "default_true")]
     pub auto: bool,
+    /// 不确定时确认超时（秒）。超时后默认走命令（安全侧）。
+    #[serde(default = "default_confirm_timeout")]
+    pub confirm_timeout_secs: u8,
+    /// 误判回退：GQY 处理失败且错误类似 command not found 时，提示用户重试为 shell 命令。
+    #[serde(default = "default_true")]
+    pub fallback_to_shell: bool,
 }
 
 impl Default for ShellConfig {
     fn default() -> Self {
-        Self { auto: default_true() }
+        Self {
+            auto: default_true(),
+            confirm_timeout_secs: default_confirm_timeout(),
+            fallback_to_shell: default_true(),
+        }
     }
+}
+
+fn default_confirm_timeout() -> u8 {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

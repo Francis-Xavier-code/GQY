@@ -16,6 +16,23 @@ fn is_native_kitty(term: &str) -> bool {
     term == "xterm-kitty"
 }
 
+/// 检测是否为 iTerm2 终端
+pub fn is_iterm2_terminal() -> bool {
+    std::env::var("TERM_PROGRAM")
+        .map(|v| v == "iTerm.app")
+        .unwrap_or(false)
+}
+
+/// 检测是否支持 kitty graphics protocol
+pub fn supports_kitty_graphics() -> bool {
+    if is_native_kitty_terminal() {
+        return true;
+    }
+    std::env::var("TERM_PROGRAM")
+        .map(|v| v == "WezTerm" || v == "ghostty")
+        .unwrap_or(false)
+}
+
 pub fn supports_path(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -223,6 +240,109 @@ const ROW_DIACRITICS: &[char] = &[
     '\u{20d4}', '\u{20d5}', '\u{20d6}', '\u{20d7}', '\u{20db}', '\u{20dc}', '\u{20e1}', '\u{20e7}',
     '\u{20e9}', '\u{20f0}',
 ];
+
+/// 在终端打印 GQY icon 图片。
+/// 自动检测终端能力：kitty → iTerm2 → chafa → 失败返回 false。
+/// `target_rows` 是图片目标高度（终端行数）。
+pub fn print_icon_centered(png_data: &[u8], target_rows: u16) -> bool {
+    let Ok(image) = image::load_from_memory(png_data) else {
+        return false;
+    };
+
+    let (terminal_cols, _terminal_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (cell_width, cell_height) = terminal_cell_pixels(terminal_cols, 24);
+
+    let img_rows = target_rows;
+    let img_cols = ((image.width() as f32 / image.height() as f32
+        * target_rows as f32
+        * cell_height as f32
+        / cell_width as f32) as u16)
+        .max(1)
+        .min(terminal_cols / 2);
+
+    let mut out = io::stdout();
+
+    // kitty protocol
+    if supports_kitty_graphics() {
+        let resized = image.resize(
+            img_cols as u32 * cell_width as u32,
+            img_rows as u32 * cell_height as u32,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let image_id = (rand::random::<u32>() & 0x00ff_ffff).max(1);
+        if write_image(&mut out, &resized, image_id, img_cols, img_rows).is_ok() {
+            let _ = out.flush();
+            return true;
+        }
+    }
+
+    // iTerm2 inline image
+    if is_iterm2_terminal() {
+        if print_iterm2_inline(&mut out, png_data, img_cols, img_rows).is_ok() {
+            let _ = out.flush();
+            return true;
+        }
+    }
+
+    // chafa
+    print_chafa(&mut out, png_data, img_cols, img_rows)
+}
+
+fn print_iterm2_inline(
+    out: &mut impl Write,
+    png_data: &[u8],
+    width_cells: u16,
+    height_cells: u16,
+) -> Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(png_data);
+    write!(
+        out,
+        "\x1b]1337;File=size={};width={}c;height={}c;preserveAspectRatio=1;inline=1:{}\x07",
+        png_data.len(),
+        width_cells,
+        height_cells,
+        encoded
+    )?;
+    writeln!(out)?;
+    Ok(())
+}
+
+fn print_chafa(out: &mut impl Write, png_data: &[u8], cols: u16, rows: u16) -> bool {
+    let Ok(mut child) = std::process::Command::new("chafa")
+        .args([
+            "--size",
+            &format!("{}x{}", cols.max(1), rows.max(1)),
+            "--format=symbols",
+            "-",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(png_data);
+        drop(stdin);
+    }
+
+    let Ok(output) = child.wait_with_output() else {
+        return false;
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let _ = writeln!(out, "{}", line);
+    }
+    let _ = out.flush();
+    true
+}
 
 #[cfg(test)]
 mod tests {

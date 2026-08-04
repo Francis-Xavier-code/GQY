@@ -17,12 +17,72 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 info()  { echo -e "${CYAN}[info]${NC} $*"; }
-ok()    { echo -e "${GREEN}[ok]${NC} $*"; }
+ok()    { echo -e "${GREEN}  ✓${NC} $*"; }
 warn()  { echo -e "${YELLOW}[warn]${NC} $*"; }
 error() { echo -e "${RED}[error]${NC} $*" >&2; exit 1; }
+
+# 旋转动画
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        echo -ne "\r${CYAN}${frames[$i]}${NC} $2"
+        i=$(( (i + 1) % ${#frames[@]} ))
+        sleep "$delay"
+    done
+    echo -ne "\r\033[K"
+}
+
+# 带进度的下载（显示大小）
+download_with_progress() {
+    local url="$1"
+    local output="$2"
+    local label="$3"
+
+    # 先获取文件大小
+    local total_size
+    total_size=$(curl -sI "$url" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
+    local total_display=""
+    if [ -n "$total_size" ] && [ "$total_size" -gt 0 ] 2>/dev/null; then
+        if [ "$total_size" -gt 1048576 ]; then
+            total_display=$(printf "%.1fMB" "$(echo "scale=1; $total_size / 1048576" | bc 2>/dev/null || echo "?")")
+        elif [ "$total_size" -gt 1024 ]; then
+            total_display=$(printf "%.0fKB" "$(echo "scale=0; $total_size / 1024" | bc 2>/dev/null || echo "?")")
+        else
+            total_display="${total_size}B"
+        fi
+    fi
+
+    # 下载（带 curl 进度条）
+    echo -ne "  ${DIM}↓${NC} ${label}"
+    if [ -n "$total_display" ]; then
+        echo -ne " ${DIM}(${total_display})${NC}"
+    fi
+    echo -ne " ... "
+
+    if curl -fL --progress-bar "$url" -o "$output" 2>/dev/null; then
+        local file_size
+        file_size=$(wc -c < "$output" 2>/dev/null | tr -d ' ')
+        if [ "$file_size" -gt 1048576 ]; then
+            echo -e "${GREEN}✓${NC} ${DIM}$(printf "%.1fMB" "$(echo "scale=1; $file_size / 1048576" | bc 2>/dev/null || echo "?")")${NC}"
+        elif [ "$file_size" -gt 1024 ]; then
+            echo -e "${GREEN}✓${NC} ${DIM}$(printf "%.0fKB" "$(echo "scale=0; $file_size / 1024" | bc 2>/dev/null || echo "?")")${NC}"
+        else
+            echo -e "${GREEN}✓${NC} ${DIM}${file_size}B${NC}"
+        fi
+        return 0
+    else
+        echo -e "${RED}✗${NC}"
+        return 1
+    fi
+}
 
 # 检测平台
 detect_platform() {
@@ -106,17 +166,18 @@ install_binary() {
     local archive_name="${BINARY}-${platform}.tar.gz"
     local download_url="https://github.com/$REPO/releases/download/$version/$archive_name"
 
-    info "下载 $BINARY $version ($platform) ..."
+    echo -e "\n${BOLD}▸ 安装二进制${NC}"
     local tmp_dir
     tmp_dir=$(mktemp -d)
     trap "rm -rf '$tmp_dir'" EXIT
 
-    if ! curl -fsSL "$download_url" -o "$tmp_dir/$archive_name"; then
-        error "下载失败: $download_url\n  请检查网络连接或手动下载: https://github.com/$REPO/releases"
+    if ! download_with_progress "$download_url" "$tmp_dir/$archive_name" "$BINARY $version ($platform)"; then
+        error "下载失败，请检查网络连接或手动下载:\n  https://github.com/$REPO/releases"
     fi
 
-    info "解压中 ..."
+    echo -ne "  ${DIM}↓${NC} 解压中 ... "
     tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
+    echo -e "${GREEN}✓${NC}"
 
     local binary_path="$tmp_dir/$BINARY"
     if [ ! -f "$binary_path" ]; then
@@ -126,16 +187,15 @@ install_binary() {
     chmod +x "$binary_path"
 
     local bin_dir="$prefix/bin"
+    echo -ne "  ${DIM}↓${NC} 安装到 $bin_dir ... "
     if [ ! -w "$bin_dir" ] && [ ! -w "$prefix" ]; then
-        info "需要 sudo 权限安装到 $bin_dir"
         sudo mkdir -p "$bin_dir"
         sudo mv "$binary_path" "$bin_dir/$BINARY"
     else
         mkdir -p "$bin_dir"
         mv "$binary_path" "$bin_dir/$BINARY"
     fi
-
-    ok "二进制: $bin_dir/$BINARY"
+    echo -e "${GREEN}✓${NC}"
 }
 
 # 安装共享资源
@@ -144,22 +204,25 @@ install_share_resources() {
     local prefix="$2"
 
     local share_dir="$prefix/share/gqy"
-    info "安装共享资源到 $share_dir ..."
+
+    echo -e "\n${BOLD}▸ 安装共享资源${NC}"
 
     local tmp_dir
     tmp_dir=$(mktemp -d)
 
     local tarball_url="https://github.com/$REPO/archive/refs/tags/$version.tar.gz"
-    if ! curl -fsSL "$tarball_url" -o "$tmp_dir/src.tar.gz"; then
-        warn "共享资源下载失败，部分功能可能不可用（表情包、知识库、脚本工具）"
+    if ! download_with_progress "$tarball_url" "$tmp_dir/src.tar.gz" "资源包"; then
+        warn "共享资源下载失败，部分功能可能不可用"
         warn "可稍后手动安装: gqy kb add <目录>"
         rm -rf "$tmp_dir"
         return
     fi
 
+    echo -ne "  ${DIM}↓${NC} 解压资源 ... "
     local src_dir="$tmp_dir/src"
     mkdir -p "$src_dir"
     tar -xzf "$tmp_dir/src.tar.gz" -C "$src_dir" --strip-components=1
+    echo -e "${GREEN}✓${NC}"
 
     # 确定目标目录可写
     local need_sudo=""
@@ -169,35 +232,31 @@ install_share_resources() {
 
     $need_sudo mkdir -p "$share_dir"
 
+    echo -ne "  ${DIM}↓${NC} 复制到 $share_dir ... "
     local extracted="$src_dir"
     for item in src/scripts src/memes; do
         if [ -d "$extracted/$item" ]; then
-            local name="${item#src/}"
-            $need_sudo cp -r "$extracted/$item" "$share_dir/$name"
-            ok "$name"
+            $need_sudo cp -r "$extracted/$item" "$share_dir/${item#src/}"
         fi
     done
 
-    for item in kb communication macos/GQYMenuBar; do
+    for item in kb communication; do
         if [ -d "$extracted/$item" ]; then
             local name
             case "$item" in
                 kb) name="kb" ;;
                 communication) name="bridges" ;;
-                macos/GQYMenuBar) name="menubar" ;;
             esac
             $need_sudo cp -r "$extracted/$item" "$share_dir/$name"
-            ok "$name"
         fi
     done
 
     if [ -f "$extracted/pics/GQY-icon.png" ]; then
         $need_sudo cp "$extracted/pics/GQY-icon.png" "$share_dir/"
-        ok "icon"
     fi
+    echo -e "${GREEN}✓${NC}"
 
     rm -rf "$tmp_dir"
-    ok "共享资源安装完成"
 }
 
 # 检查 PATH
@@ -220,37 +279,35 @@ post_install() {
 
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  顾清影 (GQY) 安装完成！${NC}"
+    echo -e "${GREEN}  ✓ 顾清影 (GQY) 安装完成！${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo "  快速开始:"
+    echo -e "  ${BOLD}快速开始:${NC}"
     echo "    gqy                    # 进入对话"
     echo "    gqy config             # 配置 TUI"
     echo "    gqy web                # 启动 Web 面板"
     echo ""
-    echo "  可选:"
-    echo "    gqy menubar --install  # 安装 macOS 菜单栏 App"
+    echo -e "  ${BOLD}可选:${NC}"
     echo "    gqy zsh-init           # 安装 Shell 集成"
     echo "    gqy kb add $prefix/share/gqy/kb  # 导入知识库"
     echo ""
-    echo "  资源目录: $prefix/share/gqy/"
-    echo "  文档: https://github.com/$REPO"
+    echo -e "  ${DIM}资源目录: $prefix/share/gqy/${NC}"
+    echo -e "  ${DIM}文档: https://github.com/$REPO${NC}"
     echo ""
 }
 
 # 主流程
 main() {
     echo ""
-    echo -e "${CYAN}  ╔═══════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}  ║   顾清影 (GQY) 安装程序               ║${NC}"
-    echo -e "${CYAN}  ╚═══════════════════════════════════════╝${NC}"
+    echo -e "${CYAN}${BOLD}  顾清影 (GQY) 安装程序${NC}"
+    echo -e "${DIM}  ────────────────────────────────${NC}"
     echo ""
 
     check_deps
 
     local platform
     platform=$(detect_platform)
-    info "平台: $platform"
+    echo -e "  ${DIM}平台${NC}    $platform"
 
     local version
     if [ "$VERSION" = "latest" ]; then
@@ -258,11 +315,11 @@ main() {
     else
         version="$VERSION"
     fi
-    info "版本: $version"
+    echo -e "  ${DIM}版本${NC}    $version"
 
     local prefix
     prefix=$(choose_install_prefix)
-    info "安装前缀: $prefix"
+    echo -e "  ${DIM}安装到${NC}  $prefix"
 
     # 安装二进制
     install_binary "$platform" "$version" "$prefix"

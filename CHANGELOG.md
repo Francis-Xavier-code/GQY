@@ -3,6 +3,23 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.7] - 2026-08-05
+
+### 新增
+- **终端 UI 改造**：启动时居中显示 GQY-icon 图片（kitty/iTerm2/chafa 自动降级），下方显示状态信息（供应商、模型、模式、记忆、知识库）；
+- **Shell 集成打磨**：三态分类（命令/自然语言/不确定），不确定时 3 秒确认；history expansion（`!!`/`!$`/`!n`）透传；heredoc/管道链不被截断；误判回退（run_command 失败时提示用户直接执行）；
+- **一键安装脚本**：`curl -fsSL ...install.sh | bash` 支持多平台，带下载进度动画；
+- **Release CI**：tag 推送自动构建 macOS ARM/x86 + Linux x86/arm64 四平台二进制；
+- **AGENTS.md**：开发指南文档。
+
+### 变更
+- 移除菜单栏 App（聚焦终端体验）；
+- 移除 DMG/Cask 分发，改为一键安装脚本 + Homebrew formula；
+- 仓库 URL 迁移到 `GQYTeam/GQY`；
+- 输入区顶部增加彩色分隔线（颜色随模式变化）；
+- 模式标签改为 badge 样式（带背景色）；
+- 快捷键提示更紧凑。
+
 ## [0.8.6] - 2026-08-04
 
 ### 新增

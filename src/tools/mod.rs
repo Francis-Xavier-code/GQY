@@ -11,7 +11,7 @@ mod edit_replace;
 mod exchange_rate;
 mod hash_codec;
 mod image_generation;
-mod kitty_image;
+pub(crate) mod kitty_image;
 pub mod import;
 pub mod knowledge_base;
 mod load_tools;

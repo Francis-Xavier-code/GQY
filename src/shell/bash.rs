@@ -16,9 +16,26 @@ command_not_found_handle() {
     [[ -n "$text" ]] || return 127
     [[ "$text" != *$'\n'* && "$text" != *$'\r'* ]] || return 127
 
-    # 明显是命令（含路径/内置命令/环境变量前缀）→ 系统报错，不打扰 GQY
-    gqy --shell-classify --shell bash -- "$@" 2>/dev/null && return 127
+    # classify: exit 0=命令, 1=自然语言, 2=不确定
+    gqy --shell-classify --shell bash -- "$@" 2>/dev/null
+    local rc=$?
 
+    if [[ $rc -eq 0 ]]; then
+        return 127  # 是命令，走系统报错
+    elif [[ $rc -eq 2 ]]; then
+        # 不确定：询问用户（3 秒超时默认走命令）
+        printf '\e[33m❓ 命令还是对话？[c=命令 / n=对话] (3s 超时走命令)\e[0m '
+        local reply=""
+        read -n 1 -t 3 reply 2>/dev/null
+        echo ""
+        if [[ "$reply" == "n" || "$reply" == "N" ]]; then
+            gqy --shell-intercept --shell bash -- "$@" 2>/dev/null
+            return 127
+        fi
+        return 127  # 默认或 c → 走系统报错
+    fi
+
+    # rc=1 → 高置信自然语言，发给 GQY
     gqy --shell-intercept --shell bash -- "$@" 2>/dev/null
     return 127
 }
