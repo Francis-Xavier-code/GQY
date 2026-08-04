@@ -379,7 +379,8 @@ mod tests {
     #[test]
     fn test_memory_store() {
         let dir = tempdir().unwrap();
-        let store = MemoryFileStore::new(dir.path().to_path_buf());
+        let memory_dir = dir.path().join("cindy_memory");
+        let store = MemoryFileStore::new(memory_dir);
 
         // 写入
         store
