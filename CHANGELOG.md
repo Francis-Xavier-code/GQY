@@ -3,6 +3,29 @@
 本项目所有值得记录的改动都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.8.8] - 2026-08-05
+
+### 新增
+- **Cindy Memory 系统接入**：集成 Cindy 风格的分片记忆系统（`cindy_memory_list/read/write/delete/search/index`），支持 MEMORY.md 索引 + 独立 markdown 分片存储；
+- **declare_tool! 声明式宏**：新建 `src/tools/macros.rs`，减少工具注册样板代码约 40%；
+- **--dry-run 模式**：`gqy --dry-run "消息"` 显示工具调用计划而不实际执行，便于调试；
+- **install.sh 美化**：采用 `========>` 箭头风格、方框装饰、更清晰的进度显示。
+
+### 优化
+- **缓存优化（参考 Cindy 架构）**：时间戳从 `runtime_context` 移到 userPrompt 末尾，避免挥发性变量破坏 Anthropic Prompt Cache 前缀稳定性；
+- **代码质量**：修复 19 个代码审查问题（安全/性能/稳定性），修复编译警告（16→4）；
+- **性能优化**：版本命令 9ms，修复 O(n²) Vec 操作，修复异步阻塞 I/O，复用 reqwest::Client；
+- **cli.rs 拆分**：新建 `src/cli/args.rs` 包含所有参数定义，为后续进一步拆分奠定基础。
+
+### 修复
+- REPL 空回车不再显示多余的提示符和空行；
+- `/api/shutdown` 和 `/api/tts` 添加认证检查，防止未授权访问；
+- agent 主循环添加队列消费上限（16 轮），防止无限循环；
+- 60+ 处 Mutex 改用中毒恢复模式，提升稳定性；
+- Turn ID 随机分量从 u16 改为 u64，降低碰撞风险；
+- LIKE 查询转义 `%` 和 `_`，防止模式注入；
+- PID 类型转换从 `as u32` 改为 `u32::try_from`，防止截断。
+
 ## [0.8.7] - 2026-08-05
 
 ### 新增
