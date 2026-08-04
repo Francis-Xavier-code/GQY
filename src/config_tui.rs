@@ -5,7 +5,9 @@ use crate::paths::GqyPaths;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
-use crossterm::style::{Attribute, Print, SetAttribute};
+use crossterm::style::{
+    Attribute, Color, Print, SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
 use serde::Deserialize;
@@ -165,21 +167,25 @@ fn draw_plugin_menu(stdout: &mut io::Stdout, config: &AppConfig, selected: usize
         }
         let (_, name, description) = plugins[index];
         let state = if plugin_enabled(config, index) {
-            t("[ON]", "[开]")
+            t("[●]", "[●]")
         } else {
-            t("[OFF]", "[关]")
+            t("[○]", "[○]")
         };
         let line = plugin_row(state, name, description, width.saturating_sub(4) as usize);
         queue!(stdout, MoveTo(x + 2, y + row as u16 + 4))?;
         if index == selected {
             queue!(
                 stdout,
-                SetAttribute(Attribute::Reverse),
-                Print(pad(&line, width.saturating_sub(4) as usize)),
-                SetAttribute(Attribute::Reset)
+                SetBackgroundColor(Color::Cyan),
+                SetForegroundColor(Color::Black),
+                SetAttribute(Attribute::Bold),
+                Print(format!("▸ {}", pad(&line, width.saturating_sub(5) as usize))),
+                SetAttribute(Attribute::Reset),
+                SetBackgroundColor(Color::Reset),
+                SetForegroundColor(Color::Reset)
             )?;
         } else {
-            queue!(stdout, Print(pad(&line, width.saturating_sub(4) as usize)))?;
+            queue!(stdout, Print(format!("  {}", pad(&line, width.saturating_sub(4) as usize))))?;
         }
     }
     stdout.flush()?;
@@ -2790,17 +2796,36 @@ fn draw_menu(
         )),
         SetAttribute(Attribute::Reset)
     )?;
+    // 选项与帮助行之间加一条细分隔线，强化分区感
+    let divider_y = y + height - 2;
+    if divider_y > y + 1 {
+        queue!(
+            stdout,
+            MoveTo(x + 1, divider_y),
+            SetAttribute(Attribute::Dim),
+            Print(format!("─{}", "─".repeat(width.saturating_sub(2) as usize))),
+            SetAttribute(Attribute::Reset)
+        )?;
+    }
     for (index, option) in options.iter().enumerate() {
         queue!(stdout, MoveTo(x + 2, y + index as u16 + 2))?;
         if index == selected {
+            // 选中项：青色背景 + 黑色前景 + ▸ 指针，比单纯反色更醒目
             queue!(
                 stdout,
-                SetAttribute(Attribute::Reverse),
-                Print(pad(option, width.saturating_sub(4) as usize)),
-                SetAttribute(Attribute::Reset)
+                SetBackgroundColor(Color::Cyan),
+                SetForegroundColor(Color::Black),
+                SetAttribute(Attribute::Bold),
+                Print(format!("▸ {}", pad(option, width.saturating_sub(5) as usize))),
+                SetAttribute(Attribute::Reset),
+                SetBackgroundColor(Color::Reset),
+                SetForegroundColor(Color::Reset)
             )?;
         } else {
-            queue!(stdout, Print(pad(option, width.saturating_sub(4) as usize)))?;
+            queue!(
+                stdout,
+                Print(format!("  {}", pad(option, width.saturating_sub(4) as usize)))
+            )?;
         }
     }
     stdout.flush()?;
@@ -2826,6 +2851,7 @@ fn draw_box(
     height: u16,
     title: &str,
 ) -> Result<()> {
+    // 经典边框
     queue!(
         stdout,
         MoveTo(x, y),
@@ -2852,12 +2878,45 @@ fn draw_box(
             "─".repeat(width.saturating_sub(2) as usize)
         ))
     )?;
+    // 标题栏：在顶层画一条带背景色的标题条，比单纯加粗更醒目
+    draw_title_bar(stdout, x, y, width, title)?;
+    Ok(())
+}
+
+/// 在盒子顶行绘制带背景色的标题栏（标题居中）。
+fn draw_title_bar(
+    stdout: &mut io::Stdout,
+    x: u16,
+    y: u16,
+    width: u16,
+    title: &str,
+) -> Result<()> {
+    let inner = width.saturating_sub(2) as usize;
+    let t = title.trim();
+    let tw = display_width(t).min(inner.saturating_sub(2).max(0));
+    let padded = if display_width(t) >= inner.saturating_sub(2) {
+        truncate(t, inner.saturating_sub(2).max(1))
+    } else {
+        let total_pad = inner.saturating_sub(tw);
+        let left = total_pad / 2;
+        let right = total_pad - left;
+        format!(
+            "{}{}{}",
+            " ".repeat(left),
+            t,
+            " ".repeat(right)
+        )
+    };
     queue!(
         stdout,
-        MoveTo(x + 2, y),
+        MoveTo(x + 1, y),
+        SetBackgroundColor(Color::Cyan),
+        SetForegroundColor(Color::Black),
         SetAttribute(Attribute::Bold),
-        Print(title),
-        SetAttribute(Attribute::Reset)
+        Print(padded),
+        SetAttribute(Attribute::Reset),
+        SetBackgroundColor(Color::Reset),
+        SetForegroundColor(Color::Reset),
     )?;
     Ok(())
 }
@@ -2898,12 +2957,16 @@ fn draw_column(
         if index == selected {
             queue!(
                 stdout,
-                SetAttribute(Attribute::Reverse),
-                Print(pad(&line, width as usize)),
-                SetAttribute(Attribute::Reset)
+                SetBackgroundColor(Color::Cyan),
+                SetForegroundColor(Color::Black),
+                SetAttribute(Attribute::Bold),
+                Print(format!("▸ {}", pad(&line, width.saturating_sub(5) as usize))),
+                SetAttribute(Attribute::Reset),
+                SetBackgroundColor(Color::Reset),
+                SetForegroundColor(Color::Reset)
             )?;
         } else {
-            queue!(stdout, Print(pad(&line, width as usize)))?;
+            queue!(stdout, Print(format!("  {}", pad(&line, width as usize))))?;
         }
     }
     Ok(())
