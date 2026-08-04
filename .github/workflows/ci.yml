@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # 复用 target/ 缓存，避免每次全量重编
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: cargo check (all targets)
+        run: cargo check --all-targets --offline || cargo check --all-targets
+
+  test:
+    name: cargo test + build
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: cargo test
+        run: cargo test --offline || cargo test
+      - name: cargo build
+        run: cargo build --offline || cargo build
+      - name: binary version
+        run: ./target/debug/gqy --version
+
+  clippy:
+    name: cargo clippy
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+          components: clippy
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: cargo clippy (warnings as errors)
+        run: cargo clippy --all-targets -- -D warnings
