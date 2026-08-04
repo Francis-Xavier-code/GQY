@@ -5,9 +5,9 @@
 #   brew install gqy
 #
 # 发布流程：
-#   1. git tag v0.4.5 && git push origin v0.4.5
+#   1. git tag v0.8.7 && git push origin v0.8.7
 #   2. 计算源码 tarball 的 sha256：
-#        curl -Ls https://github.com/GQYTeam/GQY/archive/refs/tags/v0.4.5.tar.gz | shasum -a 256
+#        curl -Ls https://github.com/GQYTeam/GQY/archive/refs/tags/v0.8.7.tar.gz | shasum -a 256
 #   3. 把结果填入下面 sha256 并提交本文件
 #   4. 同步到 homebrew-GQY tap 仓库
 #   5. brew install gqy 验证
