@@ -5702,12 +5702,8 @@ impl LiveReplTail {
     }
 
     fn commit_empty_submission(&mut self) -> Result<()> {
-        let mode = self.editor.mode;
         self.editor.clear();
-        self.suspend()?;
-        write_committed_user_messages(&[("", mode)], true)?;
-        let output_cursor = cursor::position()?;
-        self.output_cursor = output_cursor;
+        let output_cursor = self.output_cursor;
         self.resume_at(output_cursor)
     }
 

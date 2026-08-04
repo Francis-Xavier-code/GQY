@@ -2398,7 +2398,7 @@
     elements.composerForm.classList.toggle("is-disabled", locked || readonly);
     // Panel 模式（悬浮卡片）：输入解锁且页面可见时自动聚焦，免点一下才能打字
     if (IS_PANEL && !elements.composerInput.disabled && document.hasFocus()) {
-      elements.composerInput.focus();
+      elements.composerInput.focus({ preventScroll: true });
     }
     elements.newChatButton.disabled = state.blocked || running || busy || readonly;
     elements.modelButton.disabled = state.blocked || running || busy || state.models.length === 0;
@@ -4878,7 +4878,7 @@
     updateControlState();
     contentAdded();
     window.requestAnimationFrame(() => {
-      if (!state.blocked && !elements.settingsDrawer.classList.contains("open")) elements.composerInput.focus();
+      if (!state.blocked && !elements.settingsDrawer.classList.contains("open")) elements.composerInput.focus({ preventScroll: true });
     });
     // 运行结束后强制用服务端数据对账重渲染：
     // 直播期间若有事件丢失（如思考后正文未显示），这里补齐为完整记录
