@@ -809,8 +809,6 @@ fn localize_skills_command(mut command: clap::Command) -> clap::Command {
 pub enum Command {
     #[command(name = "__alarm-worker", hide = true)]
     AlarmWorker(AlarmWorkerArgs),
-    /// 菜单栏 App：install（编译并安装 顾清影.app 到 ~/Applications）
-    Menubar(MenubarArgs),
     #[command(name = "__tool", hide = true)]
     Tool(ToolArgs),
     #[command(name = "__preview", hide = true)]
@@ -888,13 +886,6 @@ impl std::fmt::Debug for WebArgs {
             .field("password_file", &self.password_file)
             .finish()
     }
-}
-
-#[derive(Debug, Args)]
-pub struct MenubarArgs {
-    /// 安装菜单栏 App
-    #[arg(long)]
-    install: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1441,7 +1432,6 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
         Some(Command::Stt(args)) => run_stt(&paths, args),
         Some(Command::Provider(args)) => run_provider(&paths, args).await,
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
-        Some(Command::Menubar(args)) => run_menubar(&paths, args),
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Preview) => {
             crate::repl_avatar::print_if_supported(&mut io::stdout());
@@ -1923,20 +1913,6 @@ fn run_alarm_cmd(paths: &GqyPaths, args: AlarmArgs) -> Result<()> {
             Ok(())
         }
     }
-}
-
-fn run_menubar(paths: &GqyPaths, args: MenubarArgs) -> Result<()> {
-    if args.install {
-        return crate::menubar::install(paths);
-    }
-    println!(
-        "{}",
-        t(
-            "usage: gqy menubar --install   (build & install 顾清影.app to ~/Applications)",
-            "用法：gqy menubar --install（编译并安装 顾清影.app 到 ~/Applications）"
-        )
-    );
-    Ok(())
 }
 
 fn run_alarm_worker(args: AlarmWorkerArgs) -> Result<()> {

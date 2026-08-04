@@ -3,7 +3,7 @@ name = "gqy"
 version = "0.8.6"
 edition = "2021"
 license = "GPL-3.0"
-repository = "https://github.com/Francis-Xavier-code/GQY"
+repository = "https://github.com/GQYTeam/GQY"
 description = "Command-line AI assistant"
 
 [dependencies]

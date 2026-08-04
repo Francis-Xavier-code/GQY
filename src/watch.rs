@@ -55,7 +55,7 @@ fn is_noise_process(comm: &str) -> bool {
     let name = comm.rsplit('/').next().unwrap_or(comm);
     matches!(
         name,
-        "gqy" | "ps" | "top" | "GQYMenuBar" | "WindowServer" | "kernel_task"
+        "gqy" | "ps" | "top" | "WindowServer" | "kernel_task"
             | "launchd" | "mds" | "mdworker" | "Spotlight" | "backupd" | "cloudd"
             | "VTDecoderXPCService" | "rapportd" | "opendirectoryd"
     ) || name.starts_with("zcode")

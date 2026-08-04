@@ -14,7 +14,6 @@ mod finetune;
 mod i18n;
 mod learning;
 mod llm;
-mod menubar;
 mod logging;
 mod memory;
 mod models_cache;
