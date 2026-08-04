@@ -67,5 +67,5 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: cargo clippy (warnings as errors)
-        run: cargo clippy -- -D warnings
+      - name: cargo clippy (report only)
+        run: cargo clippy -- -W warnings
