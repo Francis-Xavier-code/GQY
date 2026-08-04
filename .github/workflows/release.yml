@@ -57,14 +57,16 @@ jobs:
           cache-on-failure: true
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
+          ls -la gqy
           tar -czf ../../../gqy-${{ matrix.target }}.tar.gz gqy
           cd ../../..
+          ls -lh gqy-${{ matrix.target }}.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
