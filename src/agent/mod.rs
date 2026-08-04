@@ -1,7 +1,6 @@
 mod compact;
 mod conversation;
 pub(crate) mod overflow;
-pub mod swarm;
 
 use crate::clipboard::{ClipboardImage, PastedImage};
 use crate::config::AppConfig;
