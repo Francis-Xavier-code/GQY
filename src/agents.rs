@@ -39,6 +39,7 @@ struct AgentDef {
     created_at: String,
 }
 
+#[derive(Clone)]
 struct AgentInstance {
     def: AgentDef,
     client: LlmClient,
@@ -48,6 +49,16 @@ struct AgentInstance {
 pub struct AgentManager {
     paths: GqyPaths,
     agents: RwLock<HashMap<String, AgentInstance>>,
+}
+
+// 实现 Clone 以便在并发任务中使用
+impl Clone for AgentManager {
+    fn clone(&self) -> Self {
+        Self {
+            paths: self.paths.clone(),
+            agents: RwLock::new(self.agents.read().unwrap().clone()),
+        }
+    }
 }
 
 fn manager(paths: &GqyPaths) -> Result<&'static ArcAgentManager> {
@@ -342,7 +353,84 @@ fn is_valid_agent_name(name: &str) -> bool {
         && name.len() <= 32
 }
 
-/// 注册 agent 集群工具（spawn_agent / talk_to_agent / list_agents / kill_agent）。
+/// 并发执行多个 agent 任务
+async fn parallel_agents(
+    args: Value,
+    progress: &crate::tools::ToolProgress,
+) -> Result<String> {
+    let tasks = args["tasks"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("'tasks' 数组是必填的"))?;
+
+    if tasks.is_empty() {
+        bail!("至少需要一个任务");
+    }
+
+    let manager = AGENTS.get().context("agent manager not initialized")?;
+
+    // 准备并发任务
+    let mut handles = Vec::new();
+    for task in tasks {
+        let name = task["name"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("每个任务需要 'name' 字段"))?
+            .to_string();
+        let message = task["message"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("每个任务需要 'message' 字段"))?
+            .to_string();
+
+        // 检查 agent 是否存在
+        if manager.client_and_role(&name).is_none() {
+            bail!("agent '{name}' 不存在，请先用 spawn_agent 创建");
+        }
+
+        let progress_clone = progress.clone();
+        let manager_ref = manager.clone();
+
+        handles.push(tokio::spawn(async move {
+            let result = manager_ref.talk(&name, &message, &progress_clone).await;
+            (name, result)
+        }));
+    }
+
+    // 等待所有任务完成
+    let mut results = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok((name, Ok(reply))) => {
+                results.push(json!({
+                    "name": name,
+                    "success": true,
+                    "reply": reply
+                }));
+            }
+            Ok((name, Err(e))) => {
+                results.push(json!({
+                    "name": name,
+                    "success": false,
+                    "error": e.to_string()
+                }));
+            }
+            Err(e) => {
+                results.push(json!({
+                    "name": "unknown",
+                    "success": false,
+                    "error": format!("Task panicked: {}", e)
+                }));
+            }
+        }
+    }
+
+    Ok(json!({
+        "ok": true,
+        "tasks_completed": results.len(),
+        "results": results
+    })
+    .to_string())
+}
+
+/// 注册 agent 集群工具（spawn_agent / talk_to_agent / list_agents / kill_agent / parallel_agents）。
 pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
     // 初始化全局管理器（幂等）
     let _ = manager(&paths);
@@ -393,4 +481,29 @@ pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
         }),
         |args| async move { kill_agent(args).await },
     ).writes());
+    // 并发执行多个 agent 任务
+    registry.register(ToolSpec::new_with_progress(
+        "parallel_agents",
+        "并发执行多个 agent 任务。传入任务列表，系统会同时向多个 agent 发送消息并并行执行，最后汇总结果。适用于需要多个 agent 协作完成复杂任务的场景。",
+        json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "目标 agent 名字" },
+                            "message": { "type": "string", "description": "交给 agent 的任务消息" }
+                        },
+                        "required": ["name", "message"]
+                    },
+                    "description": "并发任务列表"
+                }
+            },
+            "required": ["tasks"],
+            "additionalProperties": false
+        }),
+        move |args, progress| async move { parallel_agents(args, &progress).await },
+    ));
 }
