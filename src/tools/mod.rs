@@ -23,6 +23,7 @@ mod man;
 mod mcp;
 pub(crate) mod memes;
 mod memory;
+pub mod memory_mcp;
 mod moegirl;
 pub(crate) mod path_guard;
 mod patch_preview;
