@@ -21,6 +21,7 @@ const GRADIENT: [[u8; 3]; 5] = [
     [203, 213, 225], // #cbd5e1 银灰
 ];
 
+#[allow(dead_code)]
 const SLOGAN: &str = "顾清影 · 活在终端里的二次元少女";
 
 /// 启动 banner：居中图片 + 状态信息。
@@ -44,7 +45,7 @@ fn print_banner_inner(
     memory_count: usize,
     kb_count: usize,
 ) -> std::io::Result<()> {
-    let (terminal_cols, terminal_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (terminal_cols, _terminal_rows) = crossterm::terminal::size().unwrap_or((80, 24));
 
     // 尝试显示图片（目标 8 行高度）
     let image_shown = kitty_image::print_icon_centered(ICON_PNG, 8);

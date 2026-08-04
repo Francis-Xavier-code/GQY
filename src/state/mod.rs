@@ -665,47 +665,6 @@ fn prompt_fingerprint(system_prompt: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-#[allow(dead_code)]
-fn turn_chars(turn: &Turn) -> usize {
-    turn.user_content.chars().count()
-        + turn.assistant_content.chars().count()
-        + turn
-            .assistant_reasoning
-            .as_deref()
-            .map(str::chars)
-            .map(Iterator::count)
-            .unwrap_or(0)
-        + turn
-            .tool_reports
-            .iter()
-            .map(|r| r.chars().count())
-            .sum::<usize>()
-        + turn
-            .question_exchanges
-            .iter()
-            .filter_map(|exchange| serde_json::to_string(exchange).ok())
-            .map(|exchange| exchange.chars().count())
-            .sum::<usize>()
-        + turn
-            .followups
-            .iter()
-            .map(|followup| {
-                followup.content.chars().count()
-                    + followup
-                        .preceding_assistant_content
-                        .as_deref()
-                        .map(str::chars)
-                        .map(Iterator::count)
-                        .unwrap_or(0)
-                    + followup
-                        .preceding_assistant_reasoning
-                        .as_deref()
-                        .map(str::chars)
-                        .map(Iterator::count)
-                        .unwrap_or(0)
-            })
-            .sum::<usize>()
-}
 
 fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {
     let mut entries = Vec::with_capacity(turns.len() * 3);

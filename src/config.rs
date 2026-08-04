@@ -898,7 +898,7 @@ impl Default for MemoryConfig {
             association_enabled: default_true(),
             auto_diary_enabled: default_true(),
             auto_fact_enabled: default_true(),
-            auto_skill_enabled: false,
+            auto_skill_enabled: default_true(),
             association_facts: default_memory_association_facts(),
             association_episodes: default_memory_association_episodes(),
             association_max_chars: default_memory_association_max_chars(),
@@ -1360,10 +1360,16 @@ impl AppConfig {
         if self.plugins.knowledge_base.embedding_timeout_seconds == 0 {
             bail!("plugins.knowledge_base.embedding_timeout_seconds must be greater than 0");
         }
-        if !(0.0..=2.0).contains(&self.provider(None)?.temperature) {
-            bail!("provider temperature must be between 0.0 and 2.0");
-        }
         for provider in &self.providers {
+            if !provider.base_url.is_empty()
+                && !provider.base_url.starts_with("http://")
+                && !provider.base_url.starts_with("https://")
+            {
+                bail!(
+                    "provider {} base_url must start with http:// or https://",
+                    provider.id
+                );
+            }
             if provider.timeout_seconds == 0 {
                 bail!(
                     "provider {} timeout_seconds must be greater than 0",

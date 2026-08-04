@@ -893,19 +893,26 @@ impl OpenAiCompatibleClient {
                 Some(
                     json!({ "output_config": { "effort": effort } })
                         .as_object()
-                        .unwrap()
+                        .expect("json! object literal is always an object")
                         .clone(),
                 ),
             ),
             ReasoningSetting::Toggle(true) => (Some(anthropic_thinking_config()), None),
             ReasoningSetting::Toggle(false) | ReasoningSetting::Disabled => (None, None),
             ReasoningSetting::BudgetTokens(budget) => {
-                let budget = anthropic_reasoning_budget(self.provider.anthropic_max_tokens, budget)
-                    .expect("unsupported Anthropic budget variant should be filtered");
-                (
-                    Some(json!({ "type": "enabled", "budget_tokens": budget })),
-                    None,
-                )
+                match anthropic_reasoning_budget(self.provider.anthropic_max_tokens, budget) {
+                    Some(budget) => (
+                        Some(json!({ "type": "enabled", "budget_tokens": budget })),
+                        None,
+                    ),
+                    None => {
+                        tracing::warn!(
+                            "Anthropic budget variant not supported (max_tokens={}, requested={}), falling back to disabled",
+                            self.provider.anthropic_max_tokens, budget
+                        );
+                        (None, None)
+                    }
+                }
             }
         }
     }
@@ -2238,7 +2245,10 @@ fn lower_anthropic_assistant_content(message: ChatMessage) -> Vec<AnthropicConte
                     id: call.id,
                     name: call.function.name,
                     input: serde_json::from_str(&call.function.arguments)
-                        .unwrap_or_else(|_| json!({})),
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("malformed tool call arguments, falling back to empty object: {e}");
+                            json!({})
+                        }),
                 }),
         );
     }

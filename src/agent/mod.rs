@@ -29,6 +29,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 const MAX_QUESTION_ROUNDS_PER_TURN: usize = 8;
+/// 单轮对话中，连续消费排队 prompt 的最大次数，防止 UI 持续入队导致 agent 循环不终止。
+const MAX_QUEUE_CONSUMPTION_ROUNDS: usize = 16;
 
 pub struct PendingTurnGuard {
     state: StateStore,
@@ -116,11 +118,11 @@ impl AgentTurnControl {
     }
 
     pub fn mode(&self) -> AgentMode {
-        *self.mode.lock().unwrap()
+        *self.mode.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn set_mode(&self, mode: AgentMode) {
-        *self.mode.lock().unwrap() = mode;
+        *self.mode.lock().unwrap_or_else(|e| e.into_inner()) = mode;
     }
 
     fn tools(&self, mode: AgentMode) -> ToolRegistry {
@@ -281,6 +283,8 @@ pub struct Agent {
     on_overflow: String,
     /// 每轮结束后台自动备份任务；一次性 CLI 退出前会等它完成
     pending_backup: Option<tokio::task::JoinHandle<()>>,
+    /// 显示工具调用计划而不实际执行
+    dry_run: bool,
 }
 
 struct PreparedUserInput {
@@ -297,6 +301,18 @@ impl Agent {
         client: LlmClient,
         tools: ToolRegistry,
         mode: AgentMode,
+    ) -> Result<Self> {
+        Self::new_with_dry_run(config, paths, state, client, tools, mode, false)
+    }
+
+    pub fn new_with_dry_run(
+        config: AppConfig,
+        paths: &GqyPaths,
+        state: StateStore,
+        client: LlmClient,
+        tools: ToolRegistry,
+        mode: AgentMode,
+        dry_run: bool,
     ) -> Result<Self> {
         let base_system_prompt = config.system_prompt(paths)?;
         if matches!(mode, AgentMode::Normal | AgentMode::Chat) {
@@ -324,6 +340,7 @@ impl Agent {
             paths: paths.clone(),
             on_overflow,
             pending_backup: None,
+            dry_run,
         })
     }
 
@@ -365,7 +382,7 @@ impl Agent {
     }
 
     fn tool_definition_tokens(&self, loaded_tools: &BTreeSet<String>) -> usize {
-        let tools = self.tools.lock().unwrap();
+        let tools = self.tools.lock().unwrap_or_else(|e| e.into_inner());
         let definitions = if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
             tools.lazy_definitions(loaded_tools)
         } else {
@@ -627,7 +644,7 @@ impl Agent {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
                 .unwrap_or(0),
-            rand::random::<u16>()
+            rand::random::<u64>()
         );
         self.state
             .start_turn_for_mode(&turn_id, &input, std::process::id(), self.mode.key())?;
@@ -678,7 +695,11 @@ impl Agent {
         if result.content.trim().is_empty() {
             if let Some(reasoning) = result.reasoning.as_deref() {
                 if !reasoning.trim().is_empty() {
-                    result.content = "（本轮思考完成，没有额外的文字回复。）".to_string();
+                    result.content = crate::i18n::text(
+                        "(Thinking completed, no additional text reply.)",
+                        "（本轮思考完成，没有额外的文字回复。）",
+                    )
+                    .to_string();
                 }
             }
         }
@@ -1074,19 +1095,20 @@ impl Agent {
     {
         let mut tool_round = 0usize;
         let mut question_rounds = 0usize;
+        let mut queue_consumed = 0usize;
         let mut loaded_tools = self.initial_loaded_tools(messages)?;
         let mut usage_accumulator = UsageAccumulator::default();
         loop {
             let tool_limit_reached = self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds;
 
             if self.mode == AgentMode::Normal {
-                let mut tools = self.tools.lock().unwrap();
+                let mut tools = self.tools.lock().unwrap_or_else(|e| e.into_inner());
                 tools::rescan_scripts(&mut tools, &self.paths);
                 tools::register_script_display_names(&tools);
             }
 
             let definitions = if self.tools_enabled && !tool_limit_reached {
-                let tools = self.tools.lock().unwrap();
+                let tools = self.tools.lock().unwrap_or_else(|e| e.into_inner());
                 if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
                     tools.lazy_definitions(&loaded_tools)
                 } else {
@@ -1159,11 +1181,11 @@ impl Agent {
             if result.tool_calls.is_empty() || !self.tools_enabled {
                 if let Some(control) = control {
                     let queued = self.state.load_queued_prompts()?;
-                    if !queued.is_empty() {
-                        messages.push(ChatMessage::plain(
-                            "assistant",
-                            chat_result_replay_content(&result),
-                        ));
+                    if !queued.is_empty() && queue_consumed < MAX_QUEUE_CONSUMPTION_ROUNDS {
+                        queue_consumed += 1;
+                        if let Some(replay) = chat_result_replay_content(&result) {
+                            messages.push(ChatMessage::plain("assistant", replay));
+                        }
                         self.consume_queued_prompts(
                             current_turn_id,
                             messages,
@@ -1312,7 +1334,7 @@ impl Agent {
                 }
                 used_tools.push(call.function.name.clone());
                 {
-                    let tools = self.tools.lock().unwrap();
+                    let tools = self.tools.lock().unwrap_or_else(|e| e.into_inner());
                     if matches!(self.mode, AgentMode::Plan | AgentMode::Chat)
                         && tools.permission(&call.function.name)? != ToolPermission::ReadOnly
                     {
@@ -1362,9 +1384,23 @@ impl Agent {
                     messages.push(ChatMessage::tool(call.id, output));
                     continue;
                 }
+                // Dry-run 模式：显示工具调用计划而不实际执行
+                if self.dry_run {
+                    let output = format!(
+                        "[dry-run] 工具: {}\n参数: {}\n\n使用 --dry-run 时不会实际执行工具调用。",
+                        call.function.name, call.function.arguments
+                    );
+                    on_event(AgentEvent::ToolResult {
+                        name: event_name.clone(),
+                        ok: true,
+                        output: output.clone(),
+                    })?;
+                    messages.push(ChatMessage::tool(call.id, output));
+                    continue;
+                }
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
                 let tool_future = {
-                    let tools = self.tools.lock().unwrap();
+                    let tools = self.tools.lock().unwrap_or_else(|e| e.into_inner());
                     tools.call_with_progress_future(
                         &call.function.name,
                         &call.function.arguments,
@@ -1549,7 +1585,8 @@ impl Agent {
             }
             if let Some(control) = control {
                 let queued = self.state.load_queued_prompts()?;
-                if !queued.is_empty() {
+                if !queued.is_empty() && queue_consumed < MAX_QUEUE_CONSUMPTION_ROUNDS {
+                    queue_consumed += 1;
                     self.consume_queued_prompts(
                         current_turn_id,
                         messages,
@@ -1582,7 +1619,7 @@ impl Agent {
             }
         }
         if !loaded.is_empty() {
-            let tools = self.tools.lock().unwrap();
+            let tools = self.tools.lock().unwrap_or_else(|e| e.into_inner());
             let available = tools.tool_names().into_iter().collect::<BTreeSet<_>>();
             loaded.retain(|name| available.contains(name));
         }
@@ -1653,10 +1690,9 @@ impl Agent {
                 }
                 messages.push(self.followup_user_message(followup));
             }
-            messages.push(ChatMessage::plain(
-                "assistant",
-                assistant_replay_content(turn),
-            ));
+            if let Some(content) = assistant_replay_content(turn) {
+                messages.push(ChatMessage::plain("assistant", content));
+            }
             if !turn.tool_reports.is_empty() {
                 messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
             }
@@ -1876,25 +1912,24 @@ fn turn_context_tokens(turn: &crate::state::Turn) -> usize {
         }
         messages.push(ChatMessage::plain("user", &followup.content));
     }
-    messages.push(ChatMessage::plain(
-        "assistant",
-        assistant_replay_content(turn),
-    ));
+    if let Some(content) = assistant_replay_content(turn) {
+        messages.push(ChatMessage::plain("assistant", content));
+    }
     if !turn.tool_reports.is_empty() {
         messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
     }
     overflow::estimate_messages_tokens(&messages)
 }
 
-fn assistant_replay_content(turn: &crate::state::Turn) -> &str {
+fn assistant_replay_content(turn: &crate::state::Turn) -> Option<&str> {
     if !turn.assistant_content.trim().is_empty() {
-        return &turn.assistant_content;
+        return Some(&turn.assistant_content);
     }
     // content 缺失时只回放 reasoning 首行作为占位，避免重放整段思考
     turn.assistant_reasoning
         .as_deref()
+        .filter(|r| !r.trim().is_empty())
         .map(|reasoning| reasoning.split('\n').next().unwrap_or(""))
-        .unwrap_or(&turn.assistant_content)
 }
 
 fn followup_assistant_replay_content(followup: &crate::state::TurnFollowup) -> Option<&str> {
@@ -1910,15 +1945,14 @@ fn followup_assistant_replay_content(followup: &crate::state::TurnFollowup) -> O
         })
 }
 
-fn chat_result_replay_content(result: &ChatResult) -> &str {
+fn chat_result_replay_content(result: &ChatResult) -> Option<&str> {
     if !result.content.trim().is_empty() {
-        return &result.content;
+        return Some(&result.content);
     }
     result
         .reasoning
         .as_deref()
         .filter(|reasoning| !reasoning.trim().is_empty())
-        .unwrap_or(&result.content)
 }
 
 /// 剥除回复文本中的 `<think>...</think>` 思考块（含空块），返回清理后的文本。
@@ -3287,7 +3321,7 @@ mod tests {
         turn.assistant_reasoning = Some("replayed reasoning ".repeat(1_000));
         assert_eq!(
             assistant_replay_content(&turn),
-            turn.assistant_reasoning.as_deref().unwrap()
+            Some(turn.assistant_reasoning.as_deref().unwrap())
         );
         let with_replayed_reasoning = turn_context_tokens(&turn);
         turn.assistant_reasoning = None;

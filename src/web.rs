@@ -77,6 +77,8 @@ struct WebState {
     bridge_registry: Arc<std::sync::Mutex<ToolRegistry>>,
     /// 优雅退出信号（/api/shutdown 触发，菜单栏「退出」用它统一收尾）
     shutdown: Arc<tokio::sync::Notify>,
+    /// 共享 HTTP client（复用连接池，避免每次请求创建新 client）
+    http_client: reqwest::Client,
 }
 
 #[derive(Clone)]
@@ -989,6 +991,9 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
     // WebUI 面板默认在独立的 webui 通道对话（与终端/QQ/Telegram 各自独立上下文）；
     // 终端显式设置 GQY_CHANNEL 可覆盖
     if std::env::var_os("GQY_CHANNEL").is_none() {
+        // SAFETY: 此处在 run() 入口、服务器启动前调用，尚无并发读写 env 的其他线程。
+        // 2024 edition 将 set_var 标记为 unsafe 是因为多线程并发时有 data race 风险，
+        // 但此处的调用时序保证了安全。
         unsafe { std::env::set_var("GQY_CHANNEL", "webui") };
     }
     let password = resolve_web_password(&args)?;
@@ -1083,6 +1088,7 @@ pub async fn run(paths: GqyPaths, args: WebArgs) -> Result<()> {
         balance_cache: Arc::new(Mutex::new(None)),
         bridge_registry,
         shutdown: Arc::new(tokio::sync::Notify::new()),
+        http_client: reqwest::Client::new(),
     };
     let shutdown_notify = state.shutdown.clone();
     let app = router(state);
@@ -1333,8 +1339,11 @@ struct TtsQuery {
 }
 
 async fn tts_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
     Query(query): Query<TtsQuery>,
 ) -> Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
     if query.text.trim().is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "text is required"));
     }
@@ -1352,12 +1361,12 @@ async fn tts_web(
         }
     }
     let url = format!("http://127.0.0.1:8091/tts?text={encoded}");
-    let client = reqwest::Client::new();
-    let mut resp = match client.get(&url).timeout(std::time::Duration::from_secs(90)).send().await {
+    let client = &state.http_client;
+    let resp = match client.get(&url).timeout(std::time::Duration::from_secs(90)).send().await {
         Ok(r) => r,
         Err(_) => {
             // TTS 服务未运行：自动拉起（按需启停，省内存）
-            spawn_tts_server()?;
+            spawn_tts_server(&state.paths)?;
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
             client
                 .get(&url)
@@ -1380,9 +1389,9 @@ async fn tts_web(
 }
 
 /// 按需拉起本地 TTS 服务（scripts/tts-server.py，venv python），空闲自动退出省内存。
-fn spawn_tts_server() -> Result<(), ApiError> {
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/tts-server.py");
-    let venv_python = concat!(env!("CARGO_MANIFEST_DIR"), "/venv/bin/python");
+fn spawn_tts_server(paths: &GqyPaths) -> Result<(), ApiError> {
+    let script = paths.share_dir.join("scripts").join("tts-server.py");
+    let venv_python = paths.share_dir.join("venv").join("bin").join("python");
     if !std::path::Path::new(&venv_python).exists() {
         return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "未找到 venv python（TTS 依赖未安装）"));
     }
@@ -1630,7 +1639,7 @@ async fn channel_turns_web(
 async fn pi_control_web(
     State(state): State<WebState>,
     headers: HeaderMap,
-    method: axum::http::Method,
+    _method: axum::http::Method,
     Path(kind): Path<String>,
     body: axum::body::Bytes,
 ) -> std::result::Result<Response, ApiError> {
@@ -1699,10 +1708,14 @@ async fn export_conversation_web(
 }
 
 /// 优雅退出：菜单栏「退出」调用，停 serve → actor 结束（agent drop → pi 进程组被杀）→ 进程退出。
-/// 本机信任端点：不要求 auth（本地进程可触发，外部不可达）。
-async fn shutdown_web(State(state): State<WebState>) -> Json<Value> {
+/// 需要认证：防止非回环地址下的未授权远程关闭。
+async fn shutdown_web(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_auth(&headers, &state)?;
     state.shutdown.notify_one();
-    Json(json!({ "ok": true, "message": "shutting down" }))
+    Ok(Json(json!({ "ok": true, "message": "shutting down" })))
 }
 
 /// Web 端调用 GQY 工具（工具块「重跑」用）。
@@ -2321,7 +2334,12 @@ async fn persist_user_images(
         return;
     };
     let dir = paths.cache_dir.join("clipboard_images");
-    if std::fs::create_dir_all(&dir).is_err() {
+    // 使用 spawn_blocking 避免阻塞 tokio 运行时
+    let dir_clone = dir.clone();
+    if tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir_clone))
+        .await
+        .is_err()
+    {
         return;
     }
     for (index, image) in images.iter().enumerate() {
@@ -2336,7 +2354,11 @@ async fn persist_user_images(
             _ => "png",
         };
         let path = dir.join(format!("user_image_{}_{}.{ext}", turn_id, index));
-        if std::fs::write(&path, &data).is_err() {
+        let path_clone = path.clone();
+        if tokio::task::spawn_blocking(move || std::fs::write(&path_clone, &data))
+            .await
+            .is_err()
+        {
             continue;
         }
         let _ = state_store.save_image_asset(
@@ -2596,7 +2618,7 @@ fn spawn_config_watcher(paths: GqyPaths, actor_tx: mpsc::UnboundedSender<ActorCo
             if mtime == last_mtime {
                 continue;
             }
-            let Some(mtime) = mtime else { continue };
+            let Some(_mtime) = mtime else { continue };
             // 防抖静置 300ms，等待写文件彻底落盘
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let Ok(config) = AppConfig::load(&paths) else {

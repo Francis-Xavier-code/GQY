@@ -311,7 +311,7 @@ impl ConversationDb {
         queue_session_id: &str,
         mode: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let seq = self.next_seq_locked(&conn)?;
         let now = Utc::now().to_rfc3339();
         // 会话分组：沿用该通道未归档最近 turn 的 conversation_id（进程重启后恢复会话）；
@@ -359,7 +359,7 @@ impl ConversationDb {
     /// 流式进度写入：终端对话进行中周期更新 assistant_content（不改变 status），
     /// 供面板/迷你窗口轮询同步显示逐字回复。节流由调用方控制。
     pub fn update_assistant_progress(&self, turn_id: &str, content: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2 WHERE turn_id = ?3",
@@ -387,7 +387,7 @@ impl ConversationDb {
         token_total: Option<u64>,
         token_usage_estimated: bool,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now().to_rfc3339();
         let token_total = token_total.unwrap_or(0) as i64;
         let token_usage_estimated = i64::from(token_usage_estimated);
@@ -411,7 +411,7 @@ impl ConversationDb {
     }
 
     pub fn interrupt_turn(&self, turn_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2, status = 'interrupted'
@@ -422,7 +422,7 @@ impl ConversationDb {
     }
 
     pub fn append_tool_report(&self, turn_id: &str, report: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let existing: Option<String> = conn
             .query_row(
                 "SELECT tool_reports FROM turns WHERE turn_id = ?1",
@@ -444,7 +444,7 @@ impl ConversationDb {
     }
 
     pub fn insert_image_asset(&self, asset: &ImageAsset, data: &[u8]) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO image_assets
                 (asset_id, turn_id, tool_id, mime, width, height, alt, data, created_at)
@@ -465,7 +465,7 @@ impl ConversationDb {
     }
 
     pub fn load_image_assets(&self) -> Result<Vec<ImageAsset>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT asset_id, turn_id, tool_id, mime, width, height, alt, created_at
              FROM image_assets ORDER BY turn_id ASC, created_at ASC, asset_id ASC",
@@ -477,7 +477,7 @@ impl ConversationDb {
     }
 
     pub fn load_image_asset(&self, asset_id: &str) -> Result<Option<ImageAssetData>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT asset_id, turn_id, tool_id, mime, width, height, alt, created_at, data
              FROM image_assets WHERE asset_id = ?1",
@@ -498,7 +498,7 @@ impl ConversationDb {
         turn_id: &str,
         exchange: &QuestionExchange,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let next_index: i64 = conn.query_row(
             "SELECT COALESCE(MAX(exchange_index), -1) + 1
              FROM question_exchanges WHERE turn_id = ?1",
@@ -522,7 +522,7 @@ impl ConversationDb {
         queue_session_id: &str,
         owner_pid: u32,
     ) -> Result<QueuedPrompt> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let submitted_at = Utc::now().to_rfc3339();
         let attachments_json = serde_json::to_string(attachments)?;
         conn.execute(
@@ -552,7 +552,7 @@ impl ConversationDb {
     }
 
     pub fn load_queued_prompts(&self, queue_session_id: &str) -> Result<Vec<QueuedPrompt>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT prompt_id, seq, content, display_content, attachments, submitted_at
              FROM queued_prompts
@@ -589,7 +589,7 @@ impl ConversationDb {
         if prompts.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let running: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM turns WHERE turn_id = ?1 AND status = 'running')",
@@ -636,7 +636,7 @@ impl ConversationDb {
     }
 
     pub fn discard_queued_prompts(&self, queue_session_id: &str) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn.execute(
             "DELETE FROM queued_prompts
              WHERE status = 'queued' AND queue_session_id = ?1",
@@ -645,7 +645,7 @@ impl ConversationDb {
     }
 
     pub fn remove_queued_prompt(&self, prompt_id: &str, queue_session_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn.execute(
             "DELETE FROM queued_prompts
              WHERE prompt_id = ?1 AND status = 'queued' AND queue_session_id = ?2",
@@ -658,7 +658,7 @@ impl ConversationDb {
         current_session_id: &str,
         current_pid: u32,
     ) -> Result<usize> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT prompt_id, queue_session_id, owner_pid
              FROM queued_prompts WHERE status = 'queued'",
@@ -706,7 +706,7 @@ impl ConversationDb {
         &self,
         kind: &str,
     ) -> Result<std::collections::BTreeSet<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT name FROM session_loaded_items WHERE kind = ?1 ORDER BY name ASC")?;
         let items = stmt
@@ -719,7 +719,7 @@ impl ConversationDb {
         &self,
         kind: &str,
     ) -> Result<Vec<(String, Option<String>)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT name, source_turn_id FROM session_loaded_items WHERE kind = ?1 ORDER BY name ASC",
         )?;
@@ -735,7 +735,7 @@ impl ConversationDb {
         names: &[String],
         source_turn_id: Option<&str>,
     ) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now().to_rfc3339();
         let mut affected = 0usize;
         for name in names
@@ -756,7 +756,7 @@ impl ConversationDb {
     }
 
     pub fn load_turns(&self) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -772,7 +772,7 @@ impl ConversationDb {
 
     #[allow(dead_code)]
     pub fn load_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -792,7 +792,7 @@ impl ConversationDb {
     }
 
     pub fn load_visible_turns(&self) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -807,7 +807,7 @@ impl ConversationDb {
     }
 
     pub fn load_visible_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -825,7 +825,7 @@ impl ConversationDb {
     /// - Chat 模式：只看 `mode='chat'` 的轮次，且最多取最近 `limit` 条（本地模型上下文友好，默认 12）；
     /// - 其他模式：排除 `mode='chat'` 的轮次（闲聊不污染正经对话）。
     pub fn load_visible_turns_for_mode(&self, mode: &str, limit: Option<usize>) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if mode == "chat" {
             let mut stmt = conn.prepare(
                 "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
@@ -862,7 +862,7 @@ impl ConversationDb {
         exclude_turn_id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if mode == "chat" {
             let mut stmt = conn.prepare(
                 "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
@@ -895,15 +895,17 @@ impl ConversationDb {
     /// 读取指定通道的可见对话（供 WebUI 切换查看其他终端/通信通道）
     /// 全文搜索对话（LIKE 匹配用户/助手内容，跨通道），按 seq 倒序，返回匹配轮次。
     pub fn search_turns(&self, query: &str, limit: usize) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
-        let pattern = format!("%{}%", query);
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // 转义 LIKE 通配符，防止 % 和 _ 被当作模式匹配
+        let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
              FROM turns
              WHERE hidden = 0 AND is_summary = 0
-               AND (user_content LIKE ?1 OR assistant_content LIKE ?1)
+               AND (user_content LIKE ?1 ESCAPE '\' OR assistant_content LIKE ?1 ESCAPE '\')
              ORDER BY seq DESC
              LIMIT ?2",
         )?;
@@ -915,7 +917,7 @@ impl ConversationDb {
     }
 
     pub fn load_visible_turns_for_channel(&self, channel: &str) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -935,7 +937,7 @@ impl ConversationDb {
         channel: &str,
         mode: Option<&str>,
     ) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match mode {
             Some("chat") => {
                 let mut stmt = conn.prepare(
@@ -969,7 +971,7 @@ impl ConversationDb {
 
     /// 全部通道摘要：每个通道的最近消息、条数与运行状态，供 WebUI 左侧列表展示
     pub fn channel_summaries(&self) -> Result<Vec<ChannelSummary>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT channel,
                     COUNT(*) AS turn_count,
@@ -1025,7 +1027,7 @@ impl ConversationDb {
         &self,
         channel: &str,
     ) -> Result<Vec<ConversationSummary>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT COALESCE(conversation_id, 'legacy') AS group_id,
                     COUNT(*) AS turn_count,
@@ -1099,7 +1101,7 @@ impl ConversationDb {
         channel: &str,
         conversation_id: &str,
     ) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -1118,7 +1120,7 @@ impl ConversationDb {
 
     #[allow(dead_code)]
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let affected = conn.execute(
             "UPDATE turns SET hidden = 1 WHERE channel = ?1 AND seq <= ?2",
             params![self.channel, seq],
@@ -1133,7 +1135,7 @@ impl ConversationDb {
         token_total: Option<u64>,
         token_usage_estimated: bool,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let turn_id = format!(
             "summary_{}_{}",
             std::time::SystemTime::now()
@@ -1177,7 +1179,7 @@ impl ConversationDb {
     }
 
     pub fn load_last_summary(&self) -> Result<Option<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -1193,7 +1195,7 @@ impl ConversationDb {
 
     #[allow(dead_code)]
     pub fn count_turns(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM turns WHERE channel = ?1",
             params![self.channel],
@@ -1210,7 +1212,7 @@ impl ConversationDb {
 
     #[allow(dead_code)]
     pub fn trim_oldest_turns(&self, count: usize) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -1232,7 +1234,7 @@ impl ConversationDb {
     }
 
     pub fn oldest_evictable_visible_turns(&self, count: usize) -> Result<Vec<Turn>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
@@ -1261,7 +1263,7 @@ impl ConversationDb {
         if turn_ids.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_loaded_tool_sources(&tx, expected_loaded_tools)?;
         let affected = delete_visible_turns_in_transaction(&tx, turn_ids)?;
@@ -1279,7 +1281,7 @@ impl ConversationDb {
         if turn_ids.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let archive_db = archive_db.to_string_lossy().into_owned();
         let archive_alias = format!("evicted_context_{}", rand::random::<u32>());
         conn.execute(
@@ -1334,7 +1336,7 @@ impl ConversationDb {
             bail!("compact returned an empty summary");
         }
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
         let current_turn_ids = {
             let mut stmt = tx.prepare(
@@ -1423,7 +1425,7 @@ impl ConversationDb {
     /// 「新建对话」：把当前可见对话归档（hidden=1），数据完整保留，
     /// 面板从空会话开始，历史/记忆读取仍可查到归档内容。
     pub fn reset(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE turns SET hidden = 1 WHERE channel = ?1 AND hidden = 0",
             params![self.channel],
@@ -1434,7 +1436,7 @@ impl ConversationDb {
     }
 
     pub fn reset_history(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM turns WHERE channel = ?1", params![self.channel])?;
         conn.execute("DELETE FROM session_loaded_items", [])?;
         Ok(())
@@ -1443,7 +1445,7 @@ impl ConversationDb {
     /// 回收空闲页（需建库时 auto_vacuum = INCREMENTAL 才生效；旧库为无害 no-op）。
     /// 用于溢出清理/硬删之后，温和、锁短，可在备份等后台路径 best-effort 调用。
     pub fn incremental_vacuum(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute_batch("PRAGMA incremental_vacuum;")?;
         Ok(())
     }
@@ -1451,13 +1453,13 @@ impl ConversationDb {
     /// 全量整理（重建数据库文件）。
     /// 仅适合无并发、无活动事务的场景（如 reset 清空后）；WAL 模式下可用。
     pub fn vacuum(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute_batch("VACUUM;")?;
         Ok(())
     }
 
     pub fn undo_last_turn(&self) -> Result<(usize, Option<String>)> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
         let running: i64 = tx.query_row(
             "SELECT COUNT(*) FROM turns WHERE channel = ?1 AND hidden = 0 AND status = 'running'",
@@ -1544,7 +1546,7 @@ impl ConversationDb {
 
     #[allow(dead_code)]
     pub fn has_running_turns(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM turns WHERE channel = ?1 AND status = 'running'",
             params![self.channel],
@@ -1556,7 +1558,7 @@ impl ConversationDb {
     pub fn running_turn_queue_target(
         &self,
     ) -> Result<Option<(String, Option<String>, Option<u32>)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT turns.turn_id,
                     COALESCE(
@@ -1587,7 +1589,7 @@ impl ConversationDb {
 
     #[allow(dead_code)]
     pub fn running_turn_summaries(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT user_content FROM turns WHERE channel = ?1 AND status = 'running' ORDER BY seq ASC")?;
         let summaries = stmt
@@ -1597,7 +1599,7 @@ impl ConversationDb {
     }
 
     pub fn running_turn_summaries_excluding(&self, exclude_turn_id: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT user_content FROM turns WHERE channel = ?1 AND status = 'running' AND turn_id != ?2 ORDER BY seq ASC",
         )?;
@@ -1608,7 +1610,7 @@ impl ConversationDb {
     }
 
     pub fn recover_stale_running_turns(&self) -> Result<usize> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT turn_id, owner_pid FROM turns WHERE status = 'running'")?;
         let stale_turn_ids: Vec<String> = stmt
@@ -1620,7 +1622,8 @@ impl ConversationDb {
             .filter_map(|row| {
                 let (turn_id, owner_pid) = row.ok()?;
                 let alive = owner_pid
-                    .map(|pid| crate::alarm::process_exists(pid as u32))
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .map(|pid| crate::alarm::process_exists(pid))
                     .unwrap_or(false);
                 if alive {
                     None
@@ -1694,7 +1697,7 @@ impl ConversationDb {
             if role == "user" {
                 if let Some((prev_ts, prev_content)) = pending_user.take() {
                     let turn_id = format!("migrated_{}", migrated);
-                    let conn = self.conn.lock().unwrap();
+                    let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
                     let seq = self.next_seq_locked(&conn)?;
                     conn.execute(
                         "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status)
@@ -1708,7 +1711,7 @@ impl ConversationDb {
             } else if role == "assistant" {
                 if let Some((user_ts, user_content)) = pending_user.take() {
                     let turn_id = format!("migrated_{}", migrated);
-                    let conn = self.conn.lock().unwrap();
+                    let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
                     let seq = self.next_seq_locked(&conn)?;
                     let now = Utc::now().to_rfc3339();
                     conn.execute(
@@ -1724,7 +1727,7 @@ impl ConversationDb {
         }
         if let Some((user_ts, user_content)) = pending_user {
             let turn_id = format!("migrated_{}", migrated);
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
             let seq = self.next_seq_locked(&conn)?;
             conn.execute(
                 "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, status)

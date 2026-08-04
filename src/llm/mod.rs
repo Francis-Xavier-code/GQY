@@ -259,6 +259,7 @@ impl LlmClient {
     }
 
     /// pi 状态（模型/思考级别）；非 pi 返回默认占位。
+    #[allow(dead_code)]
     pub async fn pi_state(&self) -> anyhow::Result<serde_json::Value> {
         match self {
             Self::OpenAi(_) => Ok(serde_json::json!({ "model": null, "thinking_level": null })),
@@ -267,6 +268,7 @@ impl LlmClient {
     }
 
     /// 设置 pi 模型；非 pi 无操作。
+    #[allow(dead_code)]
     pub async fn pi_set_model(&self, model_id: &str) -> anyhow::Result<()> {
         match self {
             Self::OpenAi(_) => Ok(()),
@@ -275,6 +277,7 @@ impl LlmClient {
     }
 
     /// 设置 pi 思考级别；非 pi 无操作。
+    #[allow(dead_code)]
     pub async fn pi_set_thinking_level(&self, level: &str) -> anyhow::Result<()> {
         match self {
             Self::OpenAi(_) => Ok(()),
@@ -283,6 +286,7 @@ impl LlmClient {
     }
 
     /// pi 可用模型列表；非 pi 返回空。
+    #[allow(dead_code)]
     pub async fn pi_available_models(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         match self {
             Self::OpenAi(_) => Ok(Vec::new()),

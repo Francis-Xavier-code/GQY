@@ -203,6 +203,7 @@ pub fn is_pipe_chain(input: &str) -> bool {
     false
 }
 
+#[allow(dead_code)]
 pub fn is_shell_command(input: &str, shell_name: &str) -> bool {
     classify_with_confidence(input, shell_name) == ClassifyResult::Command
 }

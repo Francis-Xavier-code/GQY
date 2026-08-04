@@ -107,7 +107,7 @@ impl AgentManager {
         Ok(())
     }
 
-    fn make_client(paths: &GqyPaths, role: &str) -> LlmClient {
+    fn make_client(paths: &GqyPaths, _role: &str) -> LlmClient {
         // 直连模式直接构造；pi 模式用 from_config（进程按 persona 懒启动）。
         // 角色系统提示词统一包装，保证 agent 行为可预期。
         match LlmClient::from_config(&AppConfig::load_or_default(paths).unwrap_or_default(), paths)

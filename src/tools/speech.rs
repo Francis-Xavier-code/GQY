@@ -55,7 +55,7 @@ pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
     ));
 }
 
-async fn speak(args: Value, paths: GqyPaths) -> Result<String> {
+async fn speak(args: Value, _paths: GqyPaths) -> Result<String> {
     let text = args
         .get("text")
         .and_then(Value::as_str)

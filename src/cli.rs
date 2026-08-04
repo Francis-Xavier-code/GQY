@@ -192,6 +192,7 @@ fn repl_footer_line(mode: AgentMode, footer: &ReplFooterStatus, cols: usize) -> 
     format!("{bar}{left}{}{right}", " ".repeat(gap))
 }
 
+#[allow(dead_code)]
 fn repl_footer_left(mode: AgentMode, footer: &ReplFooterStatus, width: usize) -> String {
     let thinking = footer.thinking.as_deref().unwrap_or_default();
     let colored_thinking = (!thinking.is_empty()).then(|| primary_footer_text(thinking));
@@ -226,6 +227,7 @@ fn repl_footer_left(mode: AgentMode, footer: &ReplFooterStatus, width: usize) ->
     repl_footer_left_parts(&mode, &model, None, colored_thinking)
 }
 
+#[allow(dead_code)]
 fn repl_footer_left_parts(
     mode: &str,
     model: &str,
@@ -301,6 +303,10 @@ pub struct Cli {
     #[arg(long)]
     pub stdout: bool,
 
+    /// 显示工具调用计划而不实际执行
+    #[arg(long)]
+    pub dry_run: bool,
+
     #[arg(long, hide = true)]
     pub shell_intercept: bool,
 
@@ -336,20 +342,25 @@ fn parse_args(mut args: Vec<OsString>) -> std::result::Result<Cli, clap::Error> 
 }
 
 fn extract_debug_flag(args: &mut Vec<OsString>) -> bool {
-    let mut debug = false;
-    let mut index = 1;
-    while index < args.len() {
-        if args[index] == "--" {
-            break;
+    let mut found = false;
+    // 保留 "--" 之前的所有非 "--debug" 参数（"--" 之后的不再扫描）
+    let mut seen_separator = false;
+    args.retain(|arg| {
+        if seen_separator {
+            return true;
         }
-        if args[index] == "--debug" {
-            args.remove(index);
-            debug = true;
+        if arg == "--" {
+            seen_separator = true;
+            return true;
+        }
+        if arg == "--debug" {
+            found = true;
+            false
         } else {
-            index += 1;
+            true
         }
-    }
-    debug
+    });
+    found
 }
 
 fn localized_command() -> clap::Command {
@@ -1465,7 +1476,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
             Ok(())
         }
         Some(Command::Ask(args)) => {
-            run_chat_with_options(&paths, join_message(args.message), None, cli.stdout, mode).await
+            run_chat_with_options(&paths, join_message(args.message), None, cli.stdout, mode, cli.dry_run).await
         }
         Some(Command::Init) => run_init(&paths, InitKind::Explicit),
         Some(Command::Paths) => {
@@ -1499,7 +1510,7 @@ pub async fn run(cli: Cli, paths: GqyPaths) -> Result<()> {
             if message.is_empty() && io::stdin().is_terminal() {
                 run_repl(&paths, mode).await
             } else {
-                run_chat_with_options(&paths, message, None, cli.stdout, mode).await
+                run_chat_with_options(&paths, message, None, cli.stdout, mode, cli.dry_run).await
             }
         }
     }
@@ -2800,6 +2811,7 @@ fn inline_fuzzy_lines(item_count: usize) -> u16 {
     ((item_count.min(10) + 2) as u16).max(3)
 }
 
+#[allow(dead_code)]
 fn truncate_display(value: &str, max: usize) -> String {
     if value.chars().count() <= max {
         value.to_string()
@@ -3079,15 +3091,15 @@ fn run_clipboard_paste(paths: &GqyPaths) -> Result<()> {
 fn shell_pasted_text_index(cache_dir: &std::path::Path, text: &str) -> Result<usize> {
     let dir = cache_dir.join("clipboard_texts");
     std::fs::create_dir_all(&dir)?;
-    let mut index = 1;
-    loop {
+    const MAX_INDEX: usize = 100_000;
+    for index in 1..=MAX_INDEX {
         let path = dir.join(format!("{index}.txt"));
         if !path.exists() {
             std::fs::write(path, text)?;
             return Ok(index);
         }
-        index += 1;
     }
+    anyhow::bail!("clipboard_texts directory overflow (>{MAX_INDEX} files)")
 }
 
 fn shell_message_from_input(use_stdin: bool, message: Vec<String>) -> Result<String> {
@@ -3139,9 +3151,9 @@ async fn run_shell_intercept(paths: &GqyPaths, shell_name: &str, message: String
     let (clean_message, pasted_images) = extract_image_placeholders(&message);
 
     let result = if pasted_images.is_empty() {
-        run_chat_with_options(paths, clean_message, None, false, AgentMode::Normal).await
+        run_chat_with_options(paths, clean_message, None, false, AgentMode::Normal, false).await
     } else {
-        run_chat_with_images(paths, clean_message, pasted_images).await
+        run_chat_with_images(paths, clean_message, pasted_images, false).await
     };
     drain_stdin();
     if let Err(err) = &result {
@@ -3228,6 +3240,7 @@ async fn run_chat_with_images(
     paths: &GqyPaths,
     message: String,
     pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
+    dry_run: bool,
 ) -> Result<()> {
     AppConfig::init_files(paths)?;
     let config = AppConfig::load_or_default(paths)?;
@@ -3247,13 +3260,14 @@ async fn run_chat_with_images(
     let show_token_usage = config.display.show_token_usage;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
-    let mut agent = Agent::new(
+    let mut agent = Agent::new_with_dry_run(
         config,
         paths,
         state.clone(),
         client,
         registry,
         AgentMode::Normal,
+        dry_run,
     )?;
     crate::pi_bridge::ensure_for_agent(&agent, None, None).await?;
     let mut renderer = render::StreamRenderer::new(
@@ -3374,6 +3388,7 @@ async fn run_chat_with_options(
     show_reasoning: Option<bool>,
     plain: bool,
     mode: AgentMode,
+    dry_run: bool,
 ) -> Result<()> {
     let message = append_stdin_if_piped(message).await;
     if message.is_empty() {
@@ -3401,7 +3416,7 @@ async fn run_chat_with_options(
     let show_token_usage = config.display.show_token_usage && !plain;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
-    let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
+    let mut agent = Agent::new_with_dry_run(config, paths, state.clone(), client, registry, mode, dry_run)?;
     crate::pi_bridge::ensure_for_agent(&agent, None, None).await?;
     let mut renderer = render::StreamRenderer::new(
         reasoning_mode,

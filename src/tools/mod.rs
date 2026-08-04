@@ -16,6 +16,8 @@ pub mod import;
 pub mod knowledge_base;
 mod load_tools;
 mod local_vision;
+#[macro_use]
+pub mod macros;
 mod speech;
 mod man;
 mod mcp;
