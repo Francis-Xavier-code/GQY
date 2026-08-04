@@ -1698,7 +1698,9 @@ impl Agent {
             }
         }
         messages.push(ChatMessage::system(runtime_context(self.mode)));
-        messages.push(ChatMessage::plain("user", current_input));
+        // 挥发性变量（时间戳）放在 userPrompt 末尾，避免破坏前缀缓存
+        let user_input_with_timestamp = format!("{}\n{}", current_input, user_prompt_timestamp());
+        messages.push(ChatMessage::plain("user", user_input_with_timestamp));
         Ok(messages)
     }
 
@@ -2717,24 +2719,32 @@ fn parse_reasoning_title_chunks<'a>(
     (title, output)
 }
 
+/// 生成静态的运行时上下文（不含时间戳，保证前缀稳定）
+/// 时间戳在 user_prompt_timestamp() 中单独提供，放在 userPrompt 末尾
 fn runtime_context(mode: AgentMode) -> String {
     let cwd = std::env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     if mode == AgentMode::Chat {
         format!(
-            "<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\"/>",
-            Local::now().format("%Y年%m月%d日 %A %H:%M"),
+            "<runtime cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\"/>",
             xml_attr_escape(&cwd),
         )
     } else {
         let runtime = terminal_runtime_context();
         format!(
-            "<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
-            Local::now().format("%Y年%m月%d日 %A %H:%M"),
+            "<runtime cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
             xml_attr_escape(&cwd),
         )
     }
+}
+
+/// 生成时间戳信息，放在 userPrompt 末尾（挥发性变量仅放末尾，避免破坏前缀缓存）
+fn user_prompt_timestamp() -> String {
+    format!(
+        "<timestamp>{}</timestamp>",
+        Local::now().format("%Y年%m月%d日 %A %H:%M"),
+    )
 }
 
 fn terminal_runtime_context() -> String {
@@ -3212,7 +3222,8 @@ mod tests {
     fn runtime_context_contains_dynamic_runtime_only() {
         let context = runtime_context(AgentMode::Normal);
         assert!(context.starts_with("<runtime "));
-        assert!(context.contains("now=\""));
+        // 时间戳已移到 user_prompt_timestamp()，不在 runtime_context 中
+        assert!(!context.contains("now=\""));
         assert!(context.contains("cwd=\""));
     }
 

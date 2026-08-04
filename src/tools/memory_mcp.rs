@@ -255,7 +255,11 @@ impl MemoryFileStore {
 
     fn read_shard(&self, path: &Path) -> Result<MemoryShard> {
         let content = fs::read_to_string(path)?;
-        let (meta, body) = parse_shard(&content)?;
+        let (mut meta, body) = parse_shard(&content)?;
+        // 设置 filename 为文件名
+        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+            meta.filename = filename.to_string();
+        }
         Ok(MemoryShard { meta, body })
     }
 
@@ -405,5 +409,307 @@ mod tests {
         // 删除
         store.delete("test_memory.md").unwrap();
         assert_eq!(store.list().unwrap().len(), 0);
+    }
+}
+
+/// 注册 Cindy Memory 工具到工具注册表
+pub fn register(registry: &mut super::ToolRegistry, paths: &crate::paths::GqyPaths) {
+    use crate::i18n::text as t;
+    use serde_json::json;
+
+    let memory_dir = paths.data_dir.join("cindy_memory");
+    let store = MemoryFileStore::new(memory_dir);
+
+    // memory_list - 列出所有 memory
+    {
+        let store = store.clone();
+        registry.register(
+            super::ToolSpec::new(
+                "cindy_memory_list",
+                t(
+                    "List all Cindy memory shards",
+                    "列出所有 Cindy 记忆分片",
+                ),
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                move |_args| {
+                    let store = store.clone();
+                    async move {
+                        let memories = store.list()?;
+                        Ok(serde_json::to_string_pretty(&memories)?)
+                    }
+                },
+            )
+            .with_display_name(t("Cindy Memory List", "Cindy 记忆列表").to_string()),
+        );
+    }
+
+    // memory_read - 读取单个 memory
+    {
+        let store = store.clone();
+        registry.register(
+            super::ToolSpec::new(
+                "cindy_memory_read",
+                t(
+                    "Read a Cindy memory shard by filename",
+                    "按文件名读取 Cindy 记忆分片",
+                ),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Memory filename, e.g. 'user_preferences.md'"
+                        }
+                    },
+                    "required": ["filename"],
+                    "additionalProperties": false
+                }),
+                move |args| {
+                    let store = store.clone();
+                    async move {
+                        let filename = args
+                            .get("filename")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        let shard = store.read(filename)?;
+                        Ok(serde_json::to_string_pretty(&shard)?)
+                    }
+                },
+            )
+            .with_display_name(t("Cindy Memory Read", "Cindy 记忆读取").to_string()),
+        );
+    }
+
+    // memory_write - 写入 memory
+    {
+        let store = store.clone();
+        registry.register(
+            super::ToolSpec::new(
+                "cindy_memory_write",
+                t(
+                    "Write a Cindy memory shard (create/update/append)",
+                    "写入 Cindy 记忆分片（创建/更新/追加）",
+                ),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["user", "feedback", "project", "reference"],
+                            "description": "Memory type"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Filename slug (lowercase, alphanumeric, hyphens)"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Display title"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "One-line hook for index"
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Main content"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["create", "update", "append"],
+                            "description": "Write mode (default: create)"
+                        }
+                    },
+                    "required": ["type", "name", "title", "description", "body"],
+                    "additionalProperties": false
+                }),
+                move |args| {
+                    let store = store.clone();
+                    async move {
+                        let memory_type = args
+                            .get("type")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(MemoryType::from_str)
+                            .unwrap_or(MemoryType::User);
+                        let name = args
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let title = args
+                            .get("title")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let description = args
+                            .get("description")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let body = args
+                            .get("body")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let mode = args
+                            .get("mode")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|s| match s {
+                                "update" => WriteMode::Update,
+                                "append" => WriteMode::Append,
+                                _ => WriteMode::Create,
+                            })
+                            .unwrap_or_default();
+
+                        let result = store.write(WriteOptions {
+                            memory_type,
+                            name,
+                            title,
+                            description,
+                            body,
+                            mode,
+                        })?;
+                        Ok(serde_json::to_string_pretty(&result)?)
+                    }
+                },
+            )
+            .with_display_name(t("Cindy Memory Write", "Cindy 记忆写入").to_string())
+            .writes(),
+        );
+    }
+
+    // memory_delete - 删除 memory
+    {
+        let store = store.clone();
+        registry.register(
+            super::ToolSpec::new(
+                "cindy_memory_delete",
+                t(
+                    "Delete a Cindy memory shard",
+                    "删除 Cindy 记忆分片",
+                ),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Memory filename to delete"
+                        }
+                    },
+                    "required": ["filename"],
+                    "additionalProperties": false
+                }),
+                move |args| {
+                    let store = store.clone();
+                    async move {
+                        let filename = args
+                            .get("filename")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        store.delete(filename)?;
+                        Ok(json!({"ok": true, "deleted": filename}).to_string())
+                    }
+                },
+            )
+            .with_display_name(t("Cindy Memory Delete", "Cindy 记忆删除").to_string())
+            .writes(),
+        );
+    }
+
+    // memory_search - 搜索 memory
+    {
+        let store = store.clone();
+        registry.register(
+            super::ToolSpec::new(
+                "cindy_memory_search",
+                t(
+                    "Search Cindy memory shards by keyword",
+                    "按关键词搜索 Cindy 记忆分片",
+                ),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query"
+                        },
+                        "type": {
+                            "type": "string",
+                            "enum": ["user", "feedback", "project", "reference"],
+                            "description": "Filter by memory type"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max results (default 10)"
+                        }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+                move |args| {
+                    let store = store.clone();
+                    async move {
+                        let query = args
+                            .get("query")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        let memory_type = args
+                            .get("type")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(MemoryType::from_str);
+                        let limit = args
+                            .get("limit")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(10) as usize;
+
+                        let hits = store.search(query, memory_type, limit)?;
+                        Ok(serde_json::to_string_pretty(&hits)?)
+                    }
+                },
+            )
+            .with_display_name(t("Cindy Memory Search", "Cindy 记忆搜索").to_string()),
+        );
+    }
+
+    // cindy_memory_index - 显示 MEMORY.md 索引
+    {
+        registry.register(
+            super::ToolSpec::new(
+                "cindy_memory_index",
+                t(
+                    "Show the Cindy MEMORY.md index file",
+                    "显示 Cindy MEMORY.md 索引文件",
+                ),
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                move |_args| {
+                    let store = store.clone();
+                    async move {
+                        store.init()?;
+                        let index_path = store.base_dir.join("MEMORY.md");
+                        let index = std::fs::read_to_string(&index_path)
+                            .unwrap_or_else(|_| "# Memory Index\n\n".to_string());
+                        Ok(index)
+                    }
+                },
+            )
+            .with_display_name(t("Cindy Memory Index", "Cindy 记忆索引").to_string()),
+        );
+    }
+}
+
+impl MemoryFileStore {
+    pub fn clone(&self) -> Self {
+        Self {
+            base_dir: self.base_dir.clone(),
+            index_path: self.index_path.clone(),
+        }
     }
 }

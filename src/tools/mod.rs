@@ -279,6 +279,8 @@ pub fn builtin_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     if config.memory_config().enabled {
         memory::register(&mut registry, config.clone(), paths.clone());
     }
+    // Cindy Memory 工具（分片存储 + MEMORY.md 索引）
+    memory_mcp::register(&mut registry, paths);
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     scripts::register(&mut registry, paths);
