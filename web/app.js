@@ -1,6 +1,11 @@
 (() => {
   "use strict";
 
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+  window.scrollTo(0, 0);
+
   // Panel 模式（悬浮卡片嵌入）：NSPanel + WKWebView 加载 ?panel=1
   const IS_PANEL = new URLSearchParams(location.search).has("panel");
   if (IS_PANEL) document.body.classList.add("panel-mode");
@@ -5568,7 +5573,7 @@
       return;
     }
     if (!hasHistory()) {
-      elements.composerInput.focus();
+      elements.composerInput.focus({ preventScroll: true });
       return;
     }
     if (conversationRunning() || state.adminBusy || state.submitting) return;
@@ -5582,7 +5587,7 @@
     try {
       await apiRequest("/api/conversation/reset", { method: "POST" });
       await loadBootstrap();
-      elements.composerInput.focus();
+      elements.composerInput.focus({ preventScroll: true });
       showToast("已开始新对话（之前的对话已归档，顾清影随时可查）", "info");
     } catch (error) {
       showInlineError(error.message);
@@ -6184,7 +6189,7 @@
         if (elements.composerInput.disabled) return;
         elements.composerInput.value = button.dataset.prompt || "";
         resizeComposer();
-        elements.composerInput.focus();
+        elements.composerInput.focus({ preventScroll: true });
       });
     });
     elements.composerInput.addEventListener("input", resizeComposer);

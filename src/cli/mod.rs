@@ -1,3 +1,5 @@
+pub mod args;
+
 use crate::agent::{
     archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
 };
@@ -2037,7 +2039,7 @@ fn still_registered(paths: &GqyPaths, id: &str) -> bool {
 }
 
 fn play_alarm_once(audio_file: Option<&std::path::Path>) -> Result<()> {
-    const ALARM_WAV: &[u8] = include_bytes!("assets/alarm.wav");
+    const ALARM_WAV: &[u8] = include_bytes!("../assets/alarm.wav");
     let (_stream, handle) = rodio::OutputStream::try_default()?;
     let audio = match audio_file {
         Some(path) => std::fs::read(path)?,
