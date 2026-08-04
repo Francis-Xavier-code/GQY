@@ -4029,6 +4029,8 @@ mod tests {
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
         let mut reasoning_part_active = false;
+        let mut think_scrub = String::new();
+        let mut in_think_block = false;
         let mut finish_reason = None;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
@@ -4045,6 +4047,8 @@ mod tests {
             &mut reasoning,
             &mut reasoning_emitted,
             &mut reasoning_part_active,
+            &mut think_scrub,
+            &mut in_think_block,
             &mut finish_reason,
             &mut usage,
             &mut tool_calls,
@@ -4066,6 +4070,8 @@ mod tests {
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
         let mut reasoning_part_active = false;
+        let mut think_scrub = String::new();
+        let mut in_think_block = false;
         let mut finish_reason = None;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
@@ -4082,6 +4088,8 @@ mod tests {
             &mut reasoning,
             &mut reasoning_emitted,
             &mut reasoning_part_active,
+            &mut think_scrub,
+            &mut in_think_block,
             &mut finish_reason,
             &mut usage,
             &mut tool_calls,
@@ -4101,6 +4109,8 @@ mod tests {
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
         let mut reasoning_part_active = false;
+        let mut think_scrub = String::new();
+        let mut in_think_block = false;
         let mut finish_reason = None;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
@@ -4112,6 +4122,8 @@ mod tests {
             &mut reasoning,
             &mut reasoning_emitted,
             &mut reasoning_part_active,
+            &mut think_scrub,
+            &mut in_think_block,
             &mut finish_reason,
             &mut usage,
             &mut tool_calls,

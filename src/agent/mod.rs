@@ -2855,11 +2855,12 @@ mod tests {
 
     #[test]
     fn mode_reminder_does_not_inject_a_reasoning_title_protocol() {
-        let prompt = with_mode_reminder("base".to_string(), AgentMode::Normal);
+        let paths = test_paths(std::path::Path::new("/tmp/gqy-test-agent-mode"));
+        let prompt = with_mode_reminder("base".to_string(), AgentMode::Normal, &paths);
         assert_eq!(prompt, "base");
         assert!(!prompt.contains("<runtime"));
 
-        let prompt = with_mode_reminder("base".to_string(), AgentMode::Plan);
+        let prompt = with_mode_reminder("base".to_string(), AgentMode::Plan, &paths);
         assert!(prompt.contains("base"));
         assert!(prompt.contains(crate::prompts::PLAN_REMINDER));
         assert!(!prompt.contains("<runtime"));

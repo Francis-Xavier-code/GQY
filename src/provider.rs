@@ -253,8 +253,8 @@ mod tests {
 
     #[test]
     fn sanitize_id_works() {
-        assert_eq!(sanitize_id("My Provider!"), Ok("my-provider".to_string()));
-        assert_eq!(sanitize_id("deepseek"), Ok("deepseek".to_string()));
+        assert_eq!(sanitize_id("My Provider!").unwrap(), "my-provider");
+        assert_eq!(sanitize_id("deepseek").unwrap(), "deepseek");
         assert!(sanitize_id("###").is_err());
     }
 }

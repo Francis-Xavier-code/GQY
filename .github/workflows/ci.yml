@@ -32,10 +32,9 @@ jobs:
         run: cargo check
 
   test:
-    name: cargo test (surfaces broken inline tests)
+    name: cargo test (inline unit tests)
     needs: check
     runs-on: ubuntu-latest
-    continue-on-error: true   # 已知 src 内联单测不通过编译，先不阻断流水线，仅暴露问题
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps (alsa for rodio/cpal)
@@ -48,8 +47,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: cargo test --no-run (编译单测，暴露 test rot)
-        run: cargo test --no-run
+      - name: cargo test
+        run: cargo test
 
   clippy:
     name: cargo clippy (report)
