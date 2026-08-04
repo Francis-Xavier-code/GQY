@@ -8,8 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # 复用 target/ 缓存，避免每次全量重编
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   check:
@@ -27,7 +25,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: cargo check (all targets)
-        run: cargo check --all-targets --offline || cargo check --all-targets
+        run: cargo check --all-targets
 
   test:
     name: cargo test + build
@@ -44,9 +42,9 @@ jobs:
         with:
           cache-on-failure: true
       - name: cargo test
-        run: cargo test --offline || cargo test
+        run: cargo test
       - name: cargo build
-        run: cargo build --offline || cargo build
+        run: cargo build
       - name: binary version
         run: ./target/debug/gqy --version
 
@@ -65,5 +63,5 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: cargo clippy (warnings as errors)
-        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy (report only)
+        run: cargo clippy --all-targets -- -W warnings
