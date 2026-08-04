@@ -42,11 +42,24 @@ jobs:
           toolchain: "1.97.1"
           targets: ${{ matrix.target }}
 
-      - name: Install system deps (Linux)
-        if: runner.os == 'Linux'
+      - name: Install system deps (Linux x86_64)
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config gcc-aarch64-linux-gnu
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Install system deps (Linux aarch64)
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          # 添加 aarch64 软件源并安装交叉编译库
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev:arm64 || true
           echo "[target.aarch64-unknown-linux-gnu]" >> ~/.cargo/config.toml
           echo "linker = 'aarch64-linux-gnu-gcc'" >> ~/.cargo/config.toml
 
