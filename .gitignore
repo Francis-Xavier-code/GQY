@@ -21,13 +21,10 @@
 /qq-napcat/
 /communication/backup-*/
 
-# 本地训练数据与生成脚本（隐私，不上云）
-/data/finetune/turns.jsonl
-/data/finetune/*.md
+# 本地训练数据：语料/样本进版本库，模型权重(大文件)仍忽略
+/data/**/model.safetensors
+/data/finetune-sample/lora-merged/
 /generate_*.py
 /venv/
 /.hf-cache/
-/data/finetune-sample/
-/data/finetune-sample/synthetic.jsonl
-/data/finetune-sample/soulchat-empathy.jsonl
 /models/
