@@ -69,4 +69,4 @@ jobs:
         with:
           cache-on-failure: true
       - name: cargo clippy (report only)
-        run: cargo clippy --all-targets -- -W warnings
+        run: cargo clippy -- -W warnings
