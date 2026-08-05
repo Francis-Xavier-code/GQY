@@ -25,9 +25,9 @@
 
 ---
 
-GQY 是一个大模型驱动的 CLI AI 助理，运行在 macOS 终端和菜单栏中。她不是 Coding Agent，而是偏向日常聊天、系统排障、娱乐互动的桌面伴侣。
+GQY 是一个大模型驱动的 CLI AI 助理，运行在 macOS 终端和菜单栏中。她是 Coding Agent + 日常聊天、系统排障、娱乐互动的桌面伴侣。
 
-默认接入 [opencode](https://github.com/anomalyco/opencode) 公共模型服务，开箱即用；也支持任意 OpenAI 兼容接口、本地模型（llama.cpp / Ollama）和 [pi](https://github.com/earendil-works/pi) 底座模式。
+默认接入 [opencode](https://github.com/anomalyco/opencode) 公共模型服务，开箱即用（可采用自然语言让免费模型帮你添加`GQY`的模型服务商）；也支持任意 OpenAI 兼容接口、本地模型（llama.cpp / Ollama）和 [pi](https://github.com/earendil-works/pi) 底座模式。
 
 <p align="center">
   <img src="pics/GQY-image.png" alt="GQY Demo" width="680">
@@ -47,8 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/GQYTeam/GQY/main/install.sh | bash
 ## 致谢
 
 - [opencode](https://github.com/anomalyco/opencode) — 最好的开源 Coding Agent
-- [Miyu](https://github.com/SHORiN-KiWATA/Miyu) — 本项目 fork 自 Miyu（MIT License）
 
 ## 许可
 
-本项目使用 [GPL-3.0](LICENSE) 发布。上游 Miyu 的 MIT 部分仍按 MIT 授权，新增代码与修改按 GPL-3.0 授权。
+本项目使用 [GPL-3.0](LICENSE) 发布。新增代码与修改按 GPL-3.0 授权。
