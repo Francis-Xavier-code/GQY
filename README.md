@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="pics/GQY-icon.png" alt="GQY" width="160">
+  <img src="image-and-video/GQY-icon.png" alt="GQY" width="160">
 </p>
 
 <h1 align="center">GQY — 顾清影</h1>
@@ -13,6 +13,11 @@
   <img src="https://img.shields.io/badge/Rust-1.97.1-orange?logo=rust" alt="Rust">
   <a href="https://github.com/GQYTeam/GQY/actions"><img src="https://img.shields.io/github/actions/workflow/status/GQYTeam/GQY/ci.yml?label=CI" alt="CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple" alt="Platform">
+</p>
+
+
+<p align="center">
+  <img src="image-and-video/GQY-image.png" alt="GQY Demo" width="680">
 </p>
 
 ---
@@ -36,9 +41,6 @@ GQY 是一个大模型驱动的 CLI AI 助理，运行在 macOS 终端和菜单�
 
 默认接入 [opencode](https://github.com/anomalyco/opencode) 公共模型服务，开箱即用（可采用自然语言让免费模型帮你添加`GQY`的模型服务商）；也支持任意 OpenAI 兼容接口、本地模型（llama.cpp / Ollama）和 [pi](https://github.com/earendil-works/pi) 底座模式。
 
-<p align="center">
-  <img src="pics/GQY-image.png" alt="GQY Demo" width="680">
-</p>
 
 ## 安装
 
