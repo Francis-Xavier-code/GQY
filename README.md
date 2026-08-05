@@ -24,8 +24,15 @@
 
 
 ---
+# 角色说明
 
 GQY 是一个大模型驱动的 CLI AI 助理，运行在 macOS 终端和菜单栏中。她是 Coding Agent + 日常聊天、系统排障、娱乐互动的桌面伴侣。
+##  角色设计图片展示
+
+![](/image-and-video/顾清影1.png)
+![](/image-and-video/顾清影2.png)
+![](/image-and-video/顾清影3.png)
+
 
 默认接入 [opencode](https://github.com/anomalyco/opencode) 公共模型服务，开箱即用（可采用自然语言让免费模型帮你添加`GQY`的模型服务商）；也支持任意 OpenAI 兼容接口、本地模型（llama.cpp / Ollama）和 [pi](https://github.com/earendil-works/pi) 底座模式。
 
