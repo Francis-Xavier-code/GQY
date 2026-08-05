@@ -4,7 +4,7 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::paths::GqyPaths;
 use crate::provider;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
@@ -16,14 +16,15 @@ pub fn register(registry: &mut ToolRegistry, paths: GqyPaths) {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["add", "list", "switch", "remove"],
-                    "description": "操作：add=新增/更新供应商（可自动发现模型）；list=列出全部；switch=热切换激活；remove=移除。"
+                    "enum": ["add", "list", "switch", "remove", "templates"],
+                    "description": "操作：add=新增/更新供应商（可自动发现模型）；list=列出全部；switch=热切换激活；remove=移除；templates=浏览内置供应商模板目录。"
                 },
                 "base_url": { "type": "string", "description": "add 时必填：OpenAI 兼容端点，如 https://api.deepseek.com/v1 或 http://127.0.0.1:11434/v1" },
                 "api_key": { "type": "string", "description": "add 时必填：API Key（本地服务可填占位符）" },
                 "provider_id": { "type": "string", "description": "供应商 id（小写字母/数字/连字符）；add 时不填则从 base_url 推断；switch/remove 必填" },
                 "display_name": { "type": "string", "description": "显示名，默认取 provider_id" },
-                "model": { "type": "string", "description": "switch 时指定要激活的模型；add 时不填则自动发现模型并选第一个" }
+                "model": { "type": "string", "description": "switch 时指定要激活的模型；add 时不填则自动发现模型并选第一个" },
+                "category": { "type": "string", "enum": ["china", "overseas", "local", "default"], "description": "templates 时可选：按区域筛选模板" }
             },
             "required": ["action"],
             "additionalProperties": false
@@ -42,6 +43,30 @@ async fn run(args: Value, paths: GqyPaths) -> Result<String> {
         .unwrap_or_default()
         .to_lowercase();
     match action.as_str() {
+        "templates" => {
+            let category = args.get("category").and_then(Value::as_str);
+            let templates = provider::templates_by_category(category);
+            let rows: Vec<Value> = templates
+                .iter()
+                .map(|t| {
+                    json!({
+                        "id": t.id,
+                        "display_name": t.display_name,
+                        "base_url": t.base_url,
+                        "category": t.category,
+                        "description": t.description,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "ok": true,
+                "filter": category,
+                "count": rows.len(),
+                "templates": rows,
+                "hint": "使用 gqy provider add <id> 或在对话中让顾清影添加供应商"
+            })
+            .to_string())
+        }
         "list" => provider::list_providers(&paths),
         "switch" => {
             let id = required_str(&args, "provider_id")?;
@@ -125,4 +150,3 @@ fn infer_id(base_url: &str) -> String {
     }
 }
 
-use anyhow::Context;

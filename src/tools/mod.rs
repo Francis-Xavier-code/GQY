@@ -49,6 +49,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 #[allow(unused_imports)]
+pub(crate) use subagent_runner::finalization_prompt as subagent_runner_finalization_prompt;
 pub use registry::{
     empty_parameters, CommandOutputStream, ToolPermission, ToolProgress, ToolProgressEvent,
     ToolRegistry, ToolSpec,
@@ -284,8 +285,10 @@ pub fn builtin_registry(config: &AppConfig, paths: &GqyPaths) -> ToolRegistry {
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     scripts::register(&mut registry, paths);
-    // 自主 agent 集群（Kimi 式）：模型可自建/管理命名子代理
-    crate::agents::register(&mut registry, paths.clone());
+    // 自主 agent 集群（Kimi 式）：模型可自建/管理命名子代理。
+    // 传入注册前的 registry 快照，避免子 agent 再调用 spawn/talk/task 等递归工具。
+    let agent_tools = registry.clone();
+    crate::agents::register(&mut registry, paths.clone(), agent_tools);
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
     }

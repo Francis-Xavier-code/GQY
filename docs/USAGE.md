@@ -314,8 +314,9 @@ GQY 会自动调用深度研究工具，多阶段收集资料，生成带引用�
 
 GQY 可以自主创建命名子代理并组队协作（Kimi 式）：
 
-- `gqy_spawn_agent` — 创建子代理
-- `gqy_talk_to_agent` — 派活（可并行）
+- `gqy_spawn_agent` — 创建/更新子代理（同名改角色会清空历史）
+- `gqy_talk_to_agent` — 派活（可同轮多次并行）
+- `gqy_parallel_agents` — 一次并发派活多个 agent 并汇总
 - `gqy_list_agents` — 查看名册
 - `gqy_kill_agent` — 销毁
 

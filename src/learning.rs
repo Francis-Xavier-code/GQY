@@ -52,10 +52,11 @@ pub fn maybe_learn(
     user_message: &str,
     assistant_message: &str,
 ) -> Result<Option<(String, bool)>> {
-    let min_method = config
-        .memory_config()
-        .learning_min_method_chars
-        .max(16);
+    let memory = config.memory_config();
+    if !memory.enabled || !memory.auto_skill_enabled {
+        return Ok(None);
+    }
+    let min_method = memory.learning_min_method_chars.max(16);
     if !wants_to_learn(user_message) {
         return Ok(None);
     }

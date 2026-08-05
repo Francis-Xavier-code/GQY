@@ -128,9 +128,11 @@ gqy tools remove my-tools         # 删除
 
 模型可以在对话中自主创建命名子代理并组队协作：
 
-- `gqy_spawn_agent(name, role)` — 创建/更新一个命名 agent（自定义角色设定）；
+- `gqy_spawn_agent(name, role)` — 创建/更新一个命名 agent（自定义角色设定；同名改 role 会清空历史）；
 - `gqy_talk_to_agent(name, message)` — 给 agent 派活，独立多轮记忆；
-  同一轮多次调用即并行执行（每个 agent 独立进程）；
+  同一轮多次调用即并行执行（每个 agent 独立进程/会话）；
+- `gqy_parallel_agents(tasks)` — 一次并发向多个 agent 派活并汇总结果；
 - `gqy_list_agents` / `gqy_kill_agent` — 名册与销毁；
 - 定义持久化在 `GQY_HOME/data/agents/agents.json`，重启后 agent 仍在（进程懒启动）；
-- 递归防护：agent 进程的工具清单不含 spawn/talk/list/kill，不能无限套娃。
+- 直连模式：子 agent 走 GQY 工具循环（可 web_search/web_fetch 等）；pi 模式工具在过滤后的 bridge 清单内执行；
+- 递归防护：agent 工具清单不含 spawn/talk/list/kill/parallel/task/deep_research，不能无限套娃。

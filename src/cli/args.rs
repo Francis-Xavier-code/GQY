@@ -53,7 +53,7 @@ pub fn parse() -> Cli {
     parse_args(std::env::args_os().collect()).unwrap_or_else(|err| err.exit())
 }
 
-fn parse_args(mut args: Vec<std::ffi::OsString>) -> std::result::Result<Cli, clap::Error> {
+pub(crate) fn parse_args(mut args: Vec<std::ffi::OsString>) -> std::result::Result<Cli, clap::Error> {
     let debug = extract_debug_flag(&mut args);
     let matches = localized_command().try_get_matches_from(args)?;
     let mut cli = Cli::from_arg_matches(&matches)?;
@@ -82,7 +82,7 @@ fn extract_debug_flag(args: &mut Vec<std::ffi::OsString>) -> bool {
     found
 }
 
-fn localized_command() -> clap::Command {
+pub(crate) fn localized_command() -> clap::Command {
     let mut command = Cli::command();
     command = command
         .about(t("GQY CLI AI Agent", "GQY 命令行 AI 助手"))
@@ -105,6 +105,8 @@ fn localized_command() -> clap::Command {
             )
             .disable_help_subcommand(true);
     }
+    command = localize_top_args(command);
+    command = localize_subcommands(command);
     command = apply_localized_help_flags(command, true);
     if is_zh() {
         command = apply_chinese_help_template(command);
@@ -161,6 +163,386 @@ fn apply_chinese_help_template(mut command: clap::Command) -> clap::Command {
     }
     command
 }
+
+fn localize_top_args(command: clap::Command) -> clap::Command {
+    command
+        .mut_arg("plan", |arg| {
+            arg.help(t("Run in read-only planning mode", "使用只读计划模式运行"))
+        })
+        .mut_arg("debug", |arg| {
+            arg.help(t(
+                "Write detailed diagnostics to the GQY log directory",
+                "将详细诊断信息写入 GQY 日志目录",
+            ))
+        })
+        .mut_arg("stdout", |arg| {
+            arg.help(t(
+                "Plain output mode (no colors, no TUI); pipe-friendly for stdout redirection",
+                "纯文本输出模式（无颜色、无 TUI）；适合管道重定向",
+            ))
+        })
+        .mut_arg("message", |arg| {
+            arg.help(t(
+                "Message to send; omitted to enter REPL",
+                "要发送的消息；省略则进入 REPL",
+            ))
+        })
+}
+
+fn localize_subcommands(mut command: clap::Command) -> clap::Command {
+    let descriptions = [
+        (
+            "ask",
+            "Send one message to the assistant",
+            "向助手发送一条消息",
+        ),
+        (
+            "init",
+            "Create default config and state files",
+            "创建默认配置和状态文件",
+        ),
+        (
+            "paths",
+            "Show app config, data, and cache paths",
+            "显示应用配置、数据和缓存路径",
+        ),
+        ("config", "Open or manage configuration", "打开或管理配置"),
+        ("models", "List or switch models", "列出或切换模型"),
+        (
+            "variant",
+            "View or switch thinking level",
+            "查看或切换思考档位",
+        ),
+        (
+            "fish-init",
+            "Integrate with fish so you can chat in natural language directly in the terminal",
+            "集成到 fish，集成后可在终端直接使用自然语言交流。",
+        ),
+        (
+            "bash-init",
+            "Integrate with bash so you can chat in natural language directly in the terminal",
+            "集成到 bash，集成后可在终端直接使用自然语言交流。",
+        ),
+        (
+            "zsh-init",
+            "Integrate with zsh so you can chat in natural language directly in the terminal",
+            "集成到 zsh，集成后可在终端直接使用自然语言交流。",
+        ),
+        (
+            "remove-shell-hook",
+            "Safely remove installed GQY shell hooks",
+            "安全删除已安装的 GQY shell hook",
+        ),
+        ("history", "Show conversation history", "显示会话历史"),
+        (
+            "pop",
+            "Move conversation turns out of active context",
+            "将对话轮次移出当前上下文",
+        ),
+        ("kb", "Manage local knowledge base", "管理本地知识库"),
+        (
+            "memory",
+            "Inspect or edit assistant memory",
+            "查看或编辑助手记忆",
+        ),
+        (
+            "backup",
+            "Snapshot and sync portable assistant state",
+            "快照并同步助理的独立状态",
+        ),
+        ("skills", "Manage assistant skills", "管理助手 skills"),
+        (
+            "reset",
+            "Clear current conversation history",
+            "清空当前会话历史",
+        ),
+        ("web", "Start the local GQY WebUI", "启动本地 GQY WebUI"),
+    ];
+    for (name, en, zh) in descriptions {
+        command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
+    }
+    command = command
+        .mut_subcommand("ask", localize_ask_command)
+        .mut_subcommand("models", localize_models_command)
+        .mut_subcommand("variant", localize_variant_command)
+        .mut_subcommand("history", localize_history_command)
+        .mut_subcommand("pop", localize_pop_command)
+        .mut_subcommand("kb", localize_kb_command)
+        .mut_subcommand("memory", localize_memory_command)
+        .mut_subcommand("backup", localize_backup_command)
+        .mut_subcommand("skills", localize_skills_command)
+        .mut_subcommand("config", localize_config_command)
+        .mut_subcommand("reset", localize_reset_command)
+        .mut_subcommand("web", localize_web_command);
+    command
+}
+
+fn localize_ask_command(command: clap::Command) -> clap::Command {
+    command.mut_arg("message", |arg| {
+        arg.help(t("Message to send", "要发送的消息"))
+    })
+}
+
+fn localize_models_command(command: clap::Command) -> clap::Command {
+    command.mut_arg("index", |arg| {
+        arg.help(t("Model list index to activate", "要激活的模型列表序号"))
+    })
+}
+
+fn localize_variant_command(command: clap::Command) -> clap::Command {
+    command.mut_arg("name", |arg| {
+        arg.help(t(
+            "Thinking level to select; omit to choose interactively",
+            "要选择的思考档位；省略则进入交互选择",
+        ))
+    })
+}
+
+fn localize_history_command(command: clap::Command) -> clap::Command {
+    command
+        .mut_arg("limit", |arg| {
+            arg.help(t("Number of history entries to show", "显示的历史条数"))
+        })
+        .mut_arg("raw", |arg| {
+            arg.help(t("Print raw JSONL entries", "输出原始 JSONL 条目"))
+        })
+        .mut_arg("no_thinking", |arg| {
+            arg.help(t("Hide stored reasoning", "隐藏已保存的思考内容"))
+        })
+}
+
+fn localize_pop_command(command: clap::Command) -> clap::Command {
+    command.mut_arg("count", |arg| {
+        arg.help(t(
+            "Number of oldest turns to pop; omit to select interactively",
+            "要弹出的最旧轮次数；省略则进入交互多选",
+        ))
+    })
+}
+
+fn localize_config_command(command: clap::Command) -> clap::Command {
+    command
+        .mut_subcommand("validate", |subcommand| {
+            subcommand.about(t("Validate configuration", "校验配置"))
+        })
+        .mut_subcommand("paths", |subcommand| {
+            subcommand.about(t("Show configuration paths", "显示配置路径"))
+        })
+        .mut_subcommand("set", |subcommand| {
+            subcommand
+                .about(t(
+                    "Set a config value non-interactively",
+                    "免交互设置配置项",
+                ))
+                .mut_arg("key", |arg| {
+                    arg.help(t(
+                        "Dotted path, e.g. display.language",
+                        "点号路径，如 display.language",
+                    ))
+                })
+                .mut_arg("value", |arg| {
+                    arg.help(t(
+                        "Value; JSON types are auto-detected",
+                        "值；自动识别 JSON 类型",
+                    ))
+                })
+        })
+        .mut_subcommand("get", |subcommand| {
+            subcommand
+                .about(t("Read a config value (secrets redacted)", "读取配置项（密钥脱敏）"))
+                .mut_arg("key", |arg| {
+                    arg.help(t(
+                        "Dotted path; omit to dump everything",
+                        "点号路径；省略时输出全部",
+                    ))
+                })
+        })
+}
+
+fn localize_reset_command(command: clap::Command) -> clap::Command {
+    command.mut_arg("scope", |arg| {
+        arg.help(t(
+            "all also clears long-term memory",
+            "all 同时清空长期记忆",
+        ))
+    })
+}
+
+fn localize_web_command(command: clap::Command) -> clap::Command {
+    command
+        .mut_arg("port", |arg| arg.help(t("Local TCP port", "本地 TCP 端口")))
+        .mut_arg("host", |arg| {
+            arg.help(t(
+                "Bind address; non-loopback addresses require a password",
+                "监听地址；绑定非回环地址必须设置密码",
+            ))
+        })
+        .mut_arg("no_open", |arg| {
+            arg.help(t(
+                "Do not open the WebUI in a browser",
+                "不自动在浏览器中打开 WebUI",
+            ))
+        })
+        .mut_arg("password", |arg| {
+            arg.help(t(
+                "Require a password; omit the value to enter it securely",
+                "要求访问密码；省略参数值时安全输入",
+            ))
+        })
+        .mut_arg("password_file", |arg| {
+            arg.help(t(
+                "Read the WebUI password from a file",
+                "从文件读取 WebUI 访问密码",
+            ))
+        })
+}
+
+fn localize_kb_command(mut command: clap::Command) -> clap::Command {
+    let descriptions = [
+        ("add", "Add a file or directory", "添加文件或目录"),
+        ("list", "List indexed files", "列出已索引文件"),
+        ("search", "Search knowledge base content", "搜索知识库内容"),
+        ("find", "Find files by name", "按文件名查找文件"),
+        ("read", "Read a knowledge base file", "读取知识库文件"),
+        ("remove", "Remove a knowledge base file", "移除知识库文件"),
+        (
+            "reindex",
+            "Rebuild keyword index on demand",
+            "按需重建关键词索引",
+        ),
+        ("stats", "Show knowledge base statistics", "显示知识库统计"),
+        ("embed", "Manage semantic embeddings", "管理语义嵌入"),
+    ];
+    for (name, en, zh) in descriptions {
+        command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
+    }
+    command
+        .mut_subcommand("add", |subcommand| {
+            subcommand
+                .mut_arg("path", |arg| arg.help(t("Path to add", "要添加的路径")))
+                .mut_arg("recursive", |arg| {
+                    arg.help(t(
+                        "Compatibility flag; directories are recursive by default",
+                        "兼容参数；目录默认递归导入",
+                    ))
+                })
+        })
+        .mut_subcommand("search", |subcommand| {
+            subcommand
+                .mut_arg("query", |arg| arg.help(t("Search query", "搜索查询")))
+                .mut_arg("limit", |arg| arg.help(t("Maximum results", "最大结果数")))
+        })
+        .mut_subcommand("find", |subcommand| {
+            subcommand
+                .mut_arg("query", |arg| arg.help(t("Filename query", "文件名查询")))
+                .mut_arg("limit", |arg| arg.help(t("Maximum results", "最大结果数")))
+        })
+        .mut_subcommand("read", |subcommand| {
+            subcommand
+                .mut_arg("file", |arg| {
+                    arg.help(t("Knowledge base file name", "知识库文件名"))
+                })
+                .mut_arg("start", |arg| arg.help(t("Starting line", "起始行")))
+                .mut_arg("lines", |arg| arg.help(t("Number of lines", "读取行数")))
+        })
+        .mut_subcommand("remove", |subcommand| {
+            subcommand.mut_arg("file", |arg| arg.help(t("File to remove", "要移除的文件")))
+        })
+}
+
+fn localize_memory_command(mut command: clap::Command) -> clap::Command {
+    let descriptions = [
+        ("stats", "Show memory statistics", "显示记忆统计"),
+        ("reset", "Clear assistant memory", "清空助手记忆"),
+        ("search", "Search memories", "搜索记忆"),
+        ("remember", "Save a manual fact", "手动保存事实"),
+    ];
+    for (name, en, zh) in descriptions {
+        command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
+    }
+    command
+        .mut_subcommand("reset", |subcommand| {
+            subcommand.mut_arg("include_skills", |arg| {
+                arg.help(t(
+                    "Also remove generated skills",
+                    "同时移除自动生成的 skills",
+                ))
+            })
+        })
+        .mut_subcommand("search", |subcommand| {
+            subcommand
+                .mut_arg("query", |arg| arg.help(t("Search query", "搜索查询")))
+                .mut_arg("limit", |arg| arg.help(t("Maximum results", "最大结果数")))
+                .mut_arg("forgotten", |arg| {
+                    arg.help(t("Include forgotten memories", "包含已遗忘记忆"))
+                })
+        })
+        .mut_subcommand("remember", |subcommand| {
+            subcommand
+                .mut_arg("content", |arg| arg.help(t("Fact content", "事实内容")))
+                .mut_arg("source", |arg| arg.help(t("Source label", "来源标签")))
+        })
+}
+
+fn localize_backup_command(mut command: clap::Command) -> clap::Command {
+    let descriptions = [
+        (
+            "init",
+            "Configure an isolated Git backup",
+            "配置独立的 Git 备份",
+        ),
+        (
+            "now",
+            "Create and optionally push a snapshot",
+            "立即创建并推送快照",
+        ),
+        (
+            "status",
+            "Show backup configuration and Git status",
+            "显示备份配置与 Git 状态",
+        ),
+        (
+            "restore",
+            "Restore state from the backup remote",
+            "从备份远程恢复状态",
+        ),
+        (
+            "remote",
+            "Attach or replace the backup remote",
+            "绑定或更换备份远程仓库",
+        ),
+    ];
+    for (name, en, zh) in descriptions {
+        command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
+    }
+    command
+}
+
+fn localize_skills_command(mut command: clap::Command) -> clap::Command {
+    let descriptions = [
+        ("list", "List skills", "列出 skills"),
+        ("show", "Show a skill", "显示 skill"),
+        ("enable", "Enable a skill", "启用 skill"),
+        ("disable", "Disable a skill", "禁用 skill"),
+        ("remove", "Remove a skill", "移除 skill"),
+        ("stats", "Show skill statistics", "显示 skill 统计"),
+        (
+            "prune",
+            "Remove disabled generated skills",
+            "清理已禁用的自动 skills",
+        ),
+    ];
+    for (name, en, zh) in descriptions {
+        command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
+    }
+    for name in ["show", "enable", "disable", "remove"] {
+        command = command.mut_subcommand(name, |subcommand| {
+            subcommand.mut_arg("name", |arg| arg.help(t("Skill name", "skill 名称")))
+        });
+    }
+    command
+}
+
 
 // ── 子命令定义 ────────────────────────────────────────────────────────────────
 
@@ -537,6 +919,12 @@ pub enum ProviderAction {
     /// 移除供应商
     Remove {
         provider_id: String,
+    },
+    /// 浏览内置供应商模板目录
+    Templates {
+        /// 按区域筛选：china / overseas / local / default
+        #[arg(long)]
+        category: Option<String>,
     },
 }
 

@@ -116,15 +116,19 @@ const EXPOSED_TOOLS: &[&str] = &[
     "talk_to_agent",
     "list_agents",
     "kill_agent",
+    "parallel_agents",
 ];
 
 /// 常规工具调用超时。
 const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(180);
-/// 长任务（task / deep_research，内部跑子 agent 流水线）超时：给足 30 分钟。
+/// 长任务（task / deep_research / 集群派活，内部跑子 agent 流水线）超时：给足 30 分钟。
 const TOOL_CALL_TIMEOUT_LONG: Duration = Duration::from_secs(1800);
 
 fn tool_timeout(name: &str) -> Duration {
-    if matches!(name, "task" | "deep_research") {
+    if matches!(
+        name,
+        "task" | "deep_research" | "talk_to_agent" | "parallel_agents"
+    ) {
         TOOL_CALL_TIMEOUT_LONG
     } else {
         TOOL_CALL_TIMEOUT
@@ -420,6 +424,13 @@ fn tool_guidance(name: &str) -> Option<(&'static str, &'static [&'static str])> 
         "list_agents" | "kill_agent" => (
             "管理子代理",
             &["用户询问有哪些 agent 或用完要销毁时，用 gqy_list_agents / gqy_kill_agent"][..],
+        ),
+        "parallel_agents" => (
+            "并发派活多个子代理",
+            &[
+                "已创建多个 agent 后，可用 gqy_parallel_agents 一次并发派发多条任务并汇总结果",
+                "也可同一轮多次调用 gqy_talk_to_agent 实现并行",
+            ][..],
         ),
         "task" => (
             "子任务（子 agent）",

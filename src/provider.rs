@@ -258,3 +258,174 @@ mod tests {
         assert!(sanitize_id("###").is_err());
     }
 }
+
+/// 供应商模板目录：按区域分类列出所有内置模板。
+/// 用于 CLI `gqy provider templates` 和 agent 工具浏览。
+pub fn list_templates() -> Vec<ProviderTemplate> {
+    vec![
+        ProviderTemplate {
+            id: "opencode",
+            display_name: "opencode Zen",
+            base_url: "https://zen.opencode.ai/v1",
+            category: "default",
+            description: "默认内置供应商，无需 API key",
+        },
+        ProviderTemplate {
+            id: "openai",
+            display_name: "OpenAI",
+            base_url: "https://api.openai.com/v1",
+            category: "overseas",
+            description: "GPT-4o / o1 / o3 系列",
+        },
+        ProviderTemplate {
+            id: "anthropic",
+            display_name: "Anthropic",
+            base_url: "https://api.anthropic.com/v1",
+            category: "overseas",
+            description: "Claude 系列（原生 Anthropic 协议）",
+        },
+        ProviderTemplate {
+            id: "gemini",
+            display_name: "Gemini",
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+            category: "overseas",
+            description: "Google Gemini 系列（OpenAI 兼容端点）",
+        },
+        ProviderTemplate {
+            id: "groq",
+            display_name: "Groq",
+            base_url: "https://api.groq.com/openai/v1",
+            category: "overseas",
+            description: "Groq LPU 推理，低延迟",
+        },
+        ProviderTemplate {
+            id: "together",
+            display_name: "Together AI",
+            base_url: "https://api.together.xyz/v1",
+            category: "overseas",
+            description: "开源模型云推理",
+        },
+        ProviderTemplate {
+            id: "fireworks",
+            display_name: "Fireworks AI",
+            base_url: "https://api.fireworks.ai/inference/v1",
+            category: "overseas",
+            description: "高性能开源模型推理",
+        },
+        ProviderTemplate {
+            id: "cerebras",
+            display_name: "Cerebras",
+            base_url: "https://api.cerebras.ai/v1",
+            category: "overseas",
+            description: "Cerebras Wafer-Scale 推理",
+        },
+        ProviderTemplate {
+            id: "sambanova",
+            display_name: "SambaNova",
+            base_url: "https://api.sambanova.ai/v1",
+            category: "overseas",
+            description: "SambaNova RDU 推理",
+        },
+        ProviderTemplate {
+            id: "mistral",
+            display_name: "Mistral AI",
+            base_url: "https://api.mistral.ai/v1",
+            category: "overseas",
+            description: "Mistral / Codestral 系列",
+        },
+        ProviderTemplate {
+            id: "openrouter",
+            display_name: "OpenRouter",
+            base_url: "https://openrouter.ai/api/v1",
+            category: "overseas",
+            description: "聚合路由，数百模型一键切换",
+        },
+        ProviderTemplate {
+            id: "deepseek",
+            display_name: "DeepSeek",
+            base_url: "https://api.deepseek.com",
+            category: "china",
+            description: "DeepSeek V3 / R1 系列",
+        },
+        ProviderTemplate {
+            id: "siliconflow",
+            display_name: "SiliconFlow",
+            base_url: "https://api.siliconflow.cn/v1",
+            category: "china",
+            description: "硅基流动，开源模型聚合推理",
+        },
+        ProviderTemplate {
+            id: "moonshot",
+            display_name: "Moonshot",
+            base_url: "https://api.moonshot.cn/v1",
+            category: "china",
+            description: "月之暗面 Kimi 系列",
+        },
+        ProviderTemplate {
+            id: "zhipu",
+            display_name: "Zhipu",
+            base_url: "https://open.bigmodel.cn/api/paas/v4",
+            category: "china",
+            description: "智谱 GLM / ChatGLM 系列",
+        },
+        ProviderTemplate {
+            id: "volcengine",
+            display_name: "Volcengine",
+            base_url: "https://ark.cn-beijing.volces.com/api/v3",
+            category: "china",
+            description: "火山引擎豆包大模型",
+        },
+        ProviderTemplate {
+            id: "bailian",
+            display_name: "Bailian",
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            category: "china",
+            description: "阿里云百炼 / 通义千问",
+        },
+        ProviderTemplate {
+            id: "xiaomi",
+            display_name: "Xiaomi",
+            base_url: "https://token-plan-sgp.xiaomimimo.com/v1",
+            category: "china",
+            description: "小米 MiMo 系列",
+        },
+        ProviderTemplate {
+            id: "minimax",
+            display_name: "Minimax",
+            base_url: "https://api.minimaxi.com/v1",
+            category: "china",
+            description: "MiniMax 系列",
+        },
+        ProviderTemplate {
+            id: "ollama",
+            display_name: "Ollama",
+            base_url: "http://localhost:11434/v1",
+            category: "local",
+            description: "本地 Ollama 服务",
+        },
+        ProviderTemplate {
+            id: "lmstudio",
+            display_name: "LMStudio",
+            base_url: "http://localhost:1234/v1",
+            category: "local",
+            description: "本地 LM Studio 服务",
+        },
+    ]
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderTemplate {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub base_url: &'static str,
+    pub category: &'static str,
+    pub description: &'static str,
+}
+
+/// 按分类列出模板：不传 category 列全部；传 "china" / "overseas" / "local" / "default" 筛选。
+pub fn templates_by_category(category: Option<&str>) -> Vec<ProviderTemplate> {
+    list_templates()
+        .into_iter()
+        .filter(|t| category.map_or(true, |c| t.category == c))
+        .collect()
+}

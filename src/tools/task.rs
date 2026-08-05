@@ -26,6 +26,12 @@ const GENERAL_EXCLUDED: &[&str] = &[
     "task",
     "task_agent",
     "deep_research",
+    // 防止 task 子代理再拉起命名 agent 集群造成套娃
+    "spawn_agent",
+    "talk_to_agent",
+    "list_agents",
+    "kill_agent",
+    "parallel_agents",
     "linux_input_method_diagnose",
     "deep_diagnose",
     "deep_research_linux_game_compatibility",

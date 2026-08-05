@@ -780,8 +780,13 @@ fn subagent_tool_list_path(paths: &crate::paths::GqyPaths) -> Result<Option<std:
         !matches!(
             tool.get("name").and_then(serde_json::Value::as_str),
             Some(
-                "task" | "deep_research" | "spawn_agent" | "talk_to_agent" | "list_agents"
+                "task"
+                    | "deep_research"
+                    | "spawn_agent"
+                    | "talk_to_agent"
+                    | "list_agents"
                     | "kill_agent"
+                    | "parallel_agents"
             )
         )
     });

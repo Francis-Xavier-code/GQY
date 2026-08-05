@@ -989,6 +989,51 @@ impl ProviderConfig {
             Self::template("openrouter", "OpenRouter", "https://openrouter.ai/api/v1"),
             Self::template("ollama", "Ollama", "http://localhost:11434/v1"),
             Self::template("lmstudio", "LMStudio", "http://localhost:1234/v1"),
+            // ── 国内云服务商 ──
+            Self::template(
+                "siliconflow",
+                "SiliconFlow",
+                "https://api.siliconflow.cn/v1",
+            ),
+            Self::template("moonshot", "Moonshot", "https://api.moonshot.cn/v1"),
+            Self::template("zhipu", "Zhipu", "https://open.bigmodel.cn/api/paas/v4"),
+            Self::template(
+                "volcengine",
+                "Volcengine",
+                "https://ark.cn-beijing.volces.com/api/v3",
+            ),
+            Self::template(
+                "bailian",
+                "Bailian",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
+            // ── 海外服务商 ──
+            Self::template(
+                "together",
+                "Together AI",
+                "https://api.together.xyz/v1",
+            ),
+            Self::template("groq", "Groq", "https://api.groq.com/openai/v1"),
+            Self::template(
+                "fireworks",
+                "Fireworks AI",
+                "https://api.fireworks.ai/inference/v1",
+            ),
+            Self::template(
+                "cerebras",
+                "Cerebras",
+                "https://api.cerebras.ai/v1",
+            ),
+            Self::template(
+                "sambanova",
+                "SambaNova",
+                "https://api.sambanova.ai/v1",
+            ),
+            Self::template(
+                "mistral",
+                "Mistral AI",
+                "https://api.mistral.ai/v1",
+            ),
         ]);
         providers
     }

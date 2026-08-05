@@ -189,6 +189,33 @@ impl MemoryStore {
     pub fn process_after_turn(&self, user_message: &str, assistant_message: &str) -> Result<()> {
         self.remember_pending_event(user_message, assistant_message)?;
         self.flush_pending_events()?;
+        self.maybe_auto_remember_fact(user_message, assistant_message)?;
+        Ok(())
+    }
+
+    /// 当 `auto_fact_enabled` 打开时，用规则从用户消息提取「请记住」类事实并写入 facts。
+    /// 不额外调用模型，避免热路径 token 开销。
+    fn maybe_auto_remember_fact(
+        &self,
+        user_message: &str,
+        assistant_message: &str,
+    ) -> Result<()> {
+        if !self.config.enabled || !self.config.auto_fact_enabled {
+            return Ok(());
+        }
+        let Some(fact) = extract_explicit_fact(user_message) else {
+            return Ok(());
+        };
+        // 助手若明确拒绝记忆，则跳过
+        let lower = assistant_message.to_lowercase();
+        if lower.contains("无法记住")
+            || lower.contains("不能记住")
+            || lower.contains("won't remember")
+            || lower.contains("cannot remember")
+        {
+            return Ok(());
+        }
+        let _ = self.remember_fact(&fact, "auto_fact")?;
         Ok(())
     }
 
@@ -773,6 +800,67 @@ fn snippet(text: &str, tokens: &[String], max_chars: usize) -> String {
     truncate_chars(&text[start..], max_chars)
 }
 
+/// 从用户话里抽出「请记住：…」类显式事实；无匹配则返回 None。
+fn extract_explicit_fact(user_message: &str) -> Option<String> {
+    let text = user_message.trim();
+    if text.is_empty() {
+        return None;
+    }
+    const PREFIXES: &[&str] = &[
+        "记住：",
+        "记住:",
+        "请记住：",
+        "请记住:",
+        "记得：",
+        "记得:",
+        "记住我",
+        "我的名字是",
+        "我叫",
+        "我喜欢",
+        "我不喜欢",
+        "请记住 ",
+        "记住 ",
+        "remember:",
+        "remember that ",
+        "please remember ",
+        "my name is ",
+    ];
+    let lower = text.to_ascii_lowercase();
+    for prefix in PREFIXES {
+        let matched = if prefix.chars().all(|c| c.is_ascii()) {
+            lower.starts_with(prefix)
+        } else {
+            text.starts_with(prefix)
+        };
+        if !matched {
+            continue;
+        }
+        let rest = if prefix.chars().all(|c| c.is_ascii()) {
+            // ASCII prefix matched against lower — slice original by byte len
+            text.get(prefix.len()..).unwrap_or("").trim()
+        } else {
+            text[prefix.len()..].trim()
+        };
+        let fact = if rest.is_empty() {
+            // 「记住我xxx」整句都是事实
+            text.to_string()
+        } else if prefix.starts_with("记住我")
+            || prefix.starts_with("我")
+            || prefix.starts_with("my name")
+        {
+            text.to_string()
+        } else {
+            rest.to_string()
+        };
+        let fact = compact_line(&fact);
+        if fact.chars().count() < 2 {
+            return None;
+        }
+        return Some(truncate_chars(&fact, 400));
+    }
+    None
+}
+
 fn compact_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -873,6 +961,45 @@ mod tests {
             share_dir: PathBuf::new(),
             kb_dir: PathBuf::new(),
         }
+    }
+
+    #[test]
+    fn extract_explicit_fact_from_common_phrases() {
+        assert_eq!(
+            extract_explicit_fact("记住：我喜欢黑咖啡").as_deref(),
+            Some("我喜欢黑咖啡")
+        );
+        assert_eq!(
+            extract_explicit_fact("请记住: 项目根目录是 ~/GQY").as_deref(),
+            Some("项目根目录是 ~/GQY")
+        );
+        assert!(extract_explicit_fact("今天天气不错").is_none());
+        assert!(extract_explicit_fact("remember: prefer rustfmt").is_some());
+    }
+
+    #[test]
+    fn auto_fact_respects_config_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.memory.auto_fact_enabled = false;
+        config.plugins.memory.auto_fact_enabled = false;
+        let paths = test_paths(&temp);
+        let store = MemoryStore::new(&config, &paths);
+        store
+            .process_after_turn("记住：关掉自动事实", "好的")
+            .unwrap();
+        let result = store.recall_memories("关掉自动事实", 5, false).unwrap();
+        assert_eq!(result["results"].as_array().map(|a| a.len()).unwrap_or(0), 0);
+
+        let mut config = AppConfig::default();
+        config.memory.auto_fact_enabled = true;
+        config.plugins.memory.auto_fact_enabled = true;
+        let store = MemoryStore::new(&config, &paths);
+        store
+            .process_after_turn("记住：打开自动事实", "好的，已记下")
+            .unwrap();
+        let result = store.recall_memories("打开自动事实", 5, false).unwrap();
+        assert!(result.to_string().contains("打开自动事实"));
     }
 
     #[test]
